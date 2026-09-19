@@ -1,0 +1,203 @@
+# DWM1001 UWB Ground Control
+
+GUI Windows nhận telemetry binary của firmware `Tag`, kiểm tra CRC và hiển thị:
+
+- raw/filtered distance, valid, status, age và FPP của A1..A8;
+- INFO của firmware và calibration mask;
+- poll/OK/timeout/RX error/overrun/UART overflow;
+- tốc độ UART, CRC error, byte bị bỏ qua và sequence bị mất;
+- đồ thị Raw, Host Filter và Firmware Filter đồng thời theo từng Anchor;
+- Host Filter dùng mô hình khoảng cách-vận tốc từ `CV_KALMAN_V2` trong
+  `STM32_UWB`: median-3 + alpha-beta, giới hạn tốc độ vật lý nhưng không giới
+  hạn khoảng cách; FPP yếu chỉ giảm nhẹ gain và không còn snap khi reacquire
+  gây đầu ra dạng bậc, và vẫn hoạt động cho dữ liệu diagnostic `CAL_MISSING`;
+- ghi một phiên đo mà không chặn luồng UART/GUI;
+- lưu CSV khoảng cách và thống kê, INFO dạng JSONL, sự kiện dạng text và toàn
+  bộ frame hợp lệ dạng binary để phân tích hoặc replay sau này.
+
+## Các tab nâng cấp
+
+### Live
+
+Giữ bảng A1..A8, recorder và sự kiện UART trong một trang riêng để dễ đọc.
+Giao thức hiện tại vẫn có thể chỉ gửi A1..A4; các dòng A5..A8 là phần chuẩn bị
+cho phiên bản firmware 8 anchor.
+
+### Biểu đồ lớn
+
+Đồ thị Raw / Host Filter / Firmware Filter được tách khỏi tab Live và chiếm toàn
+bộ vùng nội dung của tab. Có thể chọn A1..A8 và xóa riêng lịch sử của anchor
+đang xem. Trục Y tự scale theo tối đa 300 mẫu gần nhất.
+
+### Bản đồ 2D / 3D
+
+- nhập tọa độ tâm anten X/Y/Z theo hệ ENU, đơn vị mét;
+- preset 4 anchor phẳng và 8 anchor dạng hộp 5 x 4 x 3 m;
+- lưu cấu hình mặc định vào `anchor_layout.json`, nhập/xuất JSON để đi cùng log;
+- solver robust 2D cần ít nhất 3 range `valid`, solver 3D cần ít nhất 4;
+- vẽ range, trail, RMS, residual lớn nhất, anchor được dùng/loại và chỉ báo hình
+  học;
+- phép đo `CAL_MISSING` chỉ dùng cho plot/calibration, tuyệt đối không đi vào
+  nghiệm position.
+
+### Phân tích
+
+Chọn anchor, nguồn Raw/Host Filter/Firmware Filter và cửa sổ 15 giây, 60 giây,
+5 phút hoặc toàn bộ bộ nhớ. Dashboard khoa học 2 x 2 hiển thị:
+
+- chuỗi thời gian của cả ba nguồn, đường mean/reference và FPP trên trục phải;
+- histogram mật độ với đường phân bố chuẩn khớp;
+- overlapping Allan deviation để đọc độ ổn định theo thời gian tích phân;
+- PSD một phía theo phương pháp Welch để quan sát phổ nhiễu và tác dụng bộ lọc.
+
+Có thể nhập khoảng cách chuẩn theo mét. Khi có chuẩn, GUI báo bias, RMSE và
+P95 sai số tuyệt đối; khi để trống, histogram được ghi đúng là độ lệch so với
+trung bình. Dòng tổng hợp còn hiển thị số mẫu, tần số mẫu, thời lượng, sigma,
+drift, Allan minimum, số gap và số frame DS fallback. Bảng A1..A8 bên dưới
+hiển thị:
+
+- availability với điều kiện `valid` và `age <= 200 ms`;
+- fresh/total, mean, noise sigma, P05-P95;
+- filter delta P95, FPP median, age P95;
+- số mẫu invalid/stale/missing.
+
+Có thể xuất bảng tổng hợp và các thống kê của tín hiệu đang chọn thành CSV ngay
+trong tab. Mặc định DS fallback được tách khỏi thống kê chính; dữ liệu raw/host
+`CAL_MISSING` vẫn có thể bật để phục vụ calibration.
+
+Allan deviation và PSD chỉ có ý nghĩa đánh giá nhiễu cảm biến khi TAG và anchor
+đứng yên. Cả Raw/Firmware/Host dùng timestamp của frame TAG để giữ cùng một
+timebase; `age_ms` chỉ là chỉ số độ trễ/chất lượng vì trên raw diagnostic nó vẫn
+tính từ lần đo production thành công cuối. GUI xử lý wrap uint32, tách gap và
+nội suy chỉ trong đoạn liên tục dài nhất. Telemetry 50 Hz có Nyquist 25 Hz, vì
+vậy GUI không thể đo trực tiếp thành phần nhiễu 50 Hz.
+
+Vòng nhận UART được lên lịch lại trong `finally`, nên lỗi vẽ hoặc phân tích một
+frame được ghi vào log nhưng không thể làm GUI ngừng nhận dữ liệu.
+
+Số cột histogram tự tăng theo lượng mẫu (xấp xỉ `2*sqrt(N)`, giới hạn 8–80
+cột). Trục X dùng mép ngoài của bin nên cột đầu và cuối luôn nằm trọn trong
+khung đồ thị.
+
+### Calibration
+
+1. Chọn anchor, nhập khoảng cách chuẩn giữa hai tâm anten và số mẫu.
+2. Giữ TAG/anchor đứng yên rồi nhấn **Bắt đầu capture**.
+3. GUI nhận cả raw diagnostic `CAL_MISSING`, hiển thị mean, noise và acceptance.
+4. Capture tự dừng đủ mẫu; kết quả gồm offset, P05-P95, drift và FPP median.
+5. Lặp lại ở nhiều khoảng cách (gợi ý 0.5/1/2/3/5/8 m), sau đó xuất CSV/JSON.
+
+Offset trong báo cáo được định nghĩa là:
+
+```text
+offset_mm = reference_mm - mean_raw_mm
+```
+
+Không trộn capture SS-TWR và DS-TWR trong cùng bộ calibration. Nên dành ít nhất
+một khoảng cách chưa dùng để làm held-out validation.
+
+## Giới hạn 3D hiện tại
+
+GUI đã hỗ trợ layout và solver 8 anchor, nhưng firmware/protocol đang sử dụng
+trong project có thể mới truyền A1..A4. Định vị 3D thực tế chỉ khả dụng sau khi
+firmware gửi tối thiểu bốn range valid có hình học không đồng phẳng trong cùng
+chu kỳ đo. Không dùng nghiệm có RMS/residual lớn hoặc geometry condition xấu cho
+điều khiển drone.
+
+## Kết nối phần cứng
+
+Firmware Tag phát UART0 **115200, 8N1**, packet binary:
+
+| Tag DWM1001C | Đích |
+|---|---|
+| UART_TX, nRF P0.05 | RX của USB-UART 3.3 V hoặc ESP32-C3 GPIO20 |
+| UART_RX, nRF P0.11 | TX của USB-UART hoặc ESP32-C3 GPIO21 (chưa bắt buộc) |
+| GND | GND chung |
+
+Không đưa mức TTL 5 V vào DWM1001C.
+
+Trên PCB `RangingSystemClassic`, UART đã nối sang ESP32-C3. Khi dùng firmware
+gateway có USB binary bridge, chỉ cần cắm cổng USB của ESP32-C3 và chọn COM đó.
+Nếu gateway chưa được flash, có thể thử GUI trực tiếp bằng USB-UART 3.3 V nối
+vào UART_TX của Tag.
+
+Giữ `TELEM_ASCII=0` trong `Tag/include/uwb_app_config.h`; GUI đọc protocol binary
+và tự đồng bộ lại sau boot log hoặc byte nhiễu.
+
+## Chạy
+
+```powershell
+Set-Location '.\Software\UWB_UART_GUI'
+.\run_gui.ps1
+```
+
+Nếu máy chưa có PySerial:
+
+```powershell
+py -3.12 -m pip install -r requirements.txt
+```
+
+Nhấn **Làm mới**, chọn đúng COM không phải `Standard Serial over Bluetooth`, giữ
+baud 115200 và nhấn **Kết nối**.
+
+## Thu và lưu dữ liệu
+
+Sau khi UART đã kết nối, chọn thư mục rồi nhấn **Bắt đầu ghi**. Khi hoàn tất,
+nhấn **Dừng và lưu**. Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
+
+| File | Nội dung |
+|---|---|
+| `range.csv` | Một dòng cho mỗi Anchor: host/tag time, sequence, valid, status, raw/FW filtered/host filtered mm và FPP |
+| `stats.csv` | Poll, OK, timeout, RX error, overrun, UART overflow và tần số |
+| `uart.csv` | Tốc độ byte/s và bộ đếm parser phía PC: frame, CRC, byte bỏ, length/version/decode error |
+| `info.jsonl` | Cấu hình firmware/calibration nhận được trong phiên |
+| `events.log` | Kết nối, lỗi protocol, STALE và sự kiện trên GUI |
+| `raw_telemetry.bin` | Ghép liên tiếp các frame binary đã qua kiểm tra CRC |
+| `anchor_layout.json` | Snapshot tọa độ ENU đang được bản đồ/solver sử dụng |
+| `session.json` | Metadata, thời lượng và tổng số bản ghi/drop |
+
+Writer chạy ở thread riêng và flush mỗi giây. Nếu hàng đợi ghi đầy hoặc ổ đĩa
+lỗi, `queue_drops`/`error` được lưu trong `session.json` và GUI hiển thị lỗi.
+`session.json` cũng ghi phiên bản/tham số Host Filter để tái lập phép thử.
+
+Chạy giao diện mô phỏng không cần board:
+
+```powershell
+.\run_demo.ps1
+```
+
+## Đọc kết quả chưa calibration
+
+Firmware hiện đặt `UWB_DS_CALIBRATED_MASK=0`. Vì vậy hàng A1 có thể hiển thị:
+
+- `Valid = NO`;
+- `Status = CAL_MISSING`;
+- `Raw (m)` vẫn thay đổi và dùng được để thu thập dữ liệu calibration;
+- `FW Filter (m)` để trống nhằm ngăn thuật toán bay dùng nhầm khoảng cách chưa
+  hiệu chỉnh;
+- `Host Filter (m)` và đường xanh lá vẫn xuất hiện, nhưng chỉ là dữ liệu
+  diagnostic chưa calibration, không phải khoảng cách hợp lệ cho điều khiển bay.
+
+## Test decoder
+
+```powershell
+py -3.12 -m unittest discover -s tests -v
+```
+
+## Đóng gói EXE portable
+
+Máy build cần Python 3.12 x64 và PyInstaller 6.x:
+
+```powershell
+py -3.12 -m pip install --user "pyinstaller>=6.10,<7"
+Set-Location 'D:\Drone Project\UWB DW1001\Software\UWB_UART_GUI'
+.\build_exe.ps1
+```
+
+Kết quả nằm trong `Output`. File `DWM1001_UWB_Ground_Control.exe` là bản
+one-file/windowed, đã chứa Python, Tk/Tcl, PySerial và các module của GUI. Máy
+Windows x64 nhận demo không cần cài Python. Dùng `CHAY_DEMO.cmd` để chạy nguồn
+telemetry mô phỏng không cần board.
+
+Ở bản đóng gói, `data_logs` và `anchor_layout.json` được lưu cạnh file EXE thay
+vì thư mục giải nén tạm của PyInstaller.

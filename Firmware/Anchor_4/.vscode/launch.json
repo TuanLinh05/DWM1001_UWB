@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DWM1001C Current Anchor: Attach via ST-LINK/OpenOCD (no flash)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "servertype": "openocd",
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      },
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/zephyr/zephyr.elf",
+      "serverpath": "${config:dwm1001.openocdPath}",
+      "searchDir": [
+        "${config:dwm1001.openocdScripts}"
+      ],
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stlink.cfg"
+      ],
+      "gdbPath": "${config:dwm1001.gdbPath}"
+    },
+    {
+      "name": "DWM1001C Current Anchor: Build, flash & debug via ST-LINK/OpenOCD",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      },
+      "preLaunchTask": "DWM1001C: Build Current Anchor",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/zephyr/zephyr.elf",
+      "loadFiles": [
+        "${workspaceFolder}/build/zephyr/zephyr.hex"
+      ],
+      "runToEntryPoint": "main",
+      "serverpath": "${config:dwm1001.openocdPath}",
+      "searchDir": [
+        "${config:dwm1001.openocdScripts}"
+      ],
+      "configFiles": [
+        "${workspaceFolder}/.vscode/openocd-stlink.cfg"
+      ],
+      "gdbPath": "${config:dwm1001.gdbPath}"
+    }
+  ]
+}

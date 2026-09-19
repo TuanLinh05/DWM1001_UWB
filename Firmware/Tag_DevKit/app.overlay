@@ -1,0 +1,24 @@
+/ {
+	aliases {
+		/* D9: green user LED on DWM1001-DEV, active-low (nRF P0.30). */
+		status-led = &led1_green;
+	};
+};
+
+/*
+ * The application talks to the internal DW1000 through SPI2.  SPI1 only goes
+ * to the DWM1001-DEV Raspberry Pi header and is unused by this TAG firmware.
+ * Disable it so the external header pins remain quiescent during bring-up.
+ */
+&spi1 {
+	status = "disabled";
+};
+
+/*
+ * UART0 uses P0.05/P0.11.  With factory-default solder bridges J14/J15 closed,
+ * it is exposed as the on-board J-Link USB Virtual COM port.
+ */
+&uart0 {
+	current-speed = <115200>;
+	status = "okay";
+};

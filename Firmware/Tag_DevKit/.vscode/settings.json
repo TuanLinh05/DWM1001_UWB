@@ -1,0 +1,9 @@
+{
+  "cmake.configureOnOpen": false,
+  "cortex-debug.liveWatchRefreshRate": 300,
+  "dwm1001.gdbPath": "E:/software/nordic/ncs/toolchains/dcbdc366a1/opt/zephyr-sdk/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb.exe",
+  "dwm1001.jlinkGdbServerPath": "E:/software/SEGGER/JLink_V924a/JLinkGDBServerCL.exe",
+  "files.associations": {
+    "*.overlay": "devicetree"
+  }
+}
