@@ -1,0 +1,30 @@
+/ {
+	aliases {
+		status-led = &uwb_status_led;
+	};
+
+	uwb_status_leds {
+		compatible = "gpio-leds";
+
+		uwb_status_led: status_led {
+			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			label = "Ranging board status LED";
+		};
+	};
+};
+
+/*
+ * DWM1001C module pins 26..29 are routed to the ESP32-C3 through R9..R12 on
+ * the custom carrier.  They are not the internal DW1000 bus.  Keep the board
+ * default SPI1 controller disabled until a dedicated nRF<->ESP protocol is
+ * implemented, otherwise Zephyr can claim P0.03/P0.04/P0.06/P0.07.
+ */
+&spi1 {
+	status = "disabled";
+};
+
+/* Module pins 20/18 map to P0.05/P0.11 and are wired to ESP RX/TX. */
+&uart0 {
+	current-speed = <115200>;
+	status = "okay";
+};

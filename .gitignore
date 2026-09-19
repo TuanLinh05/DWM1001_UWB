@@ -1,0 +1,93 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.lnk
+*.suo
+*.user
+.idea/
+
+# Local AI/tooling state
+.agents/
+.claude/
+.codex/
+.codex-*/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+secrets/
+
+# Zephyr / CMake / west outputs
+**/build/
+**/build-*/
+**/build_*/
+cmake-build-*/
+.west/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.elf
+*.map
+*.obj
+*.o
+*.a
+*.hex
+
+# ESP-IDF generated files
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+*.egg-info/
+
+# Runtime captures, logs and local GUI state
+*.log
+*.jsonl
+**/data_logs/
+**/raw_telemetry.bin
+/Software/UWB_UART_GUI/tmp*/
+/Software/UWB_UART_GUI/anchor_layout.json
+/Software/UWB_UART_GUI/calibration*.csv
+/Software/UWB_UART_GUI/calibration*.json
+/Software/UWB_UART_GUI/analysis*.csv
+
+# Host-test executables
+/Firmware/tests/*.exe
+/Firmware/ESP32C3_Gateway/tests/*.exe
+
+# Downloaded third-party binaries and vendor documents kept only for local use
+/tools/
+/Datasheet/*.pdf
+
+# Hardware design references (PCB, enclosure, CAD, vendor datasheets) are not
+# versioned in this firmware/software repository.
+/Reference/
+
+# GUI packaging output (PyInstaller)
+/Software/UWB_UART_GUI/Output/
+/Software/UWB_UART_GUI/.pyinstaller/
+
+# Temporary and backup files
+tmp/
+*.tmp
+*.bak
+*.swp
+*~

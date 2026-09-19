@@ -1,0 +1,68 @@
+mainmenu "DWM1001 UWB firmware"
+
+source "Kconfig.zephyr"
+
+menu "UWB application"
+
+choice UWB_ROLE
+  prompt "Node role"
+  default UWB_ROLE_TAG
+
+config UWB_ROLE_TAG
+  bool "Tag"
+
+config UWB_ROLE_ANCHOR
+  bool "Anchor"
+
+config UWB_ROLE_DIAGNOSTIC
+  bool "DW1000 hardware diagnostic"
+
+endchoice
+
+config UWB_TAG_ADDRESS
+  int "Tag short address"
+  range 0 65534
+  default 0
+
+config UWB_ANCHOR_ADDRESS
+  int "Anchor short address"
+  range 1 65534
+  default 1
+  depends on UWB_ROLE_ANCHOR
+
+config UWB_DS_TWR
+  bool "Use four-message DS-TWR with SS fallback"
+  default y
+
+choice UWB_COMPENSATION
+  prompt "Range compensation profile"
+  default UWB_COMPENSATION_LEGACY
+
+config UWB_COMPENSATION_LEGACY
+  bool "Legacy software offsets"
+
+config UWB_COMPENSATION_ANTENNA_DELAY
+  bool "DW1000 hardware antenna delay"
+
+endchoice
+
+config UWB_CLOCK_CORRECTION
+  bool "Carrier-integrator clock correction"
+  default n
+
+config UWB_TELEMETRY_ASCII
+  bool "Human-readable CSV telemetry"
+  default n
+  depends on UWB_ROLE_TAG
+
+config UWB_WATCHDOG
+  bool "Enable hardware watchdog"
+  default y
+
+config UWB_WATCHDOG_TIMEOUT_MS
+  int "Watchdog timeout (ms)"
+  range 250 10000
+  default 1000
+  depends on UWB_WATCHDOG
+
+endmenu

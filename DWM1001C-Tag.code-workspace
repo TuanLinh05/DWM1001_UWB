@@ -1,0 +1,10 @@
+{
+  "folders": [
+    {
+      "path": "Firmware/Tag"
+    }
+  ],
+  "settings": {
+    "cmake.configureOnOpen": false
+  }
+}

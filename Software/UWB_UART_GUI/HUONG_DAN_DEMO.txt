@@ -1,0 +1,21 @@
+DWM1001 UWB GROUND CONTROL - GOI DEMO PORTABLE
+================================================
+
+1. May demo khong can cai Python.
+2. Double-click DWM1001_UWB_Ground_Control.exe de ket noi UART that.
+3. Double-click CHAY_DEMO.cmd de chay telemetry mo phong khong can board.
+4. Khi dung UART that: bam Lam moi, chon dung COM va giu baud 115200.
+5. Thu muc data_logs va file anchor_layout.json se duoc tao canh file EXE.
+
+Ban build: 1.2.0 - Windows x64
+
+Tab Phan tich 1.2.0:
+- 4 do thi: chuoi thoi gian, histogram, Allan deviation va Welch PSD.
+- Doc dung timebase TAG 50 Hz cho valid va du lieu diagnostic CAL_MISSING.
+- Loi phan tich duoc ghi log, khong lam dung vong nhan UART cua GUI.
+
+Luu y:
+- Khong dua TTL 5 V vao DWM1001C.
+- May khac can dung Windows x64.
+- Neu Windows SmartScreen canh bao do file chua co chu ky so, chon chi khi ban
+  xac nhan file duoc chep truc tiep tu project nay.

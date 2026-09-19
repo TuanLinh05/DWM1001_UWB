@@ -1,0 +1,10 @@
+{
+  "cmake.configureOnOpen": false,
+  "cortex-debug.liveWatchRefreshRate": 300,
+  "dwm1001.openocdPath": "C:/Users/vutua/AppData/Local/Arduino15/packages/esp32/tools/openocd-esp32/v0.12.0-esp32-20251215/bin/openocd.exe",
+  "dwm1001.openocdScripts": "C:/Users/vutua/AppData/Local/Arduino15/packages/esp32/tools/openocd-esp32/v0.12.0-esp32-20251215/share/openocd/scripts",
+  "dwm1001.gdbPath": "E:/software/nordic/ncs/toolchains/dcbdc366a1/opt/zephyr-sdk/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb.exe",
+  "files.associations": {
+    "*.overlay": "devicetree"
+  }
+}

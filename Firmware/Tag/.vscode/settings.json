@@ -1,0 +1,9 @@
+{
+  "cmake.configureOnOpen": false,
+  "cortex-debug.liveWatchRefreshRate": 300,
+  "dwm1001.openocdPath": "openocd",
+  "dwm1001.gdbPath": "arm-zephyr-eabi-gdb",
+  "files.associations": {
+    "*.overlay": "devicetree"
+  }
+}
