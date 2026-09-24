@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include "range_filter_config.h"
 
+/* Recent usable samples kept as reacquisition candidates (per anchor). */
+#define RANGE_FILTER_REACQUIRE_BUF 5U
+
 typedef enum {
     RANGE_FILTER_ACCEPTED = 0,
     RANGE_FILTER_REJECTED_PHYSICAL,
@@ -46,6 +49,10 @@ typedef struct {
     uint16_t reject_streak;
     uint16_t candidate_count;
     float candidate_mean_mm;
+    /* Reacquisition candidates, oldest first, with their arrival times. */
+    int32_t candidate_buf_mm[RANGE_FILTER_REACQUIRE_BUF];
+    uint32_t candidate_buf_ms[RANGE_FILTER_REACQUIRE_BUF];
+    uint8_t candidate_buf_count;
     uint8_t initialized;
 
     uint32_t accepted_count;

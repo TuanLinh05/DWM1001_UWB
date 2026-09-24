@@ -29,10 +29,20 @@
 #define UWB_DS_OFFSET_A7_M 0.0
 #define UWB_DS_OFFSET_A8_M 0.0
 
-/* Adaptive Legacy is OFF: the published range uses the validated Legacy
- * median + Kalman path, and the host (UP 7000) runs the real estimator.
- * SHADOW doubled the soft-float filter work in every slot. Set 1U (SHADOW)
- * or 2U (ACTIVE) only for a controlled A/B. */
+/* Range conditioner: MEDIAN_GATE (median-3, physical/dynamic gate and
+ * NLOS-aware reacquisition). The Legacy median + static Kalman lags
+ * 0.75-2.9 s once the drone moves (test_tag_motion.c,
+ * Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md). The host (UP 7000) runs
+ * the real estimator on corrected_mm; this filter only sets validity.
+ * #ifndef so that an A/B build can pass -DUWB_RANGE_FILTER_MODE=0U (Legacy)
+ * or 2U (CV_KALMAN_V2). */
+#ifndef UWB_RANGE_FILTER_MODE
+#define UWB_RANGE_FILTER_MODE 1U   /* UWB_RANGE_FILTER_MEDIAN_GATE */
+#endif
+
+/* Adaptive Legacy is OFF (it requires UWB_RANGE_FILTER_MODE=0U). SHADOW
+ * doubled the soft-float filter work in every slot. Set 1U (SHADOW) or 2U
+ * (ACTIVE) only for a controlled A/B of the Legacy path. */
 #define UWB_LEGACY_ADAPTIVE_MODE 0U
 
 /* Set to 1 for human-readable CSV, or 0 for the binary packet protocol. */
