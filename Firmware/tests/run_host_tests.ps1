@@ -97,20 +97,46 @@ $cTests = @(
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c',
                    'app\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c')
        Arguments = @((Join-Path $outputDirectory 'golden.bin')) }
+    # Motion: the real TAG pipeline against a radio-channel model (trajectory,
+    # drifting 40-bit clocks, NLOS, dropouts, 8-anchor flight), built once per
+    # range conditioner. The build default (Legacy median + static Kalman)
+    # misses the motion gates, so it runs as a characterisation (--report);
+    # the C9 candidates must stay within every gate.
+    @{ Name = 'test_tag_motion'; Source = 'test_tag_motion'; Role = 'TAG'
+       IncludeDir = 'tests\motion_cfg'
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c')
+       Arguments = @('--report') }
+    @{ Name = 'test_tag_motion_median_gate'; Source = 'test_tag_motion'; Role = 'TAG'
+       IncludeDir = 'tests\motion_cfg'; Defines = @('UWB_RANGE_FILTER_MODE=1U')
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
+    @{ Name = 'test_tag_motion_cv_kalman'; Source = 'test_tag_motion'; Role = 'TAG'
+       IncludeDir = 'tests\motion_cfg'; Defines = @('UWB_RANGE_FILTER_MODE=2U')
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
 )
 
 function Build-CTest {
     param([hashtable]$Test)
 
     $binary = Join-Path $outputDirectory "$($Test.Name).exe"
+    # Optional keys: Source (shared .c for several builds), IncludeDir (instead
+    # of <Config>\include) and Defines (build variants of one test).
+    $source = if ($Test.ContainsKey('Source')) { $Test.Source } else { $Test.Name }
+    $configInclude = if ($Test.ContainsKey('IncludeDir')) {
+        Join-Path $firmwareRoot $Test.IncludeDir
+    } else {
+        Join-Path $firmwareRoot "$($Test.Config)\include"
+    }
     $arguments = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-Wshadow', '-O1')
     if ($Test.Role) { $arguments += "-DUWB_ROLE_$($Test.Role)" }
+    if ($Test.ContainsKey('Defines')) {
+        foreach ($define in $Test.Defines) { $arguments += "-D$define" }
+    }
     foreach ($include in @((Join-Path $firmwareRoot 'common\include'),
-                           (Join-Path $firmwareRoot "$($Test.Config)\include"),
+                           $configInclude,
                            $PSScriptRoot)) {
         $arguments += @('-I', $include)
     }
-    $arguments += (Join-Path $PSScriptRoot "$($Test.Name).c")
+    $arguments += (Join-Path $PSScriptRoot "$source.c")
     foreach ($source in $Test.Sources) {
         if ($source -eq 'sim') {
             $arguments += (Join-Path $PSScriptRoot 'dw1000_sim.c')

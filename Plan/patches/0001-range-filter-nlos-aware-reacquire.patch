@@ -1,0 +1,565 @@
+diff --git a/Firmware/common/include/range_filter.h b/Firmware/common/include/range_filter.h
+index 824bf50..f3694a6 100644
+--- a/Firmware/common/include/range_filter.h
++++ b/Firmware/common/include/range_filter.h
+@@ -4,6 +4,9 @@
+ #include <stdint.h>
+ #include "range_filter_config.h"
+ 
++/* Recent usable samples kept as reacquisition candidates (per anchor). */
++#define RANGE_FILTER_REACQUIRE_BUF 5U
++
+ typedef enum {
+     RANGE_FILTER_ACCEPTED = 0,
+     RANGE_FILTER_REJECTED_PHYSICAL,
+@@ -46,6 +49,10 @@ typedef struct {
+     uint16_t reject_streak;
+     uint16_t candidate_count;
+     float candidate_mean_mm;
++    /* Reacquisition candidates, oldest first, with their arrival times. */
++    int32_t candidate_buf_mm[RANGE_FILTER_REACQUIRE_BUF];
++    uint32_t candidate_buf_ms[RANGE_FILTER_REACQUIRE_BUF];
++    uint8_t candidate_buf_count;
+     uint8_t initialized;
+ 
+     uint32_t accepted_count;
+diff --git a/Firmware/common/src/filters/range_filter.c b/Firmware/common/src/filters/range_filter.c
+index 8eacac6..e789379 100644
+--- a/Firmware/common/src/filters/range_filter.c
++++ b/Firmware/common/src/filters/range_filter.c
+@@ -96,6 +96,13 @@ static void commit_median(
+     state->median_head = head;
+ }
+ 
++static void clear_candidates(RangeFilterState_t *state)
++{
++    state->candidate_count = 0U;
++    state->candidate_mean_mm = 0.0f;
++    state->candidate_buf_count = 0U;
++}
++
+ static void reset_tracking_keep_counters(RangeFilterState_t *state)
+ {
+     state->distance_mm = 0.0f;
+@@ -109,8 +116,7 @@ static void reset_tracking_keep_counters(RangeFilterState_t *state)
+     state->last_predict_ms = 0U;
+     state->last_accepted_ms = 0U;
+     state->reject_streak = 0U;
+-    state->candidate_count = 0U;
+-    state->candidate_mean_mm = 0.0f;
++    clear_candidates(state);
+     state->initialized = 0U;
+ }
+ 
+@@ -170,40 +176,124 @@ static void initialize_tracking(
+     state->last_predict_ms = now_ms;
+     state->last_accepted_ms = now_ms;
+     state->reject_streak = 0U;
+-    state->candidate_count = 0U;
+-    state->candidate_mean_mm = 0.0f;
++    clear_candidates(state);
+     state->initialized = 1U;
+ }
+ 
+ #if UWB_RANGE_FILTER_MODE != UWB_RANGE_FILTER_LEGACY_KALMAN
++/*
++ * Reacquisition after boot, a gap or a run of gate rejects. NLOS only
++ * lengthens a range, so the new start is the group of the `need` SHORTEST
++ * recent samples when they agree within reacquire_cluster_mm - not the first
++ * sample after the gap and not the running mean of whatever arrives:
++ *   - without a track (boot, gap) one more sample than `need` must have been
++ *     seen, so an all-NLOS start needs every recent sample to be NLOS;
++ *   - with a track, a group LONGER than the track is what NLOS produces: it
++ *     is accepted only when the buffer is full and every candidate agrees.
++ * While tracking, weak (low-FPP) samples are not candidates. Without a track
++ * every sample is, as before: a gate on FPP there would leave a weak but
++ * usable link without any range at all. Candidates older than
++ * stale_reset_ms expire.
++ */
+ static uint8_t update_reacquire_candidate(
+     RangeFilterState_t *state,
+     int32_t candidate_mm,
+     float fpp_dbm,
+-    const RangeFilterConfig_t *config)
++    uint32_t now_ms,
++    const RangeFilterConfig_t *config,
++    int32_t *start_mm)
+ {
+-    if (fpp_dbm < config->reacquire_min_fpp_dbm)
+-    {
+-        state->candidate_count = 0U;
++    int32_t sorted[RANGE_FILTER_REACQUIRE_BUF];
++    uint8_t need = config->reacquire_min_samples;
++    uint8_t evidence;
++    uint8_t n = 0U;
++    int64_t sum = 0;
++    int32_t group_mm;
++
++    if (need < 2U)
++        need = 2U;
++    if (need > RANGE_FILTER_REACQUIRE_BUF - 1U)
++        need = (uint8_t)(RANGE_FILTER_REACQUIRE_BUF - 1U);
++    evidence = state->initialized ? need : (uint8_t)(need + 1U);
++    if (state->initialized && fpp_dbm < config->reacquire_min_fpp_dbm)
+         return 0U;
++
++    /* Keep the unexpired candidates (oldest first), then append this one. */
++    for (uint8_t i = 0U; i < state->candidate_buf_count; i++)
++    {
++        if ((uint32_t)(now_ms - state->candidate_buf_ms[i]) > config->stale_reset_ms)
++            continue;
++        state->candidate_buf_mm[n] = state->candidate_buf_mm[i];
++        state->candidate_buf_ms[n] = state->candidate_buf_ms[i];
++        n++;
+     }
+-    if (state->candidate_count == 0U
+-        || fabsf((float)candidate_mm - state->candidate_mean_mm)
+-            > (float)config->reacquire_cluster_mm)
++    if (n == RANGE_FILTER_REACQUIRE_BUF)
+     {
+-        state->candidate_mean_mm = (float)candidate_mm;
+-        state->candidate_count = 1U;
++        memmove(&state->candidate_buf_mm[0], &state->candidate_buf_mm[1],
++                (RANGE_FILTER_REACQUIRE_BUF - 1U) * sizeof(state->candidate_buf_mm[0]));
++        memmove(&state->candidate_buf_ms[0], &state->candidate_buf_ms[1],
++                (RANGE_FILTER_REACQUIRE_BUF - 1U) * sizeof(state->candidate_buf_ms[0]));
++        n--;
+     }
+-    else
++    state->candidate_buf_mm[n] = candidate_mm;
++    state->candidate_buf_ms[n] = now_ms;
++    n++;
++    state->candidate_buf_count = n;
++    state->candidate_count = n;
++    if (n < evidence)
++        return 0U;
++
++    memcpy(sorted, state->candidate_buf_mm, (size_t)n * sizeof(sorted[0]));
++    for (uint8_t i = 1U; i < n; i++)                  /* insertion sort, n <= 5 */
++    {
++        const int32_t value = sorted[i];
++        uint8_t j = i;
++        while (j > 0U && sorted[j - 1U] > value)
++        {
++            sorted[j] = sorted[j - 1U];
++            j--;
++        }
++        sorted[j] = value;
++    }
++    /* Only the `need` shortest samples may form the group: while a shorter
++     * sample disagrees with them, wait for more evidence. */
++    if ((int64_t)sorted[need - 1U] - (int64_t)sorted[0]
++        > (int64_t)config->reacquire_cluster_mm)
++        return 0U;
++    for (uint8_t k = 0U; k < need; k++)
++        sum += sorted[k];
++    group_mm = (int32_t)(sum / (int64_t)need);
++    if (state->initialized && (float)group_mm > state->distance_mm
++        && (n < RANGE_FILTER_REACQUIRE_BUF
++            || (int64_t)sorted[n - 1U] - (int64_t)sorted[0]
++                > (int64_t)config->reacquire_cluster_mm))
++        return 0U;
++    *start_mm = group_mm;
++    state->candidate_mean_mm = (float)group_mm;
++    return 1U;
++}
++
++/* NLOS escape: an accepted sample keeps the rejected candidates that are
++ * clearly SHORTER than the new state. If the track locked onto an NLOS level,
++ * those line-of-sight samples keep accumulating and win the next
++ * reacquisition instead of being flushed by every biased sample. */
++static void keep_lower_candidates(
++    RangeFilterState_t *state,
++    const RangeFilterConfig_t *config)
++{
++    const float limit = state->distance_mm - (float)config->reacquire_cluster_mm;
++    uint8_t n = 0U;
++
++    for (uint8_t i = 0U; i < state->candidate_buf_count; i++)
+     {
+-        uint16_t next_count = state->candidate_count < UINT16_MAX
+-            ? (uint16_t)(state->candidate_count + 1U)
+-            : UINT16_MAX;
+-        state->candidate_mean_mm +=
+-            ((float)candidate_mm - state->candidate_mean_mm) / (float)next_count;
+-        state->candidate_count = next_count;
++        if ((float)state->candidate_buf_mm[i] >= limit)
++            continue;
++        state->candidate_buf_mm[n] = state->candidate_buf_mm[i];
++        state->candidate_buf_ms[n] = state->candidate_buf_ms[i];
++        n++;
+     }
+-    return state->candidate_count >= config->reacquire_min_samples ? 1U : 0U;
++    state->candidate_buf_count = n;
++    state->candidate_count = n;
+ }
+ #endif
+ 
+@@ -328,32 +418,35 @@ RangeFilterOutput_t RangeFilter_Update(
+     if (invalid_input(input, config))
+     {
+         /* Reacquisition requires consecutive usable measurements. */
+-        state->candidate_count = 0U;
++        clear_candidates(state);
+         increment_u32(&state->physical_reject_count);
+         return output;
+     }
+ 
+     variance = measurement_variance(input->fpp_dbm, config);
+     output.measurement_variance_mm2 = variance;
+-    if (!state->initialized)
+-    {
+-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
+-        increment_u32(&state->accepted_count);
+-        output.median_mm = input->corrected_raw_mm;
+-        output.filtered_mm = input->corrected_raw_mm;
+-        output.decision = RANGE_FILTER_ACCEPTED;
+-        output.publish_valid = 1U;
+-        return output;
+-    }
+-
+-    if ((uint32_t)(input->now_ms - state->last_accepted_ms) > config->stale_reset_ms)
++    if (state->initialized
++        && (uint32_t)(input->now_ms - state->last_accepted_ms) > config->stale_reset_ms)
+     {
+         increment_u32(&state->stale_reset_count);
+         reset_tracking_keep_counters(state);
+-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
++    }
++    if (!state->initialized)
++    {
++        int32_t start_mm = input->corrected_raw_mm;
++#if UWB_RANGE_FILTER_MODE != UWB_RANGE_FILTER_LEGACY_KALMAN
++        /* Boot or gap: the first sample alone is never the new truth. */
++        if (!update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
++                                        input->now_ms, config, &start_mm))
++        {
++            output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
++            return output;
++        }
++#endif
++        initialize_tracking(state, start_mm, input->now_ms, variance, config);
+         increment_u32(&state->reacquire_count);
+-        output.median_mm = input->corrected_raw_mm;
+-        output.filtered_mm = input->corrected_raw_mm;
++        output.median_mm = start_mm;
++        output.filtered_mm = start_mm;
+         output.decision = RANGE_FILTER_REACQUIRED;
+         output.publish_valid = 1U;
+         return output;
+@@ -395,13 +488,20 @@ RangeFilterOutput_t RangeFilter_Update(
+ #if UWB_RANGE_FILTER_MODE == UWB_RANGE_FILTER_CV_KALMAN_V2
+     if (!cv_predict(state, input->now_ms, config))
+     {
++        int32_t start_mm = 0;
+         increment_u32(&state->stale_reset_count);
+         reset_tracking_keep_counters(state);
+-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
+-        increment_u32(&state->reacquire_count);
+-        output.filtered_mm = input->corrected_raw_mm;
+-        output.decision = RANGE_FILTER_REACQUIRED;
+-        output.publish_valid = 1U;
++        output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
++        output.filtered_mm = 0;
++        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
++                                       input->now_ms, config, &start_mm))
++        {
++            initialize_tracking(state, start_mm, input->now_ms, variance, config);
++            increment_u32(&state->reacquire_count);
++            output.filtered_mm = start_mm;
++            output.decision = RANGE_FILTER_REACQUIRED;
++            output.publish_valid = 1U;
++        }
+         return output;
+     }
+ #endif
+@@ -414,10 +514,10 @@ RangeFilterOutput_t RangeFilter_Update(
+         output.innovation_mm = (float)jump;
+         output.filtered_mm = rounded_mm(state->distance_mm);
+         output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
+-        if (update_reacquire_candidate(
+-                state, input->corrected_raw_mm, input->fpp_dbm, config))
++        int32_t reacquired_mm = 0;
++        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
++                                       input->now_ms, config, &reacquired_mm))
+         {
+-            int32_t reacquired_mm = rounded_mm(state->candidate_mean_mm);
+             initialize_tracking(state, reacquired_mm, input->now_ms, variance, config);
+             increment_u32(&state->reacquire_count);
+             output.median_mm = reacquired_mm;
+@@ -448,10 +548,10 @@ RangeFilterOutput_t RangeFilter_Update(
+         increment_u32(&state->nis_reject_count);
+         output.filtered_mm = rounded_mm(state->distance_mm);
+         output.decision = RANGE_FILTER_REJECTED_NIS;
+-        if (update_reacquire_candidate(
+-                state, input->corrected_raw_mm, input->fpp_dbm, config))
++        int32_t reacquired_mm = 0;
++        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
++                                       input->now_ms, config, &reacquired_mm))
+         {
+-            int32_t reacquired_mm = rounded_mm(state->candidate_mean_mm);
+             initialize_tracking(state, reacquired_mm, input->now_ms, variance, config);
+             increment_u32(&state->reacquire_count);
+             output.median_mm = reacquired_mm;
+@@ -474,7 +574,7 @@ RangeFilterOutput_t RangeFilter_Update(
+     commit_median(state, candidate_window, candidate_count, candidate_head);
+     state->last_accepted_ms = input->now_ms;
+     state->reject_streak = 0U;
+-    state->candidate_count = 0U;
++    keep_lower_candidates(state, config);
+     increment_u32(&state->accepted_count);
+     output.filtered_mm = rounded_mm(state->distance_mm);
+     output.decision = RANGE_FILTER_ACCEPTED;
+diff --git a/Firmware/tests/run_host_tests.ps1 b/Firmware/tests/run_host_tests.ps1
+index c240ed3..ca8961e 100644
+--- a/Firmware/tests/run_host_tests.ps1
++++ b/Firmware/tests/run_host_tests.ps1
+@@ -91,6 +91,14 @@ $cTests = @(
+                     'app\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c') }
+     @{ Name = 'test_settings'; Role = 'TAG'; Config = 'Tag'
+        Sources = @('app\uwb_settings.c') }
++    # The C9 range conditioner on its own, once per mode (no Legacy: the
++    # Legacy path lives in tag_ranging.c and test_tag_state covers it).
++    @{ Name = 'test_range_filter_median_gate'; Source = 'test_range_filter'; Role = ''
++       Config = 'Tag_DevKit'; Defines = @('UWB_RANGE_FILTER_MODE=1U')
++       Sources = @('filters\range_filter.c') }
++    @{ Name = 'test_range_filter_cv_kalman'; Source = 'test_range_filter'; Role = ''
++       Config = 'Tag_DevKit'; Defines = @('UWB_RANGE_FILTER_MODE=2U')
++       Sources = @('filters\range_filter.c') }
+     # No role either: the encoders are role independent, and leaving the
+     # executor out of uwb_cmd.c keeps the golden binary free of Zephyr stubs.
+     @{ Name = 'test_telemetry_golden'; Role = ''; Config = 'Tag'
+diff --git a/Firmware/tests/test_range_filter.c b/Firmware/tests/test_range_filter.c
+new file mode 100644
+index 0000000..b1a8260
+--- /dev/null
++++ b/Firmware/tests/test_range_filter.c
+@@ -0,0 +1,203 @@
++/*
++ * Unit tests of the C9 range conditioner (common/src/filters/range_filter.c)
++ * on its own, without the TAG state machine. Built once per mode:
++ *   -DUWB_RANGE_FILTER_MODE=1U  MEDIAN_GATE
++ *   -DUWB_RANGE_FILTER_MODE=2U  CV_KALMAN_V2
++ *
++ * The rules under test are the reacquisition rules: a track starts or
++ * restarts from the SHORTEST group of recent samples that agree (NLOS only
++ * lengthens a range), a group longer than the current track needs more
++ * evidence, rejected line-of-sight samples survive accepted NLOS samples,
++ * and no FPP threshold may keep a weak but usable link from starting.
++ * test_tag_motion.c checks the same rules end to end (reacq_nlos, weak_gap).
++ */
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "range_filter.h"
++
++#if UWB_RANGE_FILTER_MODE == UWB_RANGE_FILTER_LEGACY_KALMAN
++#error "build with -DUWB_RANGE_FILTER_MODE=1U (MEDIAN_GATE) or 2U (CV_KALMAN_V2)"
++#endif
++
++#define STRONG_FPP  (-70.0f)
++#define WEAK_FPP    (-115.0f)   /* below reacquire_min_fpp_dbm (-105) */
++#define LOS_MM      3000
++#define NLOS_MM     3800        /* +0.8 m excess path */
++#define STEP_MS     20U
++#define NLOS_LIMIT  3300        /* a published range above this is NLOS */
++
++static int s_failures;
++
++#define CHECK(cond, what) do {                                              \
++        if (!(cond)) {                                                      \
++            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, (what));         \
++            s_failures++;                                                   \
++        }                                                                   \
++    } while (0)
++
++static RangeFilterState_t s_state;
++static uint32_t s_now_ms;
++static unsigned s_published_nlos;   /* valid outputs above NLOS_LIMIT */
++
++static RangeFilterOutput_t feed_at(int32_t mm, float fpp, uint32_t now_ms)
++{
++    const RangeFilterInput_t in = {
++        .corrected_raw_mm = mm, .fpp_dbm = fpp, .now_ms = now_ms, .radio_status = 0U,
++    };
++    s_now_ms = now_ms;
++    const RangeFilterOutput_t out = RangeFilter_Update(&s_state, &in, &g_range_filter_config);
++    if (out.publish_valid && out.filtered_mm > NLOS_LIMIT)
++        s_published_nlos++;
++    return out;
++}
++
++static RangeFilterOutput_t feed(int32_t mm, float fpp)
++{
++    return feed_at(mm, fpp, s_now_ms + STEP_MS);
++}
++
++static void reset(void)
++{
++    RangeFilter_Init(&s_state);
++    s_now_ms = 1000U;
++    s_published_nlos = 0U;
++}
++
++/* Feed until the track publishes; returns the first published range or -1. */
++static int32_t first_publish(const int32_t *mm, unsigned n, float fpp, unsigned *index)
++{
++    for (unsigned i = 0U; i < n; i++)
++    {
++        const RangeFilterOutput_t out = feed(mm[i], fpp);
++        if (out.publish_valid)
++        {
++            *index = i;
++            return out.filtered_mm;
++        }
++    }
++    return -1;
++}
++
++/* A fresh track waits for reacquire_min_samples + 1 samples and starts from
++ * the mean of the shortest group. */
++static void test_boot_starts_from_group(void)
++{
++    static const int32_t seq[] = { 3010, 2990, 3000, 3004, 2996, 3002 };
++    unsigned index = 0U;
++
++    reset();
++    const int32_t start = first_publish(seq, 6U, STRONG_FPP, &index);
++    CHECK(index == g_range_filter_config.reacquire_min_samples,
++          "first publish after reacquire_min_samples + 1 samples");
++    CHECK(start >= 2990 && start <= 3004, "start is the mean of the shortest group");
++}
++
++/* A weak but usable link (FPP below reacquire_min_fpp_dbm) must still start. */
++static void test_boot_weak_signal(void)
++{
++    static const int32_t seq[] = { 5010, 4990, 5000, 5004, 4996, 5002 };
++    unsigned index = 0U;
++
++    reset();
++    const int32_t start = first_publish(seq, 6U, WEAK_FPP, &index);
++    CHECK(start > 0, "a weak link starts");
++    CHECK(start >= 4990 && start <= 5010, "weak start value");
++}
++
++/* After a gap longer than stale_reset_ms the first samples are NLOS: they
++ * must not become the new track while shorter samples disagree. */
++static void test_gap_nlos_first(void)
++{
++    static const int32_t after_gap[] = { NLOS_MM, NLOS_MM + 10, LOS_MM + 5, LOS_MM, LOS_MM - 5,
++                                         LOS_MM + 3, LOS_MM };
++    unsigned index = 0U;
++
++    reset();
++    for (unsigned i = 0U; i < 12U; i++)
++        (void)feed(LOS_MM + (int32_t)(i % 3U) - 1, STRONG_FPP);
++    s_now_ms += g_range_filter_config.stale_reset_ms + 100U;     /* anchor silent */
++    const int32_t start = first_publish(after_gap, 7U, STRONG_FPP, &index);
++    CHECK(start > 0 && start < NLOS_LIMIT, "restart from the line-of-sight group");
++    CHECK(s_published_nlos == 0U, "no NLOS range published after the gap");
++}
++
++/* While tracking, rejected NLOS samples that agree with each other must not
++ * reacquire the track on the NLOS level after three of them. */
++static void test_longer_group_needs_more_evidence(void)
++{
++    reset();
++    for (unsigned i = 0U; i < 15U; i++)
++        (void)feed(LOS_MM + (int32_t)(i % 3U) - 1, STRONG_FPP);
++    for (unsigned i = 0U; i < 4U; i++)
++        (void)feed(NLOS_MM + (int32_t)i * 5, STRONG_FPP);
++    for (unsigned i = 0U; i < 6U; i++)
++        (void)feed(LOS_MM, STRONG_FPP);
++    CHECK(s_published_nlos == 0U, "a short NLOS burst is never published as valid");
++}
++
++/* The track started on an NLOS level (every sample after boot was NLOS).
++ * Line-of-sight samples, mixed with NLOS ones, must win the track back. */
++static void test_nlos_escape(void)
++{
++    static const int32_t mixed[] = { LOS_MM, LOS_MM + 4, NLOS_MM, LOS_MM - 3, LOS_MM + 1,
++                                     NLOS_MM, LOS_MM, LOS_MM - 2, NLOS_MM, LOS_MM + 2,
++                                     LOS_MM, NLOS_MM, LOS_MM - 1, LOS_MM };
++    RangeFilterOutput_t out;
++
++    reset();
++    for (unsigned i = 0U; i < 6U; i++)
++        (void)feed(NLOS_MM + (int32_t)(i % 3U), STRONG_FPP);
++    for (unsigned i = 0U; i < sizeof(mixed) / sizeof(mixed[0]); i++)
++        out = feed(mixed[i], STRONG_FPP);
++    out = feed(LOS_MM, STRONG_FPP);
++    CHECK(out.publish_valid && out.filtered_mm < NLOS_LIMIT,
++          "line-of-sight samples reacquire the track");
++}
++
++/* An unusable input clears the candidate group: reacquisition needs
++ * consecutive usable samples. */
++static void test_invalid_input_clears_group(void)
++{
++    reset();
++    (void)feed(3000, STRONG_FPP);
++    (void)feed(3004, STRONG_FPP);
++    (void)feed(0, STRONG_FPP);                   /* below min_range_mm */
++    CHECK(s_state.candidate_count == 0U, "invalid input clears the candidates");
++    const RangeFilterOutput_t out = feed(3002, STRONG_FPP);
++    CHECK(!out.publish_valid, "no start from samples before the invalid input");
++}
++
++/* Candidates older than stale_reset_ms do not join a group. */
++static void test_candidates_expire(void)
++{
++    reset();
++    (void)feed(3000, STRONG_FPP);
++    (void)feed(3004, STRONG_FPP);
++    (void)feed(2998, STRONG_FPP);
++    s_now_ms += g_range_filter_config.stale_reset_ms + 1U;
++    const RangeFilterOutput_t out = feed(3002, STRONG_FPP);
++    CHECK(!out.publish_valid, "expired candidates do not complete a group");
++    CHECK(s_state.candidate_count == 1U, "only the new candidate is kept");
++}
++
++int main(void)
++{
++    test_boot_starts_from_group();
++    test_boot_weak_signal();
++    test_gap_nlos_first();
++    test_longer_group_needs_more_evidence();
++    test_nlos_escape();
++    test_invalid_input_clears_group();
++    test_candidates_expire();
++
++    if (s_failures != 0)
++    {
++        printf("range filter tests FAILED (%d)\n", s_failures);
++        return 1;
++    }
++    printf("range filter tests passed (mode %u: boot group, weak start, gap NLOS, "
++           "longer group, NLOS escape, invalid input, expiry)\n",
++           (unsigned)UWB_RANGE_FILTER_MODE);
++    return 0;
++}
+diff --git a/Firmware/tests/test_tag_motion.c b/Firmware/tests/test_tag_motion.c
+index 1ac3e51..cbbf473 100644
+--- a/Firmware/tests/test_tag_motion.c
++++ b/Firmware/tests/test_tag_motion.c
+@@ -195,16 +195,14 @@ static const Scenario k_scenarios[] = {
+       -20.0, 20.0, TS40_MASK - (uint64_t)(1.0e6 * TICKS_PER_US),
+       -62.0, 350.0, 500.0, GATE_MOVE(150.0), NO_BURST },
+     /* Reacquisition must not lock onto NLOS: after the dropout 30% of the
+-     * exchanges carry +0.8 m for 0.3 s. Known issue: the C9 conditioners
+-     * restart from the first sample after a gap and reacquire from any three
+-     * rejected samples that agree, NLOS or not. The NLOS-aware reacquisition
+-     * in Plan/patches/ passes this gate; see
+-     * Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md. */
++     * exchanges carry +0.8 m for 0.3 s. The conditioners restart from the
++     * shortest group of recent samples, never from the first sample after
++     * the gap (test_range_filter.c checks the rules one by one). */
+     { "reacq_nlos", "1.0 m/s, A1 silent 1 s, 30% +0.8 m NLOS for 0.3 s after", 1, 10.0, 2.0,
+       2000.0, 1000.0, 0.0, 1.0, 0.0,  0.0, 800.0,  5.0, 6.0,  -1, -1, 0.0,
+       0.0, 0.0, 0ULL, -62.0, 350.0, 500.0,
+       { 0.85, 150.0, NO_GATE, 0U, 300.0, 10.0 },
+-      6.0, 6.3, 0.30, 1U },
++      6.0, 6.3, 0.30, 0U },
+     { "flight_8",   "8 anchors, figure-8 up to 1.5 m/s, 2% NLOS", 8, 24.0, 3.0,
+       0.0, 0.0, 0.0, 1.0, 0.3,  0.02, 800.0,  -1, -1,  -1, -1, 0.0,
+       -5.0, 8.0, 0ULL, -58.0, 350.0, 500.0,
