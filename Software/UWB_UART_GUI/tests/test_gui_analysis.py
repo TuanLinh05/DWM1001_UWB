@@ -55,13 +55,16 @@ class GuiAnalysisTests(unittest.TestCase):
         self.assertEqual(result.median_fpp_dbm, -75.0)
 
     def test_layout_json_roundtrip_and_legacy_id(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as directory:
-            path = Path(directory) / "layout.json"
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temporary:
+            path = Path(temporary.name)
+        try:
             original = (AnchorPosition(1, 1.0, 2.0, 3.0), AnchorPosition(2, 4.0, 5.0, 6.0), AnchorPosition(3, 7.0, 8.0, 9.0))
             save_layout(path, original)
             self.assertEqual(load_layout(path), original)
             path.write_text(json.dumps({"anchors": [{"id": i, "x": i, "y": 0} for i in range(1, 4)]}), encoding="utf-8")
             self.assertEqual([item.anchor_id for item in load_layout(path)], [1, 2, 3])
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_solver_2d_and_3d(self):
         layout_2d = (

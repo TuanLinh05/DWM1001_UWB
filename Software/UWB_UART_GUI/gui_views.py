@@ -525,7 +525,13 @@ class _LegacyAnalysisPanel(ttk.Frame):
 
 
 class AnalysisPanel(ttk.Frame):
-    """Live 2x2 scientific dashboard for one selected UWB anchor."""
+    """Capture-first 2x2 scientific dashboard for one selected UWB anchor.
+
+    Unlike the compact live graph, this panel deliberately freezes its plots
+    while a capture is running.  A report is calculated only after the target
+    number of usable samples has arrived, which keeps the UART UI responsive
+    and makes every exported figure describe one well-defined measurement.
+    """
 
     SOURCE_LABELS = ("Raw", "Host Filter", "Firmware Filter")
     SOURCE_COLORS = {
@@ -538,14 +544,30 @@ class AnalysisPanel(ttk.Frame):
         super().__init__(parent, padding=7)
         self.anchor_var = tk.StringVar(value="A1")
         self.source_var = tk.StringVar(value="Host Filter")
-        self.window_var = tk.StringVar(value="60 s")
+        # Kept for backwards-compatible programmatic refreshes.  Interactive
+        # captures always use the complete, frozen sample set.
+        self.window_var = tk.StringVar(value="Toàn bộ bộ nhớ")
+        self.target_var = tk.StringVar(value="3000")
         self.reference_var = tk.StringVar(value="")
         self.include_diagnostic_var = tk.BooleanVar(value=True)
         self.exclude_fallback_var = tk.BooleanVar(value=True)
-        self.summary_var = tk.StringVar(value="Chưa có telemetry trong cửa sổ phân tích.")
-        self.note_var = tk.StringVar(
-            value="Allan deviation và PSD dùng để đánh giá nhiễu khi TAG/anchor đứng yên."
+        self.capture_status_var = tk.StringVar(
+            value="Sẵn sàng. Chọn cấu hình rồi bấm “Bắt đầu lấy mẫu”."
         )
+        self.summary_var = tk.StringVar(value="Chưa có phiên đo để phân tích.")
+        self.note_var = tk.StringVar(
+            value="Trong lúc lấy mẫu, giữ TAG/anchor đứng yên. Đồ thị chỉ xuất hiện sau khi phiên đo kết thúc."
+        )
+        self.capture_active = False
+        self.capture_points: list[TelemetryPoint] = []
+        self.capture_target = 3000
+        self.capture_accepted = 0
+        self.capture_rejected = 0
+        self.capture_anchor_id = 1
+        self.capture_source = "Host Filter"
+        self.capture_started_s: float | None = None
+        self.capture_finished_s: float | None = None
+        self._capture_lock_widgets: list[tuple[tk.Widget, str]] = []
         self.cached_points: list[TelemetryPoint] = []
         self.latest_metrics: list[AnchorMetrics] = []
         self.signal_stats: SignalStatistics | None = None
@@ -560,49 +582,78 @@ class AnalysisPanel(ttk.Frame):
         self._build()
 
     def _build(self) -> None:
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill=tk.X, pady=(0, 4))
+        capture_box = ttk.LabelFrame(self, text="Phiên lấy mẫu", padding=(8, 6))
+        capture_box.pack(fill=tk.X, pady=(0, 5))
+        toolbar = ttk.Frame(capture_box)
+        toolbar.pack(fill=tk.X)
         ttk.Label(toolbar, text="Anchor:").pack(side=tk.LEFT)
-        anchor = ttk.Combobox(
+        self.anchor_combo = ttk.Combobox(
             toolbar, textvariable=self.anchor_var,
             values=tuple(f"A{i}" for i in range(1, MAX_ANCHORS + 1)),
             state="readonly", width=5,
         )
-        anchor.pack(side=tk.LEFT, padx=(4, 10))
+        self.anchor_combo.pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(toolbar, text="Nguồn phân tích:").pack(side=tk.LEFT)
-        source = ttk.Combobox(
+        self.source_combo = ttk.Combobox(
             toolbar, textvariable=self.source_var, values=self.SOURCE_LABELS,
             state="readonly", width=15,
         )
-        source.pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(toolbar, text="Cửa sổ:").pack(side=tk.LEFT)
-        window = ttk.Combobox(
-            toolbar, textvariable=self.window_var,
-            values=("15 s", "60 s", "5 min", "Toàn bộ bộ nhớ"),
-            state="readonly", width=14,
-        )
-        window.pack(side=tk.LEFT, padx=(4, 10))
+        self.source_combo.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(toolbar, text="Số mẫu:").pack(side=tk.LEFT)
+        self.target_entry = ttk.Entry(toolbar, textvariable=self.target_var, width=8)
+        self.target_entry.pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(toolbar, text="Khoảng cách chuẩn (m):").pack(side=tk.LEFT)
-        reference = ttk.Entry(toolbar, textvariable=self.reference_var, width=9)
-        reference.pack(side=tk.LEFT, padx=(4, 4))
+        self.reference_entry = ttk.Entry(toolbar, textvariable=self.reference_var, width=9)
+        self.reference_entry.pack(side=tk.LEFT, padx=(4, 4))
         ttk.Label(toolbar, text="để trống = so với trung bình", foreground="#64748b").pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Xuất tổng hợp CSV", command=self.export_csv).pack(side=tk.RIGHT)
 
-        options = ttk.Frame(self)
-        options.pack(fill=tk.X, pady=(0, 3))
-        ttk.Checkbutton(
+        self.start_button = ttk.Button(
+            toolbar, text="Bắt đầu lấy mẫu", command=self.toggle_capture
+        )
+        self.start_button.pack(side=tk.RIGHT, padx=(6, 0))
+        self.cancel_button = ttk.Button(
+            toolbar, text="Hủy", command=self.cancel_capture, state=tk.DISABLED
+        )
+        self.cancel_button.pack(side=tk.RIGHT)
+
+        options = ttk.Frame(capture_box)
+        options.pack(fill=tk.X, pady=(6, 0))
+        self.diagnostic_check = ttk.Checkbutton(
             options, text="Gồm raw/host diagnostic CAL_MISSING",
             variable=self.include_diagnostic_var, command=self._controls_changed,
-        ).pack(side=tk.LEFT)
-        ttk.Checkbutton(
+        )
+        self.diagnostic_check.pack(side=tk.LEFT)
+        self.fallback_check = ttk.Checkbutton(
             options, text="Tách DS fallback khỏi thống kê chính",
             variable=self.exclude_fallback_var, command=self._controls_changed,
-        ).pack(side=tk.LEFT, padx=(16, 0))
-        ttk.Button(options, text="Tính lại", command=self._controls_changed).pack(side=tk.RIGHT)
-        for widget in (anchor, source, window):
+        )
+        self.fallback_check.pack(side=tk.LEFT, padx=(16, 0))
+        self.save_plot_button = ttk.Button(
+            options, text="Lưu biểu đồ…", command=self.save_plot, state=tk.DISABLED
+        )
+        self.save_plot_button.pack(side=tk.RIGHT)
+        self.export_button = ttk.Button(
+            options, text="Lưu dữ liệu CSV…", command=self.export_csv, state=tk.DISABLED
+        )
+        self.export_button.pack(side=tk.RIGHT, padx=(0, 5))
+        for widget in (self.anchor_combo, self.source_combo):
             widget.bind("<<ComboboxSelected>>", lambda _event: self._controls_changed())
-        reference.bind("<Return>", lambda _event: self._controls_changed())
-        reference.bind("<FocusOut>", lambda _event: self._controls_changed())
+        self.reference_entry.bind("<Return>", lambda _event: self._controls_changed())
+        self.reference_entry.bind("<FocusOut>", lambda _event: self._controls_changed())
+        self._capture_lock_widgets = [
+            (self.anchor_combo, "readonly"),
+            (self.source_combo, "readonly"),
+            (self.target_entry, "normal"),
+            (self.reference_entry, "normal"),
+            (self.diagnostic_check, "normal"),
+            (self.fallback_check, "normal"),
+        ]
+
+        self.capture_progress = ttk.Progressbar(capture_box, maximum=100.0)
+        self.capture_progress.pack(fill=tk.X, pady=(6, 2))
+        ttk.Label(
+            capture_box, textvariable=self.capture_status_var, style="Value.TLabel",
+        ).pack(fill=tk.X)
 
         ttk.Label(
             self, textvariable=self.summary_var, style="Value.TLabel", wraplength=1220,
@@ -627,7 +678,7 @@ class AnalysisPanel(ttk.Frame):
             "anchor", "availability", "fresh", "mean", "noise", "range",
             "delta", "fpp", "age", "problems",
         )
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=4)
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=2)
         headings = {
             "anchor": "Anchor", "availability": "Availability", "fresh": "Fresh / total",
             "mean": "Host mean", "noise": "Noise σ", "range": "P05–P95",
@@ -647,6 +698,177 @@ class AnalysisPanel(ttk.Frame):
         self.tree.tag_configure("bad", background="#fde8e7")
         self.tree.pack(fill=tk.X, pady=(5, 0))
 
+    def _set_capture_controls_locked(self, locked: bool) -> None:
+        for widget, normal_state in self._capture_lock_widgets:
+            widget.configure(state=tk.DISABLED if locked else normal_state)
+        self.cancel_button.configure(state=tk.NORMAL if locked else tk.DISABLED)
+
+    def toggle_capture(self) -> None:
+        if self.capture_active:
+            self.finish_capture(automatic=False)
+            return
+        self.start_capture()
+
+    def start_capture(self) -> None:
+        try:
+            target = int(self.target_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Phân tích", "Số mẫu phải là một số nguyên.", parent=self)
+            return
+        _reference, reference_ok = self._reference_mm()
+        if not reference_ok:
+            messagebox.showerror(
+                "Phân tích",
+                "Khoảng cách chuẩn phải là số dương theo mét hoặc để trống.",
+                parent=self,
+            )
+            return
+        if not 100 <= target <= 50000:
+            messagebox.showerror(
+                "Phân tích", "Hãy chọn từ 100 đến 50.000 mẫu.", parent=self
+            )
+            return
+
+        self.capture_target = target
+        self.capture_anchor_id = int(self.anchor_var.get()[1:])
+        self.capture_source = self.source_var.get()
+        self.capture_points = []
+        self.capture_accepted = 0
+        self.capture_rejected = 0
+        self.capture_started_s = time.monotonic()
+        self.capture_finished_s = None
+        self.capture_active = True
+        self._histories = {}
+        self._frame_times = ()
+        self.cached_points = []
+        self.latest_metrics = []
+        self.signal_stats = None
+        self._series = {}
+        self._histogram = histogram_density(())
+        self._allan = ((), ())
+        self._psd = {}
+        self._regular = None
+        self.start_button.configure(text="Dừng và phân tích")
+        self.save_plot_button.configure(state=tk.DISABLED)
+        self.export_button.configure(state=tk.DISABLED)
+        self._set_capture_controls_locked(True)
+        self.capture_progress.configure(value=0.0)
+        self.capture_status_var.set(
+            f"Đang lấy mẫu A{self.capture_anchor_id} · {self.capture_source} · 0/{target}"
+        )
+        self.summary_var.set("Đang thu dữ liệu; đồ thị được giữ trống cho tới khi kết thúc.")
+        self.note_var.set(
+            "Không di chuyển TAG/anchor và không đổi cấu hình radio trong suốt phiên đo."
+        )
+        self.tree.delete(*self.tree.get_children())
+        self.draw()
+
+    def ingest(self, sample: AnchorSample, point: TelemetryPoint) -> None:
+        """Collect one selected-anchor point while a batch capture is active."""
+        if not self.capture_active or sample.anchor_id != self.capture_anchor_id:
+            return
+        self.capture_points.append(point)
+        value = self._point_value(point, self.capture_source)
+        if value is not None and self._point_usable(point, self.capture_source):
+            self.capture_accepted += 1
+        else:
+            self.capture_rejected += 1
+        self.capture_progress.configure(
+            value=min(100.0, self.capture_accepted * 100.0 / self.capture_target)
+        )
+        self.capture_status_var.set(
+            f"Đang lấy mẫu A{self.capture_anchor_id} · "
+            f"{self.capture_accepted}/{self.capture_target} hợp lệ · "
+            f"loại {self.capture_rejected}"
+        )
+        if self.capture_accepted >= self.capture_target:
+            self.finish_capture(automatic=True)
+
+    def finish_capture(self, *, automatic: bool) -> None:
+        if not self.capture_active:
+            return
+        self.capture_active = False
+        self.capture_finished_s = time.monotonic()
+        self.start_button.configure(text="Bắt đầu lấy mẫu")
+        self._set_capture_controls_locked(False)
+        if self.capture_accepted < 20:
+            self.capture_status_var.set(
+                f"Phiên đo dừng với {self.capture_accepted} mẫu hợp lệ; cần ít nhất 20 mẫu."
+            )
+            self.capture_progress.configure(value=0.0)
+            self.note_var.set("Hãy bắt đầu lại một phiên đo dài hơn.")
+            return
+
+        anchor_id = self.capture_anchor_id
+        self.anchor_var.set(f"A{anchor_id}")
+        self.source_var.set(self.capture_source)
+        histories = {
+            item: tuple(self.capture_points) if item == anchor_id else ()
+            for item in range(1, MAX_ANCHORS + 1)
+        }
+        frame_times = tuple(point.received_s for point in self.capture_points)
+        self.refresh(histories, frame_times)
+        self.capture_progress.configure(value=100.0)
+        duration = (
+            self.capture_finished_s - self.capture_started_s
+            if self.capture_started_s is not None else 0.0
+        )
+        completion = "Đã đủ mẫu" if automatic else "Đã dừng sớm"
+        self.capture_status_var.set(
+            f"{completion} · {self.capture_accepted} mẫu hợp lệ · "
+            f"loại {self.capture_rejected} · {duration:.1f} s"
+        )
+        self.note_var.set(
+            "Phiên đo đã đóng băng. Có thể đổi nguồn/chuẩn để tính lại, rồi lưu PNG/PDF/SVG hoặc CSV."
+        )
+        self.save_plot_button.configure(state=tk.NORMAL)
+        self.export_button.configure(state=tk.NORMAL)
+
+    def cancel_capture(self, message: str = "Đã hủy phiên lấy mẫu.") -> None:
+        if not self.capture_active:
+            return
+        self.capture_active = False
+        self.capture_points = []
+        self.capture_accepted = 0
+        self.capture_rejected = 0
+        self.capture_started_s = None
+        self.start_button.configure(text="Bắt đầu lấy mẫu")
+        self._set_capture_controls_locked(False)
+        self.capture_progress.configure(value=0.0)
+        self.capture_status_var.set(message)
+        self.summary_var.set("Chưa có phiên đo để phân tích.")
+        self.note_var.set(
+            "Trong lúc lấy mẫu, giữ TAG/anchor đứng yên. Đồ thị chỉ xuất hiện sau khi phiên đo kết thúc."
+        )
+
+    def reset_session(self) -> None:
+        if self.capture_active:
+            self.cancel_capture("Kết nối thay đổi; phiên lấy mẫu đã được hủy.")
+        self.capture_points = []
+        self.capture_accepted = 0
+        self.capture_rejected = 0
+        self.capture_started_s = None
+        self.capture_finished_s = None
+        self._histories = {}
+        self._frame_times = ()
+        self.cached_points = []
+        self.latest_metrics = []
+        self.signal_stats = None
+        self._series = {}
+        self._histogram = histogram_density(())
+        self._allan = ((), ())
+        self._psd = {}
+        self._regular = None
+        self.capture_progress.configure(value=0.0)
+        self.capture_status_var.set(
+            "Sẵn sàng. Chọn cấu hình rồi bấm “Bắt đầu lấy mẫu”."
+        )
+        self.summary_var.set("Chưa có phiên đo để phân tích.")
+        self.save_plot_button.configure(state=tk.DISABLED)
+        self.export_button.configure(state=tk.DISABLED)
+        self.tree.delete(*self.tree.get_children())
+        self.draw()
+
     def _make_plot_canvas(self, parent: ttk.Frame, row: int, column: int) -> tk.Canvas:
         canvas = tk.Canvas(
             parent, background="#ffffff", highlightthickness=1,
@@ -662,6 +884,8 @@ class AnalysisPanel(ttk.Frame):
         )
 
     def _controls_changed(self) -> None:
+        if self.capture_active:
+            return
         self._recompute(force_science=True)
 
     def refresh(
@@ -816,6 +1040,8 @@ class AnalysisPanel(ttk.Frame):
     def _update_table(self) -> None:
         self.tree.delete(*self.tree.get_children())
         for metrics in self.latest_metrics:
+            if metrics.total_frames == 0:
+                continue
             host = metrics.host
             delta95 = metrics.filter_delta.p95
             tag = (
@@ -843,7 +1069,7 @@ class AnalysisPanel(ttk.Frame):
             )
             return
         reference_text = (
-            "trung bình của cửa sổ" if stats.reference_is_mean
+            "trung bình của phiên đo" if stats.reference_is_mean
             else f"chuẩn {stats.reference_mm / 1000.0:.4f} m"
         )
         allan_tau, allan_values = self._allan
@@ -1176,12 +1402,212 @@ class AnalysisPanel(ttk.Frame):
             self._draw_curve(self.psd_canvas, transform, frequencies, density, color, 1.3)
         self._legend(self.psd_canvas, tuple((source, color) for source, _x, _y, color in series))
 
-    def export_csv(self) -> None:
-        if not self.latest_metrics:
+    def _build_export_figure(self):
+        """Build a publication-style Matplotlib figure for the frozen capture."""
+        try:
+            from matplotlib.figure import Figure
+        except ImportError as exc:  # pragma: no cover - depends on field PC setup
+            raise RuntimeError(
+                "Thiếu Matplotlib. Hãy chạy: py -3.12 -m pip install -r requirements.txt"
+            ) from exc
+
+        if self.signal_stats is None:
+            raise RuntimeError("Chưa có phiên đo hợp lệ để vẽ.")
+
+        stats = self.signal_stats
+        figure = Figure(figsize=(16, 10), dpi=120, facecolor="#f8fafc")
+        axes = figure.subplots(2, 2)
+        figure.subplots_adjust(
+            left=0.065, right=0.96, bottom=0.075, top=0.90, wspace=0.28, hspace=0.34
+        )
+        figure.suptitle(
+            f"Báo cáo UWB · {self.anchor_var.get()} · {self.source_var.get()} · "
+            f"N={stats.sample_count}",
+            fontsize=18, fontweight="bold", color="#0f172a",
+        )
+        for axis in axes.flat:
+            axis.set_facecolor("#ffffff")
+            axis.grid(True, color="#cbd5e1", alpha=0.55, linewidth=0.7)
+            axis.tick_params(colors="#334155", labelsize=9)
+            axis.spines["top"].set_visible(False)
+            axis.spines["right"].set_visible(False)
+
+        # Time series: keep all three distance sources and place FPP on the
+        # secondary axis, matching the information density of the reference.
+        time_axis = axes[0, 0]
+        first_time = min(
+            (times[0] for times, values in self._series.values() if times and values),
+            default=0.0,
+        )
+        for source in self.SOURCE_LABELS:
+            times_s, values = self._series.get(source, ((), ()))
+            if not times_s or not values:
+                continue
+            selected_source = source == self.source_var.get()
+            pairs = self._decimate_pairs(
+                [value - first_time for value in times_s],
+                [value / 1000.0 for value in values],
+                12000,
+            )
+            time_axis.plot(
+                [item[0] for item in pairs], [item[1] for item in pairs],
+                color="#111827" if selected_source else self.SOURCE_COLORS[source],
+                linewidth=1.65 if selected_source else 0.8,
+                alpha=1.0 if selected_source else 0.28, label=source,
+            )
+        if self._series.get(self.source_var.get(), ((), ()))[0]:
+            selected_times = self._series[self.source_var.get()][0]
+            x_min = selected_times[0] - first_time
+            x_max = selected_times[-1] - first_time
+            time_axis.plot(
+                (x_min, x_max),
+                (stats.reference_mm / 1000.0, stats.reference_mm / 1000.0),
+                color="#15803d", linewidth=1.4, linestyle=(0, (7, 5)),
+                label="Trung bình/chuẩn",
+            )
+        time_axis.set_title(
+            f"Chuỗi thời gian · trung vị {stats.median_mm / 1000.0:.4f} m",
+            fontsize=13, color="#0f172a",
+        )
+        time_axis.set_xlabel("Thời gian (s)")
+        time_axis.set_ylabel("Khoảng cách (m)")
+        time_axis.legend(loc="best", fontsize=8, framealpha=0.92)
+
+        fpp_points = [
+            point for point in self.cached_points
+            if point.fpp_dbm is not None and math.isfinite(point.fpp_dbm)
+            and not (self.exclude_fallback_var.get() and point.status & STATUS_DS_FALLBACK)
+        ]
+        if len(fpp_points) >= 2:
+            fpp_times = self._unwrap_times(fpp_points)
+            fpp_axis = time_axis.twinx()
+            pairs = self._decimate_pairs(
+                [value - first_time for value in fpp_times],
+                [float(point.fpp_dbm) for point in fpp_points if point.fpp_dbm is not None],
+                6000,
+            )
+            fpp_axis.plot(
+                [item[0] for item in pairs], [item[1] for item in pairs],
+                color="#ea580c", linewidth=0.9, alpha=0.72, label="FPP",
+            )
+            fpp_axis.set_ylabel("FPP (dBm)", color="#c2410c")
+            fpp_axis.tick_params(axis="y", colors="#c2410c", labelsize=8)
+            fpp_axis.spines["top"].set_visible(False)
+
+        histogram_axis = axes[0, 1]
+        histogram = self._histogram
+        histogram_axis.bar(
+            histogram.centers, histogram.density,
+            width=histogram.bin_width * 0.88, color="#ecfeff",
+            edgecolor="#06b6d4", linewidth=1.0, label="Dữ liệu",
+        )
+        histogram_axis.plot(
+            histogram.centers, histogram.normal_density,
+            color="#ef4444", linewidth=2.0, label="Chuẩn khớp",
+        )
+        histogram_axis.set_title(
+            f"Phân bố · σ {stats.stddev_mm:.1f} mm", fontsize=13, color="#0f172a"
+        )
+        histogram_axis.set_xlabel(
+            "Độ lệch so với trung bình (mm)"
+            if stats.reference_is_mean else "Sai số so với khoảng cách chuẩn (mm)"
+        )
+        histogram_axis.set_ylabel("Mật độ")
+        histogram_axis.legend(loc="best", fontsize=8)
+
+        allan_axis = axes[1, 0]
+        taus, deviations = self._allan
+        positive = [(tau, value) for tau, value in zip(taus, deviations) if tau > 0 and value > 0]
+        if positive:
+            plot_taus = [item[0] for item in positive]
+            plot_deviations = [item[1] for item in positive]
+            allan_axis.loglog(
+                plot_taus, plot_deviations, "o-", color="#0891b2",
+                markerfacecolor="#0f172a", markersize=4, linewidth=1.2,
+                label="Allan deviation",
+            )
+            ideal = [
+                plot_deviations[0] * math.sqrt(plot_taus[0] / tau)
+                for tau in plot_taus
+            ]
+            allan_axis.loglog(
+                plot_taus, ideal, color="#f97316", linewidth=1.1,
+                linestyle=(0, (7, 5)), label="Nhiễu trắng lý tưởng",
+            )
+            minimum_index = min(range(len(plot_deviations)), key=plot_deviations.__getitem__)
+            allan_title = (
+                f"Lấy trung bình bao lâu? · min {plot_deviations[minimum_index]:.2f} mm "
+                f"@ {plot_taus[minimum_index]:.2f} s"
+            )
+        else:
+            allan_title = "Lấy trung bình bao lâu? · chưa đủ dữ liệu liên tục"
+        allan_axis.set_title(allan_title, fontsize=13, color="#0f172a")
+        allan_axis.set_xlabel("τ (s)")
+        allan_axis.set_ylabel("σ Allan (mm)")
+        if positive:
+            allan_axis.legend(loc="best", fontsize=8)
+
+        psd_axis = axes[1, 1]
+        plotted_psd = False
+        for source in self.SOURCE_LABELS:
+            frequencies, density = self._psd.get(source, ((), ()))
+            pairs = [
+                (frequency, value) for frequency, value in zip(frequencies, density)
+                if frequency > 0.0 and value > 0.0
+            ]
+            if not pairs:
+                continue
+            plotted_psd = True
+            psd_axis.loglog(
+                [item[0] for item in pairs], [item[1] for item in pairs],
+                color=self.SOURCE_COLORS[source], linewidth=1.15, label=source,
+            )
+        psd_axis.set_title("Mật độ phổ Welch · kiểm tra bộ lọc", fontsize=13, color="#0f172a")
+        psd_axis.set_xlabel("Tần số (Hz)")
+        psd_axis.set_ylabel("PSD (mm²/Hz)")
+        if plotted_psd:
+            psd_axis.legend(loc="best", fontsize=8)
+
+        figure.text(
+            0.5, 0.025,
+            f"mean {stats.mean_mm / 1000.0:.4f} m  ·  RMSE {stats.rmse_mm:.1f} mm  ·  "
+            f"P95 |e| {stats.p95_abs_error_mm:.1f} mm  ·  "
+            f"drift {_fmt(stats.drift_mm_per_min, 1, ' mm/min')}",
+            ha="center", color="#334155", fontsize=10,
+        )
+        return figure
+
+    def save_plot(self) -> None:
+        if self.signal_stats is None:
+            messagebox.showwarning("Phân tích", "Chưa có phiên đo để lưu.", parent=self)
             return
         filename = filedialog.asksaveasfilename(
-            parent=self, title="Xuất UWB analysis", defaultextension=".csv",
-            initialfile=time.strftime("uwb_analysis_%Y%m%d_%H%M%S.csv"),
+            parent=self, title="Lưu biểu đồ phân tích",
+            defaultextension=".png",
+            initialfile=time.strftime(
+                f"uwb_analysis_{self.anchor_var.get()}_%Y%m%d_%H%M%S.png"
+            ),
+            filetypes=(("PNG", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")),
+        )
+        if not filename:
+            return
+        try:
+            figure = self._build_export_figure()
+            figure.savefig(filename, dpi=180, facecolor=figure.get_facecolor())
+        except (OSError, RuntimeError, ValueError) as exc:
+            messagebox.showerror("Phân tích", f"Không lưu được biểu đồ:\n{exc}", parent=self)
+            return
+        messagebox.showinfo("Phân tích", f"Đã lưu biểu đồ:\n{filename}", parent=self)
+
+    def export_csv(self) -> None:
+        if not self.capture_points or self.signal_stats is None:
+            messagebox.showwarning("Phân tích", "Chưa có phiên đo để lưu.", parent=self)
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self, title="Lưu dữ liệu phiên phân tích", defaultextension=".csv",
+            initialfile=time.strftime(
+                f"uwb_analysis_{self.anchor_var.get()}_%Y%m%d_%H%M%S.csv"
+            ),
             filetypes=(("CSV", "*.csv"),),
         )
         if not filename:
@@ -1190,26 +1616,41 @@ class AnalysisPanel(ttk.Frame):
             with Path(filename).open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.writer(handle)
                 writer.writerow((
-                    "anchor", "availability_pct", "fresh", "total_frames",
-                    "host_mean_mm", "host_std_mm", "host_p05_mm", "host_p95_mm",
-                    "filter_delta_p95_mm", "fpp_median_dbm", "age_p95_ms",
-                    "invalid", "stale", "missing",
+                    "sample", "elapsed_s", "tag_time_ms", "anchor", "accepted",
+                    "valid", "status_hex", "age_ms", "raw_mm", "firmware_mm",
+                    "host_mm", "fpp_dbm",
                 ))
-                for item in self.latest_metrics:
+                unwrapped = self._unwrap_times(self.capture_points)
+                start = unwrapped[0] if unwrapped else 0.0
+                for index, (timestamp, point) in enumerate(
+                    zip(unwrapped, self.capture_points), start=1
+                ):
+                    value = self._point_value(point, self.source_var.get())
+                    accepted = value is not None and self._point_usable(
+                        point, self.source_var.get()
+                    )
                     writer.writerow((
-                        item.anchor_id, item.availability_pct, item.fresh, item.total_frames,
-                        item.host.mean, item.host.stddev, item.host.p05, item.host.p95,
-                        item.filter_delta.p95, item.fpp.median, item.age.p95,
-                        item.invalid, item.stale, item.missing,
+                        index, f"{timestamp - start:.6f}", point.tag_time_ms,
+                        self.capture_anchor_id, int(accepted), int(point.valid),
+                        f"0x{point.status:02X}", point.age_ms, point.raw_mm,
+                        "" if point.firmware_mm is None else point.firmware_mm,
+                        "" if point.host_mm is None else point.host_mm,
+                        "" if point.fpp_dbm is None else f"{point.fpp_dbm:.2f}",
                     ))
-                if self.signal_stats is not None:
-                    writer.writerow(())
-                    writer.writerow(("selected_anchor", self.anchor_var.get()))
-                    writer.writerow(("selected_source", self.source_var.get()))
-                    for key, value in asdict(self.signal_stats).items():
-                        writer.writerow((key, value))
+                writer.writerow(())
+                writer.writerow(("metric", "value"))
+                writer.writerow(("selected_anchor", self.anchor_var.get()))
+                writer.writerow(("selected_source", self.source_var.get()))
+                writer.writerow(("capture_source", self.capture_source))
+                writer.writerow(("target_samples", self.capture_target))
+                writer.writerow(("accepted_samples", self.capture_accepted))
+                writer.writerow(("rejected_samples", self.capture_rejected))
+                for key, value in asdict(self.signal_stats).items():
+                    writer.writerow((key, value))
         except OSError as exc:
-            messagebox.showerror("Analysis", f"Không xuất được CSV:\n{exc}", parent=self)
+            messagebox.showerror("Phân tích", f"Không lưu được CSV:\n{exc}", parent=self)
+            return
+        messagebox.showinfo("Phân tích", f"Đã lưu dữ liệu:\n{filename}", parent=self)
 
 
 class CalibrationPanel(ttk.Frame):

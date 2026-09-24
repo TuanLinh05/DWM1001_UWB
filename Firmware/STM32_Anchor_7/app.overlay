@@ -1,0 +1,79 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	aliases {
+		status-led = &uwb_status_led;
+		watchdog0 = &iwdg;
+		uwb-exton = &uwb_exton;
+		uwb-wake = &uwb_wake;
+	};
+
+	uwb_status_leds {
+		compatible = "gpio-leds";
+		uwb_status_led: status_led {
+			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
+			label = "STM32F103 blue board LED";
+		};
+	};
+
+	/* Passive input lines from the original STM32 board configuration. */
+	uwb_aux_inputs {
+		compatible = "gpio-keys";
+		uwb_exton: exton {
+			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;
+			label = "DW1000 EXTON input";
+		};
+		uwb_wake: wake {
+			gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
+			label = "DW1000 WAKE input";
+		};
+	};
+};
+
+/* Existing CubeIDE project uses internal HSI/2 * 16 = 64 MHz. */
+&clk_hse { status = "disabled"; };
+&clk_hsi { status = "okay"; };
+&pll {
+	mul = <16>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <64000000>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <2>;
+	apb2-prescaler = <1>;
+};
+
+/* PA2 = DW1000 reset, PA3 = IRQ; no board UART may claim these pins. */
+&usart1 { status = "disabled"; };
+&usart2 { status = "disabled"; };
+&usart3 { status = "disabled"; };
+&i2c1 { status = "disabled"; };
+&i2c2 { status = "disabled"; };
+&spi2 { status = "disabled"; };
+&adc1 { status = "disabled"; };
+&timers1 { status = "disabled"; };
+&usb { status = "disabled"; };
+
+&clk_lsi { status = "okay"; };
+&iwdg { status = "okay"; };
+
+&spi1 {
+	/* PA4 is software CS, so omit the board's AF NSS pinctrl entry. */
+	pinctrl-0 = <&spi1_sck_master_pa5 &spi1_miso_master_pa6
+		     &spi1_mosi_master_pa7>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	ieee802154: dw1000@0 {
+		compatible = "decawave,dw1000";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		int-gpios = <&gpioa 3 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpioa 2 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+};

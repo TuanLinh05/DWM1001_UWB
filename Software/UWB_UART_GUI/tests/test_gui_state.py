@@ -2,14 +2,22 @@
 import sys
 import time
 import math
+import queue
 from pathlib import Path
 import tkinter as tk
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from uwb_uart_gui import UwbGui, application_directory
-from telemetry_protocol import AnchorSample, RangeMessage, STATUS_CALIBRATION_MISSING
+from uwb_uart_gui import SerialWorker, UwbGui, application_directory
+from telemetry_protocol import (
+    AnchorSample,
+    CMD_PING,
+    RangeMessage,
+    STATUS_CALIBRATION_MISSING,
+    TYPE_CMD,
+    TelemetryStreamParser,
+)
 from gui_analysis import (
     DEFAULT_LAYOUT_4,
     TelemetryPoint,
@@ -34,6 +42,26 @@ class GuiStateTests(unittest.TestCase):
             "uwb_uart_gui.sys.executable", str(executable)
         ):
             self.assertEqual(application_directory(), executable.parent)
+
+    def test_serial_worker_encodes_bidirectional_ping(self):
+        class CaptureSerial:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+                return len(data)
+
+        worker = SerialWorker("COM_TEST", 115200, queue.Queue())
+        capture = CaptureSerial()
+        worker._serial = capture
+        worker._command_sequence = 40
+
+        self.assertEqual(worker._send_command(CMD_PING), 41)
+        frame = TelemetryStreamParser().feed(capture.writes[0])[0]
+        self.assertEqual(frame.type, TYPE_CMD)
+        self.assertEqual(frame.sequence, 41)
+        self.assertEqual(frame.payload, bytes((CMD_PING,)))
 
     def test_stale_and_reboot(self):
         root = tk.Tk()
@@ -72,6 +100,24 @@ class GuiStateTests(unittest.TestCase):
             self.assertTrue(app.graph.find_withtag("firmware_series"))
             app._clear_graph_history()
             self.assertEqual(len(app.history[1]), 0)
+        finally:
+            self.close_app(root)
+
+    def test_secondary_telemetry_panel_starts_collapsed(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = UwbGui(root)
+            self.assertEqual(app.telemetry_details.winfo_manager(), "")
+            self.assertEqual(app.record_button.winfo_manager(), "pack")
+            self.assertEqual(app.details_button.cget("text"), "Hiện chi tiết ▾")
+
+            app._toggle_telemetry_details()
+            self.assertEqual(app.telemetry_details.winfo_manager(), "pack")
+            self.assertEqual(app.details_button.cget("text"), "Ẩn chi tiết ▴")
+
+            app._toggle_telemetry_details()
+            self.assertEqual(app.telemetry_details.winfo_manager(), "")
         finally:
             self.close_app(root)
 
@@ -136,6 +182,36 @@ class GuiStateTests(unittest.TestCase):
             self.assertEqual(a1.observed, 20)
             self.assertEqual(a1.invalid, 20)
             self.assertEqual(a1.missing, 0)
+        finally:
+            self.close_app(root)
+
+    def test_analysis_waits_for_explicit_batch_capture(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = UwbGui(root)
+            for sequence in range(1, 21):
+                sample = AnchorSample(1, True, 0, 5, 2000 + sequence % 5, 2000, -7800)
+                app._record_history(RangeMessage(sequence, sequence * 20, (sample,)))
+            self.assertIsNone(app.analysis_panel.signal_stats)
+
+            app.analysis_panel.target_var.set("100")
+            app.analysis_panel.start_capture()
+            self.assertTrue(app.analysis_panel.capture_active)
+            for sequence in range(21, 120):
+                sample = AnchorSample(1, True, 0, 5, 2000 + sequence % 7, 2001, -7800)
+                app._record_history(RangeMessage(sequence, sequence * 20, (sample,)))
+            self.assertTrue(app.analysis_panel.capture_active)
+            self.assertIsNone(app.analysis_panel.signal_stats)
+
+            sequence = 120
+            sample = AnchorSample(1, True, 0, 5, 2000 + sequence % 7, 2001, -7800)
+            app._record_history(RangeMessage(sequence, sequence * 20, (sample,)))
+            self.assertFalse(app.analysis_panel.capture_active)
+            self.assertIsNotNone(app.analysis_panel.signal_stats)
+            self.assertEqual(app.analysis_panel.signal_stats.sample_count, 100)
+            self.assertEqual(str(app.analysis_panel.save_plot_button["state"]), "normal")
+            self.assertIn("Đã đủ mẫu", app.analysis_panel.capture_status_var.get())
         finally:
             self.close_app(root)
 

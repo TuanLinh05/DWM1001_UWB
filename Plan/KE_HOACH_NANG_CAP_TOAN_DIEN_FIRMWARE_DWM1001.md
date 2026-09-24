@@ -25,6 +25,7 @@
 5. [Phát hiện kỹ thuật trong mã nguồn](#5-phát-hiện-kỹ-thuật-trong-mã-nguồn)
 6. [Nguyên tắc nâng cấp](#6-nguyên-tắc-nâng-cấp)
 7. [Lộ trình chi tiết GĐ0–GĐ6](#7-lộ-trình-chi-tiết)
+7A. [Trạng thái triển khai (2026-09-20)](#7a-trạng-thái-triển-khai-2026-09-20)
 8. [Đặc tả giao thức đề xuất](#8-đặc-tả-giao-thức-đề-xuất)
 9. [Chiến lược kiểm thử](#9-chiến-lược-kiểm-thử)
 10. [Rủi ro tổng hợp](#10-rủi-ro-tổng-hợp)
@@ -189,7 +190,10 @@ Bản được đánh giá: `Plan/KE_HOACH_NANG_CAP_FIRMWARE_DW1001.md` (2026-09
 
 ### 5.1 Trạng thái F1–F10 (review 2026-09-15)
 
-Đã kiểm lại trên mã hiện tại: **chưa mục nào được sửa**.
+Đã kiểm lại trên mã hiện tại (thời điểm viết kế hoạch): **chưa mục nào được sửa**.
+
+> **Cập nhật 2026-09-20:** nhánh `feature/firmware-upgrade-v2` đã xử lý F1–F10;
+> trạng thái từng mục xem §7A. Phần mô tả dưới đây giữ nguyên để truy vết.
 
 - **F1**: `select_poll_anchor()` vẫn quét từ `first_idx` tăng dần (`tag_ranging.c:1791–1809`), còn `anchor_should_poll()` chỉ cho 1 probe mỗi chu kỳ (`:1771–1789`), nên anchor cuối danh sách có thể không bao giờ được probe.
 - **F2**: `fatal_blink()` vẫn feed watchdog vô hạn (`Firmware/Tag/src/main.c:59–66`, `Firmware/Anchor_1/src/main.c:57–64`).
@@ -378,6 +382,96 @@ Kết quả: 4 anchor ≈ 12–16 ms (vừa 20 ms); **8 anchor ≈ 25–33 ms (k
 | 6.5 | Multi-PHY | Chỉ khi môi trường cần tầm xa | Profile compile-time; mỗi profile một bộ calibration riêng; hằng số A của FPP theo PRF (113,77 cho PRF16; 121,74 cho PRF64). |
 | 6.6 | TDoA3 | Khi cần nhiều hơn 1 drone, hoặc cần tag thụ động | Lấy khái niệm từ `uwb_tdoa_anchor3.c`: phát ngẫu nhiên, bù clock kiểu bucket, dữ liệu anchor lân cận. TAG chỉ nghe và gửi timestamp thô cho UP; solver TDoA chạy ở UP. |
 | 6.7 | Nhiều TAG ở chế độ TWR | Khi có 2 drone mà chưa làm TDoA | Địa chỉ TAG cấu hình được; chia slot TDMA theo TAG; anchor chấp nhận một danh sách TAG. |
+
+---
+
+## 7A. Trạng thái triển khai (2026-09-20)
+
+Nhánh `feature/firmware-upgrade-v2` đã thực hiện GĐ0–GĐ4 ở mức mã nguồn. Ký hiệu:
+**✅ xong** · **🟡 một phần** (ghi rõ phần thiếu) · **⬜ chưa làm**.
+
+Toàn bộ kiểm chứng mới chỉ trên PC (11/11 project build sạch, 12/12 nhóm host
+test đạt). Mọi hạng mục cần đo trên board thật nằm ở
+`Firmware/HARDWARE_AB_CHECKLIST.md`.
+
+### GĐ0 — Nền móng
+
+| ID | Trạng thái | Ghi chú |
+|---|---|---|
+| 0.1 | 🟡 | Có git baseline + tag; `Firmware/DEPLOYMENT_MANIFEST.md` đã có dạng mẫu nhưng **chưa điền** (phải điền khi flash board thật). |
+| 0.2 | ✅ | `Firmware/common/{include,src,cmake}`; 11 project chỉ còn cấu hình. `test_node_projects.py` khoá cấu trúc này. |
+| 0.3 | 🟡 | Vai trò chọn bằng `uwb_node_setup(TAG/ANCHOR/SNIFFER)` trong CMake, dùng chung một nguồn — **chưa** gộp thành một app `uwb_node/` chọn vai trò bằng Kconfig. |
+| 0.4 | 🟡 | Git hash + cờ dirty nhúng vào firmware, phát trong `DEVICE_INFO` và TLV của anchor; **chưa** có build time và CRC32 cấu hình. |
+| 0.5 | 🟡 | Có mô phỏng thanh ghi DW1000, vector DS-TWR (khớp lý thuyết ±1 mm, kể cả lệch clock +20 ppm), golden frame C↔Python; **chưa** chạy ASan/UBSan. |
+| 0.6 | ✅ | Các file viết lại đã bỏ chú thích lỗi thời. |
+
+### GĐ1 — Độ tin cậy
+
+| ID | Trạng thái | Bằng chứng |
+|---|---|---|
+| 1.1 | ✅ | Probe xoay vòng + tách sức khoẻ RESP/DS — `test_tag_state.c::test_offline_probe_fairness`. |
+| 1.2 | ✅ | `DW1000_ClassifyRx()`, đếm theo từng nguyên nhân, RX soft reset — `test_driver.c`. |
+| 1.3 | ✅ | Frame v2 có `version` + `txn`, loại gói lệch txn — `test_tag_state.c::test_stale_txn_and_rx_error`. |
+| 1.4 | 🟡 | WAIT4RESP + `W4R_TIM = 0` đã bật; **chưa** dùng RX frame-wait timeout phần cứng (RXWTOE/RX_FWTO), timeout vẫn ở phần mềm. |
+| 1.5 | ✅ | `uwb_health`: watchdog theo tiến độ, backoff 20/100/500 ms, ≤ 3 lần reboot rồi giữ fault; `reset_cause` (hwinfo) + `boot_count` (RAM `__noinit`). |
+| 1.6 | 🟡 | `DW_TRXOFF_SETTLE_US` giảm 100 → 10 µs (đổi lại được khi A/B); **chưa** thay bằng cách chờ radio về IDLE. |
+| 1.7 | ✅ | Quy ước dấu rõ nghĩa ở firmware + `--gui-offset` trong `uwb_command.py`, có test hai chiều. |
+| 1.8 | ✅ | `SET_ANCHOR_MASK` chọn tập anchor lúc chạy. |
+
+### GĐ2 — Driver RF và chẩn đoán
+
+| ID | Trạng thái | Ghi chú |
+|---|---|---|
+| 2.1 | 🟡 | Mỗi truy cập thanh ghi = **một** `spi_transceive()`; CS vẫn điều khiển bằng GPIO thủ công (chưa giao cho driver SPI). |
+| 2.2 | ✅ | Đọc PARTID/LOTID/LDOTUNE/VBAT/VTEMP/XTRIM, phát trong `DEVICE_INFO`. |
+| 2.3 | ✅ | LDE NTM = 13, LDOTUNE, XTAL trim — sau cờ `UWB_DW_REFERENCE_TUNING` (mặc định 0). |
+| 2.4 | 🟡 | Firmware hỗ trợ 4 profile TX power + đổi lúc chạy; **phép đo A/B trên phần cứng chưa làm** (checklist bước 5). |
+| 2.5 | ✅ | CIR_PWR, STD_NOISE, FP_INDEX, chỉ báo NLOS, carrier integrator → ppm, nhiệt độ/điện áp đọc ≤ 1 Hz giữa các chu kỳ. **Kèm sửa lỗi RXPACC đọc sai bit ⇒ FPP cũ thấp 12,04 dB.** |
+| 2.6 | ⬜ | Bù bias theo công suất thu: giữ ở host theo ADR-001. |
+| 2.7 | ✅ | `Sniffer_DevKit/` + `tools/uwb_sniffer.py` (timeline, reply delay, thời lượng trao đổi). |
+| 2.8 | 🟡 | `SET_ANT_DELAY` lúc chạy đã có; **chưa** có script host cho phương pháp 3 thiết bị. |
+
+### GĐ3 — Runtime, cấu hình bền, kênh lệnh
+
+| ID | Trạng thái | Ghi chú |
+|---|---|---|
+| 3.1 | ⬜ | Vẫn là vòng lặp thăm dò (`k_busy_wait`), chưa chuyển sang thread + `k_sem`/`k_msgq`. |
+| 3.2 | ✅ | Zephyr settings/NVS trên `storage_partition`: `uwb/radio`, `uwb/cal`, `uwb/tag`, có factory reset. |
+| 3.3 | ⬜ | ID anchor vẫn cố định theo project; chưa có bảng FICR → ID để dùng chung một binary. |
+| 3.4 | ✅ | 15 lệnh + 9 mã kết quả, quy tắc PAUSE/LOCK, ACK `0x13` — `test_cmd_parser.c`, `test_cmd_executor.c`. |
+| 3.5 | ⬜ | Cấu hình anchor qua đường UWB (frame `CFG`) chưa làm. |
+| 3.6 | ✅ | TLV vị trí + build id, POLL có cờ yêu cầu, TAG xuất `ANCHOR_INFO 0x12`. |
+| 3.7 | ⬜ | Chưa có Zephyr shell. |
+
+### GĐ4 — Telemetry v2, thời gian, gateway
+
+| ID | Trạng thái | Ghi chú |
+|---|---|---|
+| 4.1 | ✅ | `RANGE_MEAS 0x10` theo từng phép đo; snapshot `0x01` vẫn giữ. Tự từ chối khi UART < 460800 baud. |
+| 4.2 | ✅ | `DIAG_SYSTEM 0x15` (1 Hz) + `DIAG_ANCHOR 0x11` xoay vòng 2 anchor/s. |
+| 4.3 | ✅ | `boot_id` ngẫu nhiên mỗi lần boot, `tag_time_us` 64-bit, `meas_time_us` lấy trung điểm khe đo. |
+| 4.4 | ✅ | Lệnh `TIME_SYNC` + `uwb_command.py time-sync`. |
+| 4.5 | 🟡 | UART TX ghi theo khối + ring RX, có đếm high-water/overflow; **chưa** chuyển sang async/DMA, baud chưa nằm trong settings. |
+| 4.6 | 🟡 | Mã gateway đã viết lại (event queue, health `0x17`, USB → UART); **chưa biên dịch** vì máy phát triển không có ESP-IDF. |
+| 4.7 | 🟡 | SHADOW tắt mặc định, bộ lọc range dùng `float`; chưa rà soát hết các phép toán `double` còn lại. |
+| 4.8 | ✅ | Giữ nguyên framing `SOF + LEN + CRC16`, `VER = 1`; gói mới có byte schema riêng. |
+
+### GĐ5 — Lịch radio 8 anchor
+
+⬜ Chưa bắt đầu — đúng theo điều kiện khởi động: cần số đo ngân sách thời gian
+thật (checklist bước 2) trước khi quyết định.
+
+### GĐ6 — Mở rộng
+
+⬜ Chưa bắt đầu.
+
+### Việc còn lại theo thứ tự ưu tiên
+
+1. Chạy `Firmware/HARDWARE_AB_CHECKLIST.md` trên board thật (bước 1–3 trước).
+2. Đo ngân sách thời gian 8 anchor bằng sniffer → quyết định có cần GĐ5 không.
+3. Biên dịch và nạp gateway ESP32-C3 (cần ESP-IDF).
+4. Hiệu chuẩn từng anchor rồi mới mở `UWB_DS_CALIBRATED_MASK`.
+5. Các mục 🟡/⬜ ở trên, theo mức cần thiết cho chuyến bay đầu.
 
 ---
 

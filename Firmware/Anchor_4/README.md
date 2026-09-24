@@ -6,6 +6,8 @@ và RAM không cần thiết ở Anchor.
 
 `app.overlay` ánh xạ LED trạng thái sang P0.12 active-high, đồng thời tắt UART0
 và SPI1 ngoài. DW1000 nội bộ vẫn dùng SPI2 cố định của module DWM1001C.
+LED tắt khi chưa có TAG, sáng trong 1 giây sau một exchange DS-TWR hoàn chỉnh;
+nhấp nhanh 150 ms biểu thị radio/platform fault trên board chỉ có một LED.
 
 ## Module
 

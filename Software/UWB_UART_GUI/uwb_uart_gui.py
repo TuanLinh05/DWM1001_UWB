@@ -25,6 +25,8 @@ except ImportError as exc:  # pragma: no cover - exercised only on missing depen
 
 from telemetry_protocol import (
     AnchorSample,
+    DeviceInfoMessage,
+    DiagSystemMessage,
     InfoMessage,
     ParserCounters,
     ProtocolError,
@@ -35,10 +37,16 @@ from telemetry_protocol import (
     TelemetryStreamParser,
     decode_frame,
     encode_frame,
+    fpp_to_legacy_scale_cdbm,
     status_names,
     TYPE_INFO,
     TYPE_RANGE,
     TYPE_STATS,
+    CMD_GET_DEVICE_INFO,
+    CMD_PING,
+    CMD_SET_TELEMETRY,
+    TELEM_FEATURE_RANGE_SNAPSHOT,
+    encode_command,
 )
 from session_recorder import SessionRecorder
 from host_range_filter import HostRangeFilter
@@ -51,6 +59,8 @@ DEFAULT_BAUD = 115200
 UI_POLL_MS = 40
 HISTORY_LENGTH = 300
 ANALYSIS_HISTORY_LENGTH = 15000
+HOST_HEARTBEAT_S = 1.0
+DEVICE_INFO_RETRY_S = 2.0
 
 
 def application_directory() -> Path:
@@ -68,6 +78,17 @@ class SerialWorker(threading.Thread):
         self.events = events
         self.stop_event = threading.Event()
         self._serial: serial.Serial | None = None
+        self._command_sequence = int(time.time_ns()) & 0xFFFFFFFF
+        self._tag_online_reported = False
+        self._snapshot_requested = False
+        self._device_info_seen = False
+
+    def _send_command(self, command_id: int, arguments: bytes = b"") -> int:
+        """Send one command from the reader thread (the sole serial owner)."""
+        assert self._serial is not None
+        self._command_sequence = (self._command_sequence + 1) & 0xFFFFFFFF
+        self._serial.write(encode_command(self._command_sequence, command_id, arguments))
+        return self._command_sequence
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -85,8 +106,20 @@ class SerialWorker(threading.Thread):
             self._serial = serial.Serial(self.port, self.baud, timeout=0.10)
             self._serial.reset_input_buffer()
             self.events.put(("connected", self.port))
+            self._send_command(CMD_GET_DEVICE_INFO)
+            last_ping = 0.0
+            last_device_info_request = time.monotonic()
 
             while not self.stop_event.is_set():
+                now = time.monotonic()
+                if now - last_ping >= HOST_HEARTBEAT_S:
+                    self._send_command(CMD_PING)
+                    last_ping = now
+                if (not self._device_info_seen
+                        and now - last_device_info_request >= DEVICE_INFO_RETRY_S):
+                    self._send_command(CMD_GET_DEVICE_INFO)
+                    last_device_info_request = now
+
                 data = self._serial.read(self._serial.in_waiting or 1)
                 report_bytes += len(data)
                 for frame in parser.feed(data):
@@ -100,6 +133,23 @@ class SerialWorker(threading.Thread):
                         parser.counters.decode_errors += 1
                         self.events.put(("protocol_error", str(exc)))
                     else:
+                        if not self._tag_online_reported:
+                            self._tag_online_reported = True
+                            self.events.put(("tag_online", self.port))
+                        if (isinstance(message, DeviceInfoMessage)
+                                and not self._device_info_seen):
+                            self._device_info_seen = True
+                            if (not self._snapshot_requested
+                                    and not (message.telemetry_features
+                                             & TELEM_FEATURE_RANGE_SNAPSHOT)):
+                                features = (message.telemetry_features
+                                            | TELEM_FEATURE_RANGE_SNAPSHOT)
+                                self._send_command(CMD_SET_TELEMETRY, bytes((features,)))
+                                self._snapshot_requested = True
+                                self.events.put((
+                                    "notice",
+                                    "TAG đang tắt RANGE_SNAPSHOT; GUI đã bật lại cho phiên này.",
+                                ))
                         self.events.put(("message", message))
 
                 now = time.monotonic()
@@ -203,6 +253,10 @@ class UwbGui:
         self.frame_times: deque[float] = deque(maxlen=ANALYSIS_HISTORY_LENGTH)
         self.latest_samples: dict[int, AnchorSample] = {}
         self.host_filters: dict[int, HostRangeFilter] = {}
+        # INFO flags of the connected firmware; tells whether FPP uses the
+        # corrected RXPACC scale (host filter thresholds use the old scale).
+        self.info_flags: int | None = None
+        self.last_diag_log = 0.0
         self.latest_host_filtered: dict[int, int] = {}
         self.anchor_items: dict[int, str] = {}
         self.last_range_sequence: int | None = None
@@ -215,7 +269,6 @@ class UwbGui:
         self.last_session_directory: Path | None = None
         self.recording_error_shown = False
         self.last_advanced_refresh = 0.0
-        self.last_analysis_refresh = 0.0
         self._last_ui_error: str | None = None
 
         self._configure_window()
@@ -243,6 +296,7 @@ class UwbGui:
         style.configure("Heading.TLabel", font=("Segoe UI Semibold", 10))
         style.configure("Value.TLabel", font=("Consolas", 10))
         style.configure("Connected.TLabel", foreground="#147d3f", font=("Segoe UI Semibold", 10))
+        style.configure("Pending.TLabel", foreground="#9a6700", font=("Segoe UI Semibold", 10))
         style.configure("Disconnected.TLabel", foreground="#a33a2b", font=("Segoe UI Semibold", 10))
 
     def _create_variables(self) -> None:
@@ -296,52 +350,88 @@ class UwbGui:
         self.connect_button = ttk.Button(connection, text="Kết nối", command=self.connect)
         self.connect_button.pack(side=tk.RIGHT)
 
-        recording = ttk.LabelFrame(outer, text="Thu và lưu dữ liệu", padding=9)
-        recording.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(recording, text="Thư mục:").pack(side=tk.LEFT)
-        ttk.Entry(recording, textvariable=self.log_directory_var, width=54).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6)
+        # Recording and parser diagnostics are secondary to the plots.  Keep
+        # the actions that matter during a run on one compact row and reveal
+        # the directory/firmware details only when the operator asks for them.
+        telemetry_section = ttk.Frame(outer)
+        telemetry_section.pack(fill=tk.X, pady=(0, 8))
+        telemetry_bar = ttk.Frame(telemetry_section)
+        telemetry_bar.pack(fill=tk.X)
+        ttk.Label(telemetry_bar, text="Thu dữ liệu", style="Heading.TLabel").pack(
+            side=tk.LEFT
         )
-        ttk.Button(recording, text="Chọn...", command=self.choose_log_directory).pack(
-            side=tk.LEFT, padx=(0, 6)
+        self.details_button = ttk.Button(
+            telemetry_bar,
+            text="Hiện chi tiết ▾",
+            command=self._toggle_telemetry_details,
         )
-        ttk.Button(recording, text="Mở thư mục", command=self.open_log_directory).pack(
-            side=tk.LEFT, padx=(0, 10)
-        )
+        self.details_button.pack(side=tk.RIGHT, padx=(6, 0))
         self.record_button = ttk.Button(
-            recording, text="Bắt đầu ghi", command=self.toggle_recording
+            telemetry_bar, text="Bắt đầu ghi", command=self.toggle_recording
         )
         self.record_button.pack(side=tk.RIGHT)
-        recording_state = ttk.Frame(outer)
-        recording_state.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(recording_state, textvariable=self.recording_var).pack(side=tk.LEFT)
         ttk.Label(
-            recording_state, textvariable=self.record_count_var, style="Value.TLabel"
-        ).pack(side=tk.RIGHT)
+            telemetry_bar, textvariable=self.record_count_var, style="Value.TLabel"
+        ).pack(side=tk.RIGHT, padx=12)
+        ttk.Label(
+            telemetry_bar, textvariable=self.recording_var, anchor=tk.W
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
 
-        summary = ttk.Frame(outer)
-        summary.pack(fill=tk.X, pady=(0, 8))
-        for title, variable in (
-            ("Frame hợp lệ", self.frame_var),
+        self.telemetry_details = ttk.Frame(telemetry_section)
+        recording_options = ttk.Frame(self.telemetry_details)
+        recording_options.pack(fill=tk.X, pady=(5, 4))
+        ttk.Label(recording_options, text="Thư mục:").pack(side=tk.LEFT)
+        ttk.Entry(
+            recording_options, textvariable=self.log_directory_var, width=54
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+        ttk.Button(
+            recording_options, text="Chọn...", command=self.choose_log_directory
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            recording_options, text="Mở thư mục", command=self.open_log_directory
+        ).pack(side=tk.LEFT)
+
+        summary = ttk.LabelFrame(
+            self.telemetry_details, text="Luồng UART", padding=(8, 4)
+        )
+        summary.pack(fill=tk.X, pady=(0, 4))
+        metrics = (
+            ("Frame", self.frame_var),
             ("CRC lỗi", self.crc_var),
             ("Byte bỏ qua", self.discarded_var),
-            ("Tốc độ UART", self.rate_var),
+            ("Tốc độ", self.rate_var),
             ("Mất sequence", self.loss_var),
-        ):
-            card = ttk.LabelFrame(summary, text=title, padding=(10, 5))
-            card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-            ttk.Label(card, textvariable=variable, style="Value.TLabel").pack()
+        )
+        for index, (title, variable) in enumerate(metrics):
+            if index:
+                ttk.Separator(summary, orient=tk.VERTICAL).pack(
+                    side=tk.LEFT, fill=tk.Y, padx=12
+                )
+            ttk.Label(summary, text=f"{title}:").pack(side=tk.LEFT)
+            ttk.Label(summary, textvariable=variable, style="Value.TLabel").pack(
+                side=tk.LEFT, padx=(4, 0)
+            )
 
-        info = ttk.LabelFrame(outer, text="Firmware / thống kê", padding=8)
-        info.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(info, textvariable=self.info_var, style="Value.TLabel").pack(anchor=tk.W)
-        ttk.Label(info, textvariable=self.stats_var, style="Value.TLabel").pack(anchor=tk.W, pady=(3, 0))
-        state_line = ttk.Frame(info)
-        state_line.pack(fill=tk.X, pady=(3, 0))
-        ttk.Label(state_line, text="Sequence:").pack(side=tk.LEFT)
-        ttk.Label(state_line, textvariable=self.sequence_var, style="Value.TLabel").pack(side=tk.LEFT, padx=(4, 18))
-        ttk.Label(state_line, text="Tag uptime:").pack(side=tk.LEFT)
-        ttk.Label(state_line, textvariable=self.uptime_var, style="Value.TLabel").pack(side=tk.LEFT, padx=4)
+        info = ttk.LabelFrame(
+            self.telemetry_details, text="Firmware / thống kê", padding=(8, 4)
+        )
+        info.pack(fill=tk.X)
+        ttk.Label(info, textvariable=self.info_var, style="Value.TLabel").pack(
+            anchor=tk.W
+        )
+        info_state_line = ttk.Frame(info)
+        info_state_line.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(
+            info_state_line, textvariable=self.stats_var, style="Value.TLabel"
+        ).pack(side=tk.LEFT)
+        ttk.Label(info_state_line, text="Sequence:").pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Label(
+            info_state_line, textvariable=self.sequence_var, style="Value.TLabel"
+        ).pack(side=tk.LEFT, padx=(4, 16))
+        ttk.Label(info_state_line, text="Tag uptime:").pack(side=tk.LEFT)
+        ttk.Label(
+            info_state_line, textvariable=self.uptime_var, style="Value.TLabel"
+        ).pack(side=tk.LEFT, padx=4)
 
         self.notebook = ttk.Notebook(outer)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -422,6 +512,14 @@ class UwbGui:
         self.notebook.add(self.analysis_panel, text="  Phân tích  ")
         self.notebook.add(self.calibration_panel, text="  Calibration  ")
 
+    def _toggle_telemetry_details(self) -> None:
+        if self.telemetry_details.winfo_manager():
+            self.telemetry_details.pack_forget()
+            self.details_button.configure(text="Hiện chi tiết ▾")
+        else:
+            self.telemetry_details.pack(fill=tk.X)
+            self.details_button.configure(text="Ẩn chi tiết ▴")
+
     def _clear_graph_history(self) -> None:
         anchor_id = int(self.graph_anchor_var.get()[1:])
         self.history.setdefault(anchor_id, deque(maxlen=HISTORY_LENGTH)).clear()
@@ -499,7 +597,7 @@ class UwbGui:
         self._update_parser_counters(ParserCounters(), 0.0)
         self._draw_graph()
         self.map_panel.reset_session()
-        self.analysis_panel.refresh(self.detailed_history, self.frame_times)
+        self.analysis_panel.reset_session()
         self.calibration_panel.discard_capture()
         self.connect_button.configure(text="Ngắt kết nối")
         self.port_combo.configure(state="disabled")
@@ -611,11 +709,19 @@ class UwbGui:
             for _ in range(500):
                 event, payload = self.events.get_nowait()
                 if event == "connected":
-                    self.connection_var.set(f"Đã kết nối: {payload}")
-                    self.connection_label.configure(style="Connected.TLabel")
+                    self.connection_var.set(f"Đã mở {payload}; đang chờ TAG trả lời")
+                    self.connection_label.configure(style="Pending.TLabel")
                     self._append_log(f"OPEN {payload}")
+                elif event == "tag_online":
+                    self.connection_var.set(f"TAG online: {payload}")
+                    self.connection_label.configure(style="Connected.TLabel")
+                elif event == "notice":
+                    self._append_log(str(payload))
                 elif event == "disconnected":
                     latest_range = None
+                    self.analysis_panel.cancel_capture(
+                        "Mất kết nối; phiên lấy mẫu đã được hủy."
+                    )
                     self._mark_stale()
                     self.connection_var.set("Đã ngắt kết nối")
                     self.connection_label.configure(style="Disconnected.TLabel")
@@ -653,6 +759,10 @@ class UwbGui:
                         if self.recorder is not None:
                             self.recorder.record_message(payload)
                         self._update_stats(payload)
+                    elif isinstance(payload, DeviceInfoMessage):
+                        self._update_device_info(payload)
+                    elif isinstance(payload, DiagSystemMessage):
+                        self._update_diag_system(payload)
         except queue.Empty:
             pass
 
@@ -663,9 +773,6 @@ class UwbGui:
             if now - self.last_advanced_refresh >= 0.20:
                 self.map_panel.update_data(self.latest_samples, self.latest_host_filtered)
                 self.last_advanced_refresh = now
-            if now - self.last_analysis_refresh >= 0.50:
-                self.analysis_panel.refresh(self.detailed_history, self.frame_times)
-                self.last_analysis_refresh = now
         if (self.worker is not None and self.last_range_received is not None
                 and time.monotonic() - self.last_range_received > 1.0):
             self._mark_stale()
@@ -700,7 +807,34 @@ class UwbGui:
         self.discarded_var.set(str(counters.discarded_bytes))
         self.rate_var.set(f"{byte_rate:,.0f} B/s")
 
+    def _update_device_info(self, message: DeviceInfoMessage) -> None:
+        dirty = "+dirty" if message.git_dirty else ""
+        self._append_log(
+            f"DEVICE git={message.git_hash:08x}{dirty} cfg={message.build_config_hash:08x} "
+            f"cal_profile={message.calibration_profile_id:08x} proto=v{message.frame_version} "
+            f"boot={message.boot_count} txpwr=0x{message.tx_power_register:08X} "
+            f"ant={message.tx_antenna_delay}/{message.rx_antenna_delay} "
+            f"xtal_otp=0x{message.otp_xtal_trim:02X} baud={message.uart_baud}"
+        )
+
+    def _update_diag_system(self, message: DiagSystemMessage) -> None:
+        now = time.monotonic()
+        problems = (message.fault_hold or message.spi_errors or message.cycle_overruns
+                    or message.config_mismatches or message.uart_tx_overflow)
+        if not problems and now - self.last_diag_log < 10.0:
+            return
+        self.last_diag_log = now
+        temp = "-" if message.temperature_c is None else f"{message.temperature_c:.1f}C"
+        self._append_log(
+            f"DIAG cycle={message.cycle_us}us max={message.cycle_max_us}us "
+            f"overrun={message.cycle_overruns} recover={message.radio_recoveries} "
+            f"spi_err={message.spi_errors} cfg_mismatch={message.config_mismatches} "
+            f"rx_lde={message.rx_errors.get('lde', 0)} temp={temp} "
+            f"fault_hold={int(message.fault_hold)} locked={int(message.locked)}"
+        )
+
     def _update_info(self, message: InfoMessage) -> None:
+        self.info_flags = message.flags
         mode = "DS-TWR" if message.ranging_mode else "SS-TWR"
         self.info_var.set(
             f"Schema {message.schema} | {mode} | anchors={message.anchor_count} | "
@@ -741,6 +875,9 @@ class UwbGui:
                 self.frame_times.clear()
                 self.host_filters.clear()
                 self.map_panel.reset_session()
+                self.analysis_panel.cancel_capture(
+                    "TAG đã reset; phiên lấy mẫu đã được hủy để không trộn hai phiên."
+                )
         self.last_range_sequence = message.sequence
         self.range_frame_count += 1
         self.loss_var.set(str(self.sequence_loss))
@@ -754,7 +891,11 @@ class UwbGui:
             if sample.valid or diagnostic_range:
                 host_value = self.host_filters.setdefault(
                     sample.anchor_id, HostRangeFilter()
-                ).update(sample.raw_mm, sample.fpp_cdbm, message.time_ms)
+                ).update(
+                    sample.raw_mm,
+                    fpp_to_legacy_scale_cdbm(sample.fpp_cdbm, self.info_flags),
+                    message.time_ms,
+                )
                 host_filtered[sample.anchor_id] = host_value
                 self.history.setdefault(sample.anchor_id, deque(maxlen=HISTORY_LENGTH)).append(
                     (sample.raw_mm, sample.filtered_mm if sample.valid else None, host_value)
@@ -774,6 +915,7 @@ class UwbGui:
             self.detailed_history.setdefault(
                 sample.anchor_id, deque(maxlen=ANALYSIS_HISTORY_LENGTH)
             ).append(point)
+            self.analysis_panel.ingest(sample, point)
             self.calibration_panel.ingest(sample, point)
         self.latest_host_filtered = host_filtered
         self.latest_samples = {sample.anchor_id: sample for sample in message.samples}

@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DWM1001-DEV Tag: Build, flash & debug via on-board J-Link",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "jlink",
+      "device": "nRF52832_xxAA",
+      "interface": "swd",
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      },
+      "preLaunchTask": "DWM1001-DEV: Build Sniffer",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/zephyr/zephyr.elf",
+      "runToEntryPoint": "main",
+      "serverpath": "${config:dwm1001.jlinkGdbServerPath}",
+      "gdbPath": "${config:dwm1001.gdbPath}"
+    }
+  ]
+}

@@ -42,8 +42,10 @@ bộ vùng nội dung của tab. Có thể chọn A1..A8 và xóa riêng lịch 
 
 ### Phân tích
 
-Chọn anchor, nguồn Raw/Host Filter/Firmware Filter và cửa sổ 15 giây, 60 giây,
-5 phút hoặc toàn bộ bộ nhớ. Dashboard khoa học 2 x 2 hiển thị:
+Tab này dùng **phiên lấy mẫu**, không còn cập nhật đồ thị realtime. Chọn anchor,
+nguồn Raw/Host Filter/Firmware Filter, nhập số mẫu (mặc định 3.000) và nhấn
+**Bắt đầu lấy mẫu**. GUI chỉ cập nhật thanh tiến độ; khi đủ số mẫu hợp lệ, phiên
+đo tự đóng băng rồi mới tính và vẽ dashboard khoa học 2 x 2:
 
 - chuỗi thời gian của cả ba nguồn, đường mean/reference và FPP trên trục phải;
 - histogram mật độ với đường phân bố chuẩn khớp;
@@ -53,17 +55,24 @@ Chọn anchor, nguồn Raw/Host Filter/Firmware Filter và cửa sổ 15 giây, 
 Có thể nhập khoảng cách chuẩn theo mét. Khi có chuẩn, GUI báo bias, RMSE và
 P95 sai số tuyệt đối; khi để trống, histogram được ghi đúng là độ lệch so với
 trung bình. Dòng tổng hợp còn hiển thị số mẫu, tần số mẫu, thời lượng, sigma,
-drift, Allan minimum, số gap và số frame DS fallback. Bảng A1..A8 bên dưới
-hiển thị:
+drift, Allan minimum, số gap và số frame DS fallback. Dòng chất lượng của anchor
+được capture bên dưới hiển thị:
 
 - availability với điều kiện `valid` và `age <= 200 ms`;
 - fresh/total, mean, noise sigma, P05-P95;
 - filter delta P95, FPP median, age P95;
 - số mẫu invalid/stale/missing.
 
-Có thể xuất bảng tổng hợp và các thống kê của tín hiệu đang chọn thành CSV ngay
-trong tab. Mặc định DS fallback được tách khỏi thống kê chính; dữ liệu raw/host
-`CAL_MISSING` vẫn có thể bật để phục vụ calibration.
+Có thể dừng sớm và phân tích khi đã có ít nhất 20 mẫu. Nút **Lưu biểu đồ…** tạo
+ảnh PNG độ phân giải cao (hoặc PDF/SVG) theo đúng bố cục 2 x 2; nút **Lưu dữ
+liệu CSV…** lưu từng mẫu raw/firmware/host/FPP cùng toàn bộ thống kê của phiên.
+Mặc định DS fallback được tách khỏi thống kê chính; dữ liệu raw/host
+`CAL_MISSING` vẫn có thể bật để phục vụ calibration. Nếu TAG reset hoặc mất kết
+nối giữa chừng, capture bị hủy để tránh trộn dữ liệu từ hai phiên.
+
+Phân tích nặng chỉ chạy một lần sau khi capture kết thúc; tab không tính lại theo
+nhịp telemetry 50 Hz. Nhờ vậy có thể thu tới 50.000 mẫu mà không làm đồ thị nhấp
+nháy hoặc liên tục thay đổi ý nghĩa thống kê trong khi đang đo.
 
 Allan deviation và PSD chỉ có ý nghĩa đánh giá nhiễu cảm biến khi TAG và anchor
 đứng yên. Cả Raw/Firmware/Host dùng timestamp của frame TAG để giữ cùng một
@@ -111,7 +120,7 @@ Firmware Tag phát UART0 **115200, 8N1**, packet binary:
 | Tag DWM1001C | Đích |
 |---|---|
 | UART_TX, nRF P0.05 | RX của USB-UART 3.3 V hoặc ESP32-C3 GPIO20 |
-| UART_RX, nRF P0.11 | TX của USB-UART hoặc ESP32-C3 GPIO21 (chưa bắt buộc) |
+| UART_RX, nRF P0.11 | TX của USB-UART hoặc ESP32-C3 GPIO21 (bắt buộc để nhận heartbeat/lệnh GUI) |
 | GND | GND chung |
 
 Không đưa mức TTL 5 V vào DWM1001C.
@@ -138,9 +147,16 @@ py -3.12 -m pip install -r requirements.txt
 ```
 
 Nhấn **Làm mới**, chọn đúng COM không phải `Standard Serial over Bluetooth`, giữ
-baud 115200 và nhấn **Kết nối**.
+baud 115200 và nhấn **Kết nối**. Dòng vàng "đã mở COM; đang chờ TAG" chỉ xác
+nhận cổng serial. Dòng xanh "TAG online" xuất hiện sau khi nhận được frame hợp
+lệ. GUI gửi `PING` mỗi giây; nếu `DEVICE_INFO` cho biết `RANGE_SNAPSHOT` đang
+tắt, GUI bật lại bit này cho phiên chạy hiện tại để đồ thị không bị trống.
 
 ## Thu và lưu dữ liệu
+
+Thanh **Thu dữ liệu** ở đầu cửa sổ mặc định được thu gọn để dành chiều cao cho
+các bảng và đồ thị. Nút ghi, trạng thái và số mẫu luôn hiển thị; nhấn **Hiện chi
+tiết** khi cần đổi thư mục hoặc xem thống kê UART/firmware.
 
 Sau khi UART đã kết nối, chọn thư mục rồi nhấn **Bắt đầu ghi**. Khi hoàn tất,
 nhấn **Dừng và lưu**. Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
