@@ -11,6 +11,50 @@ nghiệm thu trên board thật.
 
 ---
 
+## 0. Cập nhật 2026-09-24: bộ lọc range của TAG DevKit
+
+Mục này là ngoại lệ có chủ đích với nguyên tắc "mặc định giữ nguyên hành vi cũ":
+**hành vi của TAG DevKit thay đổi**. Lý do và số liệu nằm trong
+`Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md`.
+
+**Tóm tắt lý do.** Test chuyển động cho thấy bộ lọc Legacy (median-3 + Kalman
+tĩnh) khi TAG di chuyển 0,5–2 m/s:
+
+- trễ 0,75–2,9 s;
+- chỉ 13–19 % range được đánh dấu hợp lệ.
+
+**Thay đổi:**
+
+- `Tag_DevKit/include/uwb_app_config.h`: bộ lọc chuyển sang **MEDIAN_GATE** (`UWB_RANGE_FILTER_MODE = 1U`). Có `#ifndef` để build A/B vẫn chọn lại được Legacy (`-DUWB_RANGE_FILTER_MODE=0U`) hoặc CV (`2U`).
+- `common/src/filters/range_filter.c`: tái bắt khoá có nhận biết NLOS, dùng cho MEDIAN_GATE và CV_KALMAN_V2. Cụ thể:
+  - track bắt đầu lại từ nhóm mẫu **ngắn nhất** gần đây, không từ mẫu đầu tiên sau khi mất tín hiệu;
+  - nhóm dài hơn track (hình dạng của NLOS) phải có đủ 5 mẫu khớp nhau;
+  - mẫu LOS bị loại được giữ lại qua các mẫu NLOS được chấp nhận;
+  - cổng FPP chỉ áp khi đang bám, nên liên kết yếu vẫn khởi động được.
+- Tác dụng phụ đã biết: range hợp lệ đầu tiên sau khi bật máy hoặc sau khi mất tín hiệu đến chậm hơn khoảng 60–80 ms (4 mẫu thay vì 1).
+
+**Không đổi:**
+
+- anchor A1–A8: chỉ khác git hash nhúng trong image;
+- project `Tag` (PCB riêng): vẫn Legacy;
+- PHY, TX power, giao thức, calibration (vẫn fail-closed).
+
+**Test:**
+
+- `tests/test_range_filter.c` (mới): 7 quy tắc tái bắt khoá, chạy ở mode 1 và 2.
+- `tests/test_tag_motion.c`: 14 kịch bản chuyển động, có `--seeds N`.
+- `run_host_tests.ps1`:
+  - 16 bước test C/Python của firmware đạt, gateway parser cũng đạt;
+  - bước mặc định (MEDIAN_GATE) đạt 14/14 kịch bản, kể cả khi chạy 20 seed;
+  - Legacy chỉ còn chạy để khảo sát (`--report`).
+- Build Zephyr: 10 image, 0 cảnh báo.
+
+**Nạp:** chỉ cần nạp lại TAG DevKit. Chưa thử trên phần cứng. Trước khi bay,
+làm hai bài T9 và T10 trong báo cáo: di chuyển có ground truth, và che chắn
+NLOS.
+
+---
+
 ## 1. Thứ tự flash bắt buộc
 
 Khung tin trên không trung lên **v2** (có version + transaction id). Anchor v2

@@ -91,6 +91,14 @@ $cTests = @(
                     'app\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c') }
     @{ Name = 'test_settings'; Role = 'TAG'; Config = 'Tag'
        Sources = @('app\uwb_settings.c') }
+    # The C9 range conditioner on its own, once per mode (no Legacy: the
+    # Legacy path lives in tag_ranging.c and test_tag_state covers it).
+    @{ Name = 'test_range_filter_median_gate'; Source = 'test_range_filter'; Role = ''
+       Config = 'Tag_DevKit'; Defines = @('UWB_RANGE_FILTER_MODE=1U')
+       Sources = @('filters\range_filter.c') }
+    @{ Name = 'test_range_filter_cv_kalman'; Source = 'test_range_filter'; Role = ''
+       Config = 'Tag_DevKit'; Defines = @('UWB_RANGE_FILTER_MODE=2U')
+       Sources = @('filters\range_filter.c') }
     # No role either: the encoders are role independent, and leaving the
     # executor out of uwb_cmd.c keeps the golden binary free of Zephyr stubs.
     @{ Name = 'test_telemetry_golden'; Role = ''; Config = 'Tag'
@@ -99,16 +107,16 @@ $cTests = @(
        Arguments = @((Join-Path $outputDirectory 'golden.bin')) }
     # Motion: the real TAG pipeline against a radio-channel model (trajectory,
     # drifting 40-bit clocks, NLOS, dropouts, 8-anchor flight), built once per
-    # range conditioner. The build default (Legacy median + static Kalman)
-    # misses the motion gates, so it runs as a characterisation (--report);
-    # the C9 candidates must stay within every gate.
+    # range conditioner. The TAG DevKit default (MEDIAN_GATE) and CV_KALMAN_V2
+    # must stay within every gate. Legacy median + static Kalman misses the
+    # motion gates, so it runs as a characterisation (--report).
     @{ Name = 'test_tag_motion'; Source = 'test_tag_motion'; Role = 'TAG'
        IncludeDir = 'tests\motion_cfg'
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
+    @{ Name = 'test_tag_motion_legacy'; Source = 'test_tag_motion'; Role = 'TAG'
+       IncludeDir = 'tests\motion_cfg'; Defines = @('UWB_RANGE_FILTER_MODE=0U')
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c')
        Arguments = @('--report') }
-    @{ Name = 'test_tag_motion_median_gate'; Source = 'test_tag_motion'; Role = 'TAG'
-       IncludeDir = 'tests\motion_cfg'; Defines = @('UWB_RANGE_FILTER_MODE=1U')
-       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     @{ Name = 'test_tag_motion_cv_kalman'; Source = 'test_tag_motion'; Role = 'TAG'
        IncludeDir = 'tests\motion_cfg'; Defines = @('UWB_RANGE_FILTER_MODE=2U')
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }

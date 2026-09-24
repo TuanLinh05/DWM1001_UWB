@@ -195,16 +195,14 @@ static const Scenario k_scenarios[] = {
       -20.0, 20.0, TS40_MASK - (uint64_t)(1.0e6 * TICKS_PER_US),
       -62.0, 350.0, 500.0, GATE_MOVE(150.0), NO_BURST },
     /* Reacquisition must not lock onto NLOS: after the dropout 30% of the
-     * exchanges carry +0.8 m for 0.3 s. Known issue: the C9 conditioners
-     * restart from the first sample after a gap and reacquire from any three
-     * rejected samples that agree, NLOS or not. The NLOS-aware reacquisition
-     * in Plan/patches/ passes this gate; see
-     * Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md. */
+     * exchanges carry +0.8 m for 0.3 s. The conditioners restart from the
+     * shortest group of recent samples, never from the first sample after
+     * the gap (test_range_filter.c checks the rules one by one). */
     { "reacq_nlos", "1.0 m/s, A1 silent 1 s, 30% +0.8 m NLOS for 0.3 s after", 1, 10.0, 2.0,
       2000.0, 1000.0, 0.0, 1.0, 0.0,  0.0, 800.0,  5.0, 6.0,  -1, -1, 0.0,
       0.0, 0.0, 0ULL, -62.0, 350.0, 500.0,
       { 0.85, 150.0, NO_GATE, 0U, 300.0, 10.0 },
-      6.0, 6.3, 0.30, 1U },
+      6.0, 6.3, 0.30, 0U },
     { "flight_8",   "8 anchors, figure-8 up to 1.5 m/s, 2% NLOS", 8, 24.0, 3.0,
       0.0, 0.0, 0.0, 1.0, 0.3,  0.02, 800.0,  -1, -1,  -1, -1, 0.0,
       -5.0, 8.0, 0ULL, -58.0, 350.0, 500.0,
@@ -795,7 +793,7 @@ static const char *filter_name(void)
 #elif UWB_LEGACY_ADAPTIVE_MODE == UWB_LEGACY_ADAPTIVE_ACTIVE
     return "LEGACY + C9.1 adaptive ACTIVE";
 #else
-    return "LEGACY median-3 + scalar Kalman (build default)";
+    return "LEGACY median-3 + scalar Kalman (UWB_RANGE_FILTER_MODE=0)";
 #endif
 }
 

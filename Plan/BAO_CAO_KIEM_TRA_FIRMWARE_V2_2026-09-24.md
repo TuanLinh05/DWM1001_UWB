@@ -24,6 +24,17 @@
   - `Plan/DANH_GIA_SO_SANH_BITCRAZE_VA_HUONG_GIAM_SAI_SO_2026-09-24.md`: hướng giảm sai số. Báo cáo này dùng lại các mã P1–P11, H1–H7, S1–S4, T1–T8 của tài liệu đó.
   - `Firmware/HARDWARE_AB_CHECKLIST.md`.
 
+> **Cập nhật cùng ngày, sau khi viết báo cáo.** Theo đồng ý của chủ dự án, hai
+> việc sau đã được làm trên nhánh `claude/friendly-mendel-0ay4oi`:
+>
+> - áp bản vá §8.1 (tái bắt khoá có nhận biết NLOS);
+> - chuyển **TAG DevKit** sang `MEDIAN_GATE` (§8.2).
+>
+> Mọi chỗ trong báo cáo ghi "chưa áp", "mặc định LEGACY" hay "known issue" là mô
+> tả trạng thái của `06f72de`, lúc viết báo cáo. Các mục §8.3–§8.14 **chưa làm**.
+> Project `Tag` (PCB riêng) vẫn dùng LEGACY. Chi tiết thay đổi nằm ở mục 0 của
+> `Firmware/CHANGELOG.md`.
+
 ---
 
 ## Mục lục
@@ -1480,8 +1491,8 @@ gcc -std=c11 -Wall -Wextra -Werror -Wshadow -O1 -DUWB_ROLE_TAG -DUWB_RANGE_FILTE
 | `MOTION_TAG_RESP_US` | CPU của TAG từ RESP tới FINAL | `150.0` |
 | `MOTION_TS_NOISE_TICKS` | Nhiễu timestamp: 10,4 cho σ 30 mm; 20,8 cho 60 mm; 34,7 cho 100 mm | `20.8` |
 | `UWB_FILTER_FPP_COMPAT_DB` | Độ bù FPP của bộ lọc | `0.0f` |
-| `MOTION_LEGACY_ADAPTIVE_MODE` | C9.1: 1 = shadow, 2 = active | `2U` |
-| `UWB_C9_2_MOTION_MODE` | C9.2 (cần thêm `-Wno-error=unused-function -Wno-error=unused-variable`) | `2U` |
+| `MOTION_LEGACY_ADAPTIVE_MODE` | C9.1: 1 = shadow, 2 = active (kèm `-DUWB_RANGE_FILTER_MODE=0U`, vì C9.1 chỉ chạy trên đường Legacy) | `2U` |
+| `UWB_C9_2_MOTION_MODE` | C9.2 (kèm `-DUWB_RANGE_FILTER_MODE=0U`, cùng `-Wno-error=unused-function -Wno-error=unused-variable`) | `2U` |
 
 **Áp và kiểm bản vá:**
 
@@ -1589,5 +1600,5 @@ Seed 0, mô hình mặc định: preamble 256, reply 1 200 UUS, σ ≈ 30 mm, FP
 | `Firmware/tests/test_tag_motion.c` | Test chuyển động end-to-end: 14 kịch bản, `--report`, `--seeds N` |
 | `Firmware/tests/motion_cfg/uwb_app_config.h` | Dùng đúng cấu hình TAG DevKit; cho phép bật C9.1 để khảo sát |
 | `Firmware/tests/run_host_tests.ps1` | Hỗ trợ khoá `Source`, `IncludeDir`, `Defines`; thêm 3 bước motion (Legacy chỉ ghi kết quả; MEDIAN_GATE và CV bắt buộc) |
-| `Plan/patches/0001-range-filter-nlos-aware-reacquire.patch` | Bản vá §8.1 kèm unit test. Chưa áp; áp bằng `git apply` khi đã duyệt |
+| `Plan/patches/0001-range-filter-nlos-aware-reacquire.patch` | Bản vá §8.1 kèm unit test. **Đã áp** trên nhánh này; giữ file để đối chiếu, không `git apply` lại |
 | `Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md` | Báo cáo này |

@@ -8,6 +8,8 @@
  * MOTION_LEGACY_ADAPTIVE_MODE instead of editing the production header.
  * Every other conditioner switch (UWB_RANGE_FILTER_MODE, UWB_C9_2_MOTION_MODE,
  * UWB_FILTER_FPP_COMPAT_DB) is already #ifndef-guarded and is passed with -D.
+ * C9.1 and C9.2 are Legacy-path features: build them with
+ * -DUWB_RANGE_FILTER_MODE=0U too, since the DevKit default is MEDIAN_GATE.
  */
 #ifndef MOTION_TEST_APP_CONFIG_H
 #define MOTION_TEST_APP_CONFIG_H

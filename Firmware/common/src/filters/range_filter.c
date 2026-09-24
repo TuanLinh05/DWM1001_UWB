@@ -96,6 +96,13 @@ static void commit_median(
     state->median_head = head;
 }
 
+static void clear_candidates(RangeFilterState_t *state)
+{
+    state->candidate_count = 0U;
+    state->candidate_mean_mm = 0.0f;
+    state->candidate_buf_count = 0U;
+}
+
 static void reset_tracking_keep_counters(RangeFilterState_t *state)
 {
     state->distance_mm = 0.0f;
@@ -109,8 +116,7 @@ static void reset_tracking_keep_counters(RangeFilterState_t *state)
     state->last_predict_ms = 0U;
     state->last_accepted_ms = 0U;
     state->reject_streak = 0U;
-    state->candidate_count = 0U;
-    state->candidate_mean_mm = 0.0f;
+    clear_candidates(state);
     state->initialized = 0U;
 }
 
@@ -170,40 +176,124 @@ static void initialize_tracking(
     state->last_predict_ms = now_ms;
     state->last_accepted_ms = now_ms;
     state->reject_streak = 0U;
-    state->candidate_count = 0U;
-    state->candidate_mean_mm = 0.0f;
+    clear_candidates(state);
     state->initialized = 1U;
 }
 
 #if UWB_RANGE_FILTER_MODE != UWB_RANGE_FILTER_LEGACY_KALMAN
+/*
+ * Reacquisition after boot, a gap or a run of gate rejects. NLOS only
+ * lengthens a range, so the new start is the group of the `need` SHORTEST
+ * recent samples when they agree within reacquire_cluster_mm - not the first
+ * sample after the gap and not the running mean of whatever arrives:
+ *   - without a track (boot, gap) one more sample than `need` must have been
+ *     seen, so an all-NLOS start needs every recent sample to be NLOS;
+ *   - with a track, a group LONGER than the track is what NLOS produces: it
+ *     is accepted only when the buffer is full and every candidate agrees.
+ * While tracking, weak (low-FPP) samples are not candidates. Without a track
+ * every sample is, as before: a gate on FPP there would leave a weak but
+ * usable link without any range at all. Candidates older than
+ * stale_reset_ms expire.
+ */
 static uint8_t update_reacquire_candidate(
     RangeFilterState_t *state,
     int32_t candidate_mm,
     float fpp_dbm,
+    uint32_t now_ms,
+    const RangeFilterConfig_t *config,
+    int32_t *start_mm)
+{
+    int32_t sorted[RANGE_FILTER_REACQUIRE_BUF];
+    uint8_t need = config->reacquire_min_samples;
+    uint8_t evidence;
+    uint8_t n = 0U;
+    int64_t sum = 0;
+    int32_t group_mm;
+
+    if (need < 2U)
+        need = 2U;
+    if (need > RANGE_FILTER_REACQUIRE_BUF - 1U)
+        need = (uint8_t)(RANGE_FILTER_REACQUIRE_BUF - 1U);
+    evidence = state->initialized ? need : (uint8_t)(need + 1U);
+    if (state->initialized && fpp_dbm < config->reacquire_min_fpp_dbm)
+        return 0U;
+
+    /* Keep the unexpired candidates (oldest first), then append this one. */
+    for (uint8_t i = 0U; i < state->candidate_buf_count; i++)
+    {
+        if ((uint32_t)(now_ms - state->candidate_buf_ms[i]) > config->stale_reset_ms)
+            continue;
+        state->candidate_buf_mm[n] = state->candidate_buf_mm[i];
+        state->candidate_buf_ms[n] = state->candidate_buf_ms[i];
+        n++;
+    }
+    if (n == RANGE_FILTER_REACQUIRE_BUF)
+    {
+        memmove(&state->candidate_buf_mm[0], &state->candidate_buf_mm[1],
+                (RANGE_FILTER_REACQUIRE_BUF - 1U) * sizeof(state->candidate_buf_mm[0]));
+        memmove(&state->candidate_buf_ms[0], &state->candidate_buf_ms[1],
+                (RANGE_FILTER_REACQUIRE_BUF - 1U) * sizeof(state->candidate_buf_ms[0]));
+        n--;
+    }
+    state->candidate_buf_mm[n] = candidate_mm;
+    state->candidate_buf_ms[n] = now_ms;
+    n++;
+    state->candidate_buf_count = n;
+    state->candidate_count = n;
+    if (n < evidence)
+        return 0U;
+
+    memcpy(sorted, state->candidate_buf_mm, (size_t)n * sizeof(sorted[0]));
+    for (uint8_t i = 1U; i < n; i++)                  /* insertion sort, n <= 5 */
+    {
+        const int32_t value = sorted[i];
+        uint8_t j = i;
+        while (j > 0U && sorted[j - 1U] > value)
+        {
+            sorted[j] = sorted[j - 1U];
+            j--;
+        }
+        sorted[j] = value;
+    }
+    /* Only the `need` shortest samples may form the group: while a shorter
+     * sample disagrees with them, wait for more evidence. */
+    if ((int64_t)sorted[need - 1U] - (int64_t)sorted[0]
+        > (int64_t)config->reacquire_cluster_mm)
+        return 0U;
+    for (uint8_t k = 0U; k < need; k++)
+        sum += sorted[k];
+    group_mm = (int32_t)(sum / (int64_t)need);
+    if (state->initialized && (float)group_mm > state->distance_mm
+        && (n < RANGE_FILTER_REACQUIRE_BUF
+            || (int64_t)sorted[n - 1U] - (int64_t)sorted[0]
+                > (int64_t)config->reacquire_cluster_mm))
+        return 0U;
+    *start_mm = group_mm;
+    state->candidate_mean_mm = (float)group_mm;
+    return 1U;
+}
+
+/* NLOS escape: an accepted sample keeps the rejected candidates that are
+ * clearly SHORTER than the new state. If the track locked onto an NLOS level,
+ * those line-of-sight samples keep accumulating and win the next
+ * reacquisition instead of being flushed by every biased sample. */
+static void keep_lower_candidates(
+    RangeFilterState_t *state,
     const RangeFilterConfig_t *config)
 {
-    if (fpp_dbm < config->reacquire_min_fpp_dbm)
+    const float limit = state->distance_mm - (float)config->reacquire_cluster_mm;
+    uint8_t n = 0U;
+
+    for (uint8_t i = 0U; i < state->candidate_buf_count; i++)
     {
-        state->candidate_count = 0U;
-        return 0U;
+        if ((float)state->candidate_buf_mm[i] >= limit)
+            continue;
+        state->candidate_buf_mm[n] = state->candidate_buf_mm[i];
+        state->candidate_buf_ms[n] = state->candidate_buf_ms[i];
+        n++;
     }
-    if (state->candidate_count == 0U
-        || fabsf((float)candidate_mm - state->candidate_mean_mm)
-            > (float)config->reacquire_cluster_mm)
-    {
-        state->candidate_mean_mm = (float)candidate_mm;
-        state->candidate_count = 1U;
-    }
-    else
-    {
-        uint16_t next_count = state->candidate_count < UINT16_MAX
-            ? (uint16_t)(state->candidate_count + 1U)
-            : UINT16_MAX;
-        state->candidate_mean_mm +=
-            ((float)candidate_mm - state->candidate_mean_mm) / (float)next_count;
-        state->candidate_count = next_count;
-    }
-    return state->candidate_count >= config->reacquire_min_samples ? 1U : 0U;
+    state->candidate_buf_count = n;
+    state->candidate_count = n;
 }
 #endif
 
@@ -328,32 +418,35 @@ RangeFilterOutput_t RangeFilter_Update(
     if (invalid_input(input, config))
     {
         /* Reacquisition requires consecutive usable measurements. */
-        state->candidate_count = 0U;
+        clear_candidates(state);
         increment_u32(&state->physical_reject_count);
         return output;
     }
 
     variance = measurement_variance(input->fpp_dbm, config);
     output.measurement_variance_mm2 = variance;
-    if (!state->initialized)
-    {
-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
-        increment_u32(&state->accepted_count);
-        output.median_mm = input->corrected_raw_mm;
-        output.filtered_mm = input->corrected_raw_mm;
-        output.decision = RANGE_FILTER_ACCEPTED;
-        output.publish_valid = 1U;
-        return output;
-    }
-
-    if ((uint32_t)(input->now_ms - state->last_accepted_ms) > config->stale_reset_ms)
+    if (state->initialized
+        && (uint32_t)(input->now_ms - state->last_accepted_ms) > config->stale_reset_ms)
     {
         increment_u32(&state->stale_reset_count);
         reset_tracking_keep_counters(state);
-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
+    }
+    if (!state->initialized)
+    {
+        int32_t start_mm = input->corrected_raw_mm;
+#if UWB_RANGE_FILTER_MODE != UWB_RANGE_FILTER_LEGACY_KALMAN
+        /* Boot or gap: the first sample alone is never the new truth. */
+        if (!update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
+                                        input->now_ms, config, &start_mm))
+        {
+            output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
+            return output;
+        }
+#endif
+        initialize_tracking(state, start_mm, input->now_ms, variance, config);
         increment_u32(&state->reacquire_count);
-        output.median_mm = input->corrected_raw_mm;
-        output.filtered_mm = input->corrected_raw_mm;
+        output.median_mm = start_mm;
+        output.filtered_mm = start_mm;
         output.decision = RANGE_FILTER_REACQUIRED;
         output.publish_valid = 1U;
         return output;
@@ -395,13 +488,20 @@ RangeFilterOutput_t RangeFilter_Update(
 #if UWB_RANGE_FILTER_MODE == UWB_RANGE_FILTER_CV_KALMAN_V2
     if (!cv_predict(state, input->now_ms, config))
     {
+        int32_t start_mm = 0;
         increment_u32(&state->stale_reset_count);
         reset_tracking_keep_counters(state);
-        initialize_tracking(state, input->corrected_raw_mm, input->now_ms, variance, config);
-        increment_u32(&state->reacquire_count);
-        output.filtered_mm = input->corrected_raw_mm;
-        output.decision = RANGE_FILTER_REACQUIRED;
-        output.publish_valid = 1U;
+        output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
+        output.filtered_mm = 0;
+        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
+                                       input->now_ms, config, &start_mm))
+        {
+            initialize_tracking(state, start_mm, input->now_ms, variance, config);
+            increment_u32(&state->reacquire_count);
+            output.filtered_mm = start_mm;
+            output.decision = RANGE_FILTER_REACQUIRED;
+            output.publish_valid = 1U;
+        }
         return output;
     }
 #endif
@@ -414,10 +514,10 @@ RangeFilterOutput_t RangeFilter_Update(
         output.innovation_mm = (float)jump;
         output.filtered_mm = rounded_mm(state->distance_mm);
         output.decision = RANGE_FILTER_REJECTED_DYNAMIC;
-        if (update_reacquire_candidate(
-                state, input->corrected_raw_mm, input->fpp_dbm, config))
+        int32_t reacquired_mm = 0;
+        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
+                                       input->now_ms, config, &reacquired_mm))
         {
-            int32_t reacquired_mm = rounded_mm(state->candidate_mean_mm);
             initialize_tracking(state, reacquired_mm, input->now_ms, variance, config);
             increment_u32(&state->reacquire_count);
             output.median_mm = reacquired_mm;
@@ -448,10 +548,10 @@ RangeFilterOutput_t RangeFilter_Update(
         increment_u32(&state->nis_reject_count);
         output.filtered_mm = rounded_mm(state->distance_mm);
         output.decision = RANGE_FILTER_REJECTED_NIS;
-        if (update_reacquire_candidate(
-                state, input->corrected_raw_mm, input->fpp_dbm, config))
+        int32_t reacquired_mm = 0;
+        if (update_reacquire_candidate(state, input->corrected_raw_mm, input->fpp_dbm,
+                                       input->now_ms, config, &reacquired_mm))
         {
-            int32_t reacquired_mm = rounded_mm(state->candidate_mean_mm);
             initialize_tracking(state, reacquired_mm, input->now_ms, variance, config);
             increment_u32(&state->reacquire_count);
             output.median_mm = reacquired_mm;
@@ -474,7 +574,7 @@ RangeFilterOutput_t RangeFilter_Update(
     commit_median(state, candidate_window, candidate_count, candidate_head);
     state->last_accepted_ms = input->now_ms;
     state->reject_streak = 0U;
-    state->candidate_count = 0U;
+    keep_lower_candidates(state, config);
     increment_u32(&state->accepted_count);
     output.filtered_mm = rounded_mm(state->distance_mm);
     output.decision = RANGE_FILTER_ACCEPTED;
