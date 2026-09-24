@@ -10,7 +10,10 @@ DWM1001 UWB GROUND CONTROL - GOI DEMO PORTABLE
 Ban build: 1.2.0 - Windows x64
 
 Tab Phan tich 1.2.0:
+- Chon anchor, nguon, so mau (mac dinh 3000), roi bam Bat dau lay mau.
+- Do thi khong chay realtime; chi ve mot lan sau khi capture du mau.
 - 4 do thi: chuoi thoi gian, histogram, Allan deviation va Welch PSD.
+- Luu bieu do thanh PNG/PDF/SVG, hoac luu tung mau va thong ke thanh CSV.
 - Doc dung timebase TAG 50 Hz cho valid va du lieu diagnostic CAL_MISSING.
 - Loi phan tich duoc ghi log, khong lam dung vong nhan UART cua GUI.
 

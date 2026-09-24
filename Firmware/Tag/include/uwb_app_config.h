@@ -29,11 +29,11 @@
 #define UWB_DS_OFFSET_A7_M 0.0
 #define UWB_DS_OFFSET_A8_M 0.0
 
-/* Keep the former Adaptive Legacy candidate in SHADOW. The 20:55 hardware log
- * showed that its low-Q STATIC state can lag a moving range by more than
- * 200 mm on the present weak-FPP link. CAL_MISSING remains diagnostic-only;
- * choose the production firmware estimator after calibration and hardware A/B. */
-#define UWB_LEGACY_ADAPTIVE_MODE 1U
+/* Adaptive Legacy is OFF: the published range uses the validated Legacy
+ * median + Kalman path, and the host (UP 7000) runs the real estimator.
+ * SHADOW doubled the soft-float filter work in every slot. Set 1U (SHADOW)
+ * or 2U (ACTIVE) only for a controlled A/B. */
+#define UWB_LEGACY_ADAPTIVE_MODE 0U
 
 /* Set to 1 for human-readable CSV, or 0 for the binary packet protocol. */
 #define TELEM_ASCII 0

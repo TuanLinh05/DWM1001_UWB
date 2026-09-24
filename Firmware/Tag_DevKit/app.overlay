@@ -2,6 +2,10 @@
 	aliases {
 		/* D9: green user LED on DWM1001-DEV, active-low (nRF P0.30). */
 		status-led = &led1_green;
+		/* D8 red: radio/platform fault. */
+		fault-led = &led0_red;
+		/* D11 blue: valid host command received (GUI heartbeat). */
+		host-led = &led3_blue;
 	};
 };
 

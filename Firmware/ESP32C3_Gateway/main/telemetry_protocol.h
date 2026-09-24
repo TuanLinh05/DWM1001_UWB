@@ -19,6 +19,9 @@ extern "C" {
 #define UWB_TELEM_TYPE_INFO        0x00U
 #define UWB_TELEM_TYPE_RANGE       0x01U
 #define UWB_TELEM_TYPE_STATS       0x02U
+/* Telemetry v2 types are forwarded unchanged; the gateway only adds its own
+ * health frame. See Firmware/common/include/telemetry_frame.h. */
+#define UWB_TELEM_TYPE_GATEWAY_HEALTH 0x17U
 
 typedef struct {
     uint8_t version;

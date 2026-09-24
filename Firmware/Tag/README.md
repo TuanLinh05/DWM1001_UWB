@@ -22,6 +22,8 @@ tương thích `ESP32C3_Gateway`.
 
 `app.overlay` ánh xạ LED trạng thái sang P0.12 active-high, giữ UART0 cho đường
 DWM1001C -> ESP32-C3 và tắt SPI1 ngoài. DW1000 nội bộ vẫn dùng SPI2 của module.
+LED tắt khi chưa có Anchor, sáng trong 1 giây sau một phép đo UWB thành công;
+nhấp nhanh 150 ms biểu thị radio/platform fault trên board chỉ có một LED.
 
 Firmware cố ý chưa đánh dấu bất kỳ Anchor nào đã calibration. Raw range vẫn được
 gửi để đo, nhưng trường `valid` chỉ được bật sau khi cấu hình offset/antenna delay

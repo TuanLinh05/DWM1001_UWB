@@ -29,6 +29,7 @@ secrets/
 **/build/
 **/build-*/
 **/build_*/
+/Firmware/.deps/
 cmake-build-*/
 .west/
 CMakeCache.txt
@@ -57,6 +58,11 @@ __pycache__/
 venv/
 dist/
 *.egg-info/
+
+# Flashable eight-anchor release images are intentional artifacts.
+!/Firmware/stm32_anchor/dist/
+!/Firmware/stm32_anchor/dist/*.hex
+!/Firmware/anchor_8_dist/*.hex
 
 # Runtime captures, logs and local GUI state
 *.log
@@ -91,3 +97,13 @@ tmp/
 *.bak
 *.swp
 *~
+
+# FreeCAD backup files
+*.FCBak
+
+# AI-generated review/analysis documents
+*_REVIEW_*.md
+*BUILD_VALIDATION*.md
+
+# AI digest ignore
+.aidigestignore

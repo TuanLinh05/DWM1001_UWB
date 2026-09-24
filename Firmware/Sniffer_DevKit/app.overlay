@@ -1,0 +1,22 @@
+/ {
+	aliases {
+		/* D9: green user LED on DWM1001-DEV, active-low (nRF P0.30). */
+		status-led = &led1_green;
+	};
+};
+
+/* SPI1 only reaches the Raspberry Pi header; the sniffer does not use it. */
+&spi1 {
+	status = "disabled";
+};
+
+/*
+ * The sniffer forwards every frame on the air (up to ~1600 frames/s with
+ * eight anchors), far beyond 115200 baud. Use the EasyDMA UARTE at 1 Mbaud;
+ * the DWM1001-DEV J-Link virtual COM port supports it.
+ */
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	current-speed = <1000000>;
+	status = "okay";
+};

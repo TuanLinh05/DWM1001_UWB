@@ -14,7 +14,10 @@
 #define GATEWAY_DWM_READY_GPIO GPIO_NUM_10
 
 #define GATEWAY_UART_RX_BUFFER_SIZE 2048
+#define GATEWAY_UART_TX_BUFFER_SIZE  256   /* host -> TAG commands are short */
+#define GATEWAY_UART_QUEUE_LENGTH     16
 #define GATEWAY_UART_READ_CHUNK      256
+#define GATEWAY_USB_READ_CHUNK        64
 
 /* USB Serial/JTAG is a binary-only output owned by this gateway. A zero wait
  * keeps UART reception responsive; a complete frame is dropped if USB is full. */

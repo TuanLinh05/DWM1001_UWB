@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $firmwareRoot = (Split-Path $projectRoot -Parent)
+# The drive mapping below hides .git from the build; pass the real root for the build ID.
+$env:UWB_REPO_ROOT = Split-Path $firmwareRoot -Parent
 $projectName = Split-Path $projectRoot -Leaf
 $board = 'decawave_dwm1001_dev/nrf52832'
 $drive = 'U:'
