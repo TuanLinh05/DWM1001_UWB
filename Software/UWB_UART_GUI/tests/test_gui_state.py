@@ -3,20 +3,31 @@ import sys
 import time
 import math
 import queue
+from dataclasses import replace
 from pathlib import Path
 import tkinter as tk
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from uwb_uart_gui import SerialWorker, UwbGui, application_directory
+from uwb_uart_gui import DemoWorker, SerialWorker, UwbGui, application_directory
 from telemetry_protocol import (
     AnchorSample,
     CMD_PING,
+    CMD_SET_TELEMETRY,
+    CmdAckMessage,
+    DeviceInfoMessage,
+    MEAS_FLAG_CAL_OK,
+    MEAS_FLAG_FILTER_OK,
+    MEAS_FLAG_RADIO_OK,
+    RangeMeasMessage,
     RangeMessage,
     STATUS_CALIBRATION_MISSING,
     TYPE_CMD,
+    TYPE_DEVICE_INFO,
     TelemetryStreamParser,
+    decode_frame,
+    encode_frame,
 )
 from gui_analysis import (
     DEFAULT_LAYOUT_4,
@@ -29,12 +40,192 @@ from gui_analysis import (
 from gui_views import AnalysisPanel
 
 
+class CaptureSerial:
+    def __init__(self):
+        self.writes = []
+
+    def write(self, data):
+        self.writes.append(data)
+        return len(data)
+
+    def frames(self):
+        parser = TelemetryStreamParser()
+        return [frame for data in self.writes for frame in parser.feed(data)]
+
+
+class FakeWorker:
+    """Stands in for SerialWorker when the GUI asks for a command."""
+
+    def __init__(self):
+        self.requests = []
+
+    def request_command(self, command_id, arguments=b""):
+        self.requests.append((command_id, bytes(arguments)))
+
+    def stop(self):
+        pass
+
+
+def demo_device_info(**fields) -> DeviceInfoMessage:
+    frame = encode_frame(TYPE_DEVICE_INFO, 0, 0, DemoWorker._device_info_payload(0x07))
+    return replace(decode_frame(TelemetryStreamParser().feed(frame)[0]), **fields)
+
+
+MEAS_A2 = RangeMeasMessage(
+    sequence=0, time_ms=0, boot_id=0x1234, meas_seq=0, meas_time_us=0, anchor_id=2, txn=0,
+    mode=0, flags=MEAS_FLAG_RADIO_OK | MEAS_FLAG_CAL_OK | MEAS_FLAG_FILTER_OK, status=0,
+    raw_mm=4210, corrected_mm=4100, filtered_mm=4095, fp_cdbm=-8100, rx_cdbm=-7300,
+    anchor_fp_cdbm=-8200, anchor_rx_cdbm=-7900, std_noise=20, fp_index=0x2000,
+    ci_ppm_x100=150, slot_us=3200,
+)
+
+
 class GuiStateTests(unittest.TestCase):
     @staticmethod
     def close_app(root):
         for callback in root.tk.call('after', 'info'):
             root.after_cancel(callback)
         root.destroy()
+
+    def test_serial_worker_enables_range_meas_only_on_a_fast_uart(self):
+        # (auto enable, TAG UART baud, TAG features) -> features the GUI requests
+        cases = (
+            (True, 1_000_000, 0x05, 0x07),
+            (True, 1_000_000, 0x07, None),
+            (True, 460_800, 0x04, 0x07),
+            (True, 115_200, 0x05, None),
+            (True, 115_200, 0x04, 0x05),
+            (False, 1_000_000, 0x05, None),
+            (False, 1_000_000, 0x04, 0x05),
+        )
+        for auto, baud, features, expected in cases:
+            with self.subTest(auto=auto, baud=baud, features=features):
+                events = queue.Queue()
+                worker = SerialWorker("COM_TEST", 1_000_000, events, auto_enable_meas=auto)
+                capture = CaptureSerial()
+                worker._serial = capture
+                worker._configure_session_telemetry(
+                    demo_device_info(telemetry_features=features, uart_baud=baud))
+                frames = capture.frames()
+                if expected is None:
+                    self.assertEqual(frames, [])
+                    self.assertTrue(events.empty())
+                else:
+                    self.assertEqual([frame.payload for frame in frames],
+                                     [bytes((CMD_SET_TELEMETRY, expected))])
+                    notices = [events.get_nowait()[1] for _ in range(events.qsize())]
+                    self.assertEqual(any("RANGE_MEAS" in text for text in notices),
+                                     bool(expected & ~features & 0x02))
+
+    def test_serial_worker_sends_gui_requests_in_order(self):
+        worker = SerialWorker("COM_TEST", 1_000_000, queue.Queue())
+        capture = CaptureSerial()
+        worker._serial = capture
+        worker.request_command(CMD_SET_TELEMETRY, bytes((0x07,)))
+        worker.request_command(CMD_PING)
+        self.assertEqual(capture.writes, [])          # only the reader thread writes
+        worker._send_requested_commands()
+        frames = capture.frames()
+        self.assertEqual([frame.payload for frame in frames],
+                         [bytes((CMD_SET_TELEMETRY, 0x07)), bytes((CMD_PING,))])
+        self.assertEqual((frames[1].sequence - frames[0].sequence) & 0xFFFFFFFF, 1)
+
+    def test_link_hint_names_both_baud_rates(self):
+        worker = SerialWorker("COM_TEST", 115200, queue.Queue())
+        garbage = worker._link_hint(500)
+        self.assertIn("115200 baud", garbage)
+        self.assertIn("Tag_DevKit chạy 1000000", garbage)
+        self.assertIn("cổng COM", worker._link_hint(0))
+
+    def test_demo_answers_set_telemetry(self):
+        events = queue.Queue()
+        demo = DemoWorker(events)
+        self.assertEqual(demo_device_info().uart_baud, 1_000_000)
+        demo.request_command(CMD_SET_TELEMETRY, bytes((0x05,)))
+        demo._answer_commands(TelemetryStreamParser(), 0)
+        self.assertEqual(demo.features, 0x05)
+        messages = [payload for event, payload in
+                    (events.get_nowait() for _ in range(events.qsize())) if event == "message"]
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], CmdAckMessage)
+        self.assertTrue(messages[0].ok)
+        self.assertEqual(messages[0].data, bytes((0x05,)))
+
+    def test_demo_stream_carries_range_meas(self):
+        events = queue.Queue()
+        demo = DemoWorker(events)
+        demo.start()
+        time.sleep(0.5)
+        demo.stop()
+        demo.join(timeout=2.0)
+        self.assertFalse(demo.is_alive())
+        items = [events.get_nowait() for _ in range(events.qsize())]
+        self.assertFalse([payload for event, payload in items if event == "protocol_error"])
+        messages = [payload for event, payload in items if event == "message"]
+        info = [item for item in messages if isinstance(item, DeviceInfoMessage)]
+        self.assertEqual((info[0].telemetry_features, info[0].uart_baud), (0x07, 1_000_000))
+        meas = [item for item in messages if isinstance(item, RangeMeasMessage)]
+        self.assertEqual({item.anchor_id for item in meas}, {1, 2, 3, 4})
+        self.assertEqual([item.meas_seq for item in meas], list(range(1, len(meas) + 1)))
+
+    def test_range_meas_tab_tracks_records_and_toggles_telemetry(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = UwbGui(root)
+            worker = FakeWorker()
+            app.worker = worker
+            panel = app.meas_panel
+            self.assertIsNone(panel.meas_enabled)
+
+            app.events.put(("message", demo_device_info(telemetry_features=0x05)))
+            app._poll_events_once()
+            self.assertIs(panel.meas_enabled, False)
+            self.assertIn("RANGE_MEAS TẮT", panel.state_var.get())
+            self.assertEqual(panel.toggle_button.cget("text"), "Bật RANGE_MEAS")
+
+            panel.toggle_button.invoke()
+            self.assertEqual(worker.requests, [(CMD_SET_TELEMETRY, bytes((0x07,)))])
+            app.events.put(("message", CmdAckMessage(9, 0, CMD_SET_TELEMETRY, 0, bytes((0x07,)))))
+            for seq in [*range(1, 30), *range(31, 62)]:          # record 30 is lost
+                app.events.put(("message", replace(
+                    MEAS_A2, meas_seq=seq, meas_time_us=seq * 20_000,
+                    raw_mm=4210 + (3 if seq % 2 else -3))))
+            app._poll_events_once()
+            self.assertIs(panel.meas_enabled, True)
+            self.assertEqual(panel.toggle_button.cget("text"), "Tắt RANGE_MEAS")
+
+            panel.refresh(time.monotonic(), draw=True)
+            values = panel.tree.item(panel.rows[2], "values")
+            self.assertEqual(values[:4], ("A2", "—", "DS", "OK"))  # rate needs 0.5 s
+            self.assertEqual(values[4:7], ("4.213", "4.100", "4.095"))
+            self.assertEqual(values[10:13], ("8.0", "3.0", "+1.50"))
+            self.assertEqual(panel.tree.item(panel.rows[2], "tags"), ("warn",))  # 8 dB
+            self.assertEqual(panel.tree.item(panel.rows[1], "values")[3], "NO DATA")
+            self.assertEqual(panel.tracker.lost, 1)
+            self.assertIn("mất 1", panel.summary_var.get())
+            self.assertIn("queue drop TAG —", panel.summary_var.get())
+            panel.set_tag_counters(3, 0, 512)
+            panel.refresh(time.monotonic(), draw=False)
+            self.assertIn("queue drop TAG 3", panel.summary_var.get())
+            self.assertIn("đỉnh TX 512 B (50 %)", panel.summary_var.get())
+
+            panel.plot_anchor_var.set("A2")
+            panel.draw()
+            for tag in ("meas_raw", "meas_corrected", "meas_filtered", "meas_nlos"):
+                self.assertTrue(panel.canvas.find_withtag(tag), tag)
+
+            panel.toggle_button.invoke()                           # snapshot + diag stay on
+            self.assertEqual(worker.requests[-1], (CMD_SET_TELEMETRY, bytes((0x05,))))
+            panel.set_features(0x02)          # RANGE_MEAS alone: the Live tab would starve
+            panel.toggle_button.invoke()
+            self.assertEqual(worker.requests[-1], (CMD_SET_TELEMETRY, bytes((0x01,))))
+
+            panel.set_device_info(0x05, 115200)
+            self.assertEqual(str(panel.toggle_button["state"]), "disabled")
+            self.assertIn("115200", panel.state_var.get())
+        finally:
+            self.close_app(root)
 
     def test_frozen_application_directory_is_executable_parent(self):
         executable = Path("D:/Demo/UWB/DWM1001_UWB_Ground_Control.exe")
@@ -44,14 +235,6 @@ class GuiStateTests(unittest.TestCase):
             self.assertEqual(application_directory(), executable.parent)
 
     def test_serial_worker_encodes_bidirectional_ping(self):
-        class CaptureSerial:
-            def __init__(self):
-                self.writes = []
-
-            def write(self, data):
-                self.writes.append(data)
-                return len(data)
-
         worker = SerialWorker("COM_TEST", 115200, queue.Queue())
         capture = CaptureSerial()
         worker._serial = capture
@@ -143,11 +326,11 @@ class GuiStateTests(unittest.TestCase):
         root.withdraw()
         try:
             app = UwbGui(root)
-            self.assertEqual(len(app.notebook.tabs()), 5)
+            self.assertEqual(len(app.notebook.tabs()), 6)
             tab_labels = [app.notebook.tab(tab_id, "text").strip() for tab_id in app.notebook.tabs()]
             self.assertEqual(
                 tab_labels,
-                ["Live", "Biểu đồ lớn", "Bản đồ 2D / 3D", "Phân tích", "Calibration"],
+                ["Live", "Biểu đồ lớn", "RANGE_MEAS", "Bản đồ 2D / 3D", "Phân tích", "Calibration"],
             )
             app.map_panel.layout = DEFAULT_LAYOUT_4
             target = (2.0, 1.5, 0.0)

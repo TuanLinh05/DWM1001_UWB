@@ -48,6 +48,14 @@
 /* Set to 1 for human-readable CSV, or 0 for the binary packet protocol. */
 #define TELEM_ASCII 0
 
+/* Telemetry at boot: snapshot + one RANGE_MEAS (0x10) per measurement +
+ * diagnostics. RANGE_MEAS needs >= 460800 baud; app.overlay runs UART0 at
+ * 1 Mbaud (UARTE). Settings saved earlier with SAVE_SETTINGS keep their own
+ * features and override this default until the next SAVE_SETTINGS or
+ * FACTORY_RESET. Expands to TELEM_FEATURE_* from telemetry.h at its use. */
+#define UWB_TELEM_DEFAULT_FEATURES \
+    (TELEM_FEATURE_RANGE_SNAPSHOT | TELEM_FEATURE_RANGE_MEAS | TELEM_FEATURE_DIAG)
+
 #define UWB_WATCHDOG_ENABLED 1
 #define UWB_WATCHDOG_TIMEOUT_MS 1000U
 

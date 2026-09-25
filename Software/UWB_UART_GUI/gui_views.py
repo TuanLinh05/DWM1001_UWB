@@ -11,7 +11,7 @@ import statistics
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Sequence
+from typing import Callable, Sequence
 
 from gui_analysis import (
     AnchorMetrics,
@@ -36,11 +36,27 @@ from gui_analysis import (
     solve_position,
     welch_psd,
 )
+from meas_tracker import (
+    NLOS_ALERT_DB,
+    NLOS_WARN_DB,
+    MeasAnchorSummary,
+    MeasPoint,
+    RangeMeasTracker,
+    anchor_nlos_db,
+    power_dbm,
+)
 from telemetry_protocol import (
     AnchorSample,
+    MEAS_FLAG_CAL_OK,
+    MEAS_FLAG_FILTER_OK,
+    RangeMeasMessage,
     STATUS_CALIBRATION_MISSING,
     STATUS_DS_FALLBACK,
     STATUS_RANGE_REJECT,
+    TAG_UART_TX_BUFFER_BYTES,
+    TELEM_FEATURE_RANGE_MEAS,
+    TELEM_RANGE_MEAS_MIN_BAUD,
+    status_names,
 )
 
 
@@ -1812,3 +1828,415 @@ class CalibrationPanel(ttk.Frame):
                     writer.writerows(asdict(item) for item in self.results)
         except OSError as exc:
             messagebox.showerror("Calibration", f"Không xuất được file:\n{exc}", parent=self)
+
+
+class RangeMeasPanel(ttk.Frame):
+    """RANGE_MEAS tab: every measurement record of the TAG, per anchor.
+
+    The Live tab shows the 50 Hz snapshot (the last value per anchor). This
+    tab shows what happens inside it: the real ranging rate, lost records and
+    the radio diagnostics of each exchange (mode, powers, NLOS indicator,
+    clock offset, slot time), plus a plot of the individual measurements.
+    """
+
+    PLOT_SPANS_S = ("5", "10", "30", "60")
+    PLOT_GAP_S = 0.5          # a longer pause between records breaks the line
+    COLUMNS = (
+        "anchor", "rate", "mode", "status", "raw", "corrected", "filtered", "noise_mm",
+        "fp", "rx", "nlos", "anchor_nlos", "ci", "std_noise", "slot", "age",
+    )
+
+    def __init__(self, parent: tk.Misc, on_set_meas: Callable[[bool], None]) -> None:
+        super().__init__(parent, padding=8)
+        self.on_set_meas = on_set_meas
+        self.tracker = RangeMeasTracker()
+        self.features: int | None = None
+        self.uart_baud: int | None = None
+        self.queue_drops: int | None = None
+        self.uart_tx_overflow: int | None = None
+        self.uart_high_water: int | None = None
+        self.auto_enable_var = tk.BooleanVar(value=True)
+        self.state_var = tk.StringVar()
+        self.summary_var = tk.StringVar(value="Chưa nhận RANGE_MEAS.")
+        self.plot_anchor_var = tk.StringVar(value="A1")
+        self.plot_span_var = tk.StringVar(value="10")
+        self.rows: dict[int, str] = {}
+        self._build()
+        self._update_state()
+
+    def _build(self) -> None:
+        controls = ttk.LabelFrame(
+            self, text="Luồng RANGE_MEAS (0x10): một bản ghi cho mỗi phép đo", padding=8
+        )
+        controls.pack(fill=tk.X)
+        state_line = ttk.Frame(controls)
+        state_line.pack(fill=tk.X)
+        ttk.Label(state_line, textvariable=self.state_var, style="Value.TLabel").pack(side=tk.LEFT)
+        ttk.Button(state_line, text="Xóa thống kê", command=self.clear_statistics).pack(side=tk.RIGHT)
+        ttk.Checkbutton(
+            state_line, text="Tự bật khi kết nối", variable=self.auto_enable_var
+        ).pack(side=tk.RIGHT, padx=10)
+        self.toggle_button = ttk.Button(state_line, text="Bật RANGE_MEAS", command=self._toggle)
+        self.toggle_button.pack(side=tk.RIGHT)
+        ttk.Label(controls, textvariable=self.summary_var, style="Value.TLabel").pack(
+            anchor=tk.W, pady=(6, 0)
+        )
+        ttk.Label(
+            controls,
+            text=(
+                "Hz = số phép đo thành công mỗi giây (2 s gần nhất). Nhiễu = độ lệch chuẩn của "
+                "hiệu hai raw liên tiếp / √2 (2 s), vẫn đúng khi TAG di chuyển. NLOS Δ = RX − FP "
+                "của RESP tại TAG, trung bình 2 s: < 6 dB thường LOS, > 10 dB thường NLOS "
+                "(APS006); Anchor Δ là của FINAL tại anchor. Corrected chỉ có khi anchor đã "
+                "calibration, FW Filter chỉ có khi bộ lọc TAG nhận mẫu. Mất = khe hở meas_seq "
+                "(hàng đợi TAG hoặc UART). Queue drop, overflow và đỉnh bộ đệm TX (1024 B) "
+                "đếm từ lúc TAG boot (DIAG)."
+            ),
+            foreground="#64748b",
+            wraplength=1150,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        headings = {
+            "anchor": "Anchor", "rate": "Hz", "mode": "Mode", "status": "Status",
+            "raw": "Raw (m)", "corrected": "Corrected (m)", "filtered": "FW Filter (m)",
+            "noise_mm": "Nhiễu (mm)", "fp": "FP (dBm)", "rx": "RX (dBm)",
+            "nlos": "NLOS Δ (dB)", "anchor_nlos": "Anchor Δ (dB)", "ci": "CI (ppm)",
+            "std_noise": "Noise", "slot": "Slot (µs)", "age": "Age (ms)",
+        }
+        widths = {
+            "anchor": 55, "rate": 50, "mode": 85, "status": 115, "raw": 70,
+            "corrected": 95, "filtered": 90, "noise_mm": 80, "fp": 65, "rx": 65,
+            "nlos": 80, "anchor_nlos": 90, "ci": 65, "std_noise": 55, "slot": 65, "age": 65,
+        }
+        self.tree = ttk.Treeview(self, columns=self.COLUMNS, show="headings", height=8)
+        for column in self.COLUMNS:
+            self.tree.heading(column, text=headings[column])
+            self.tree.column(column, width=widths[column], minwidth=40, anchor=tk.CENTER)
+        self.tree.tag_configure("ok", background="#e7f5e9")
+        self.tree.tag_configure("cal", background="#fff3cd")
+        self.tree.tag_configure("warn", background="#ffedd5")
+        self.tree.tag_configure("nlos", background="#fde8e7")
+        self.tree.tag_configure("stale", background="#e5e7eb", foreground="#6b7280")
+        self.tree.pack(fill=tk.X, pady=(8, 0))
+        self._insert_placeholders()
+
+        plot_frame = ttk.LabelFrame(self, text="Từng phép đo theo đồng hồ TAG", padding=6)
+        plot_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        toolbar = ttk.Frame(plot_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(toolbar, text="Anchor:").pack(side=tk.LEFT)
+        anchor_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.plot_anchor_var,
+            state="readonly",
+            values=tuple(f"A{anchor_id}" for anchor_id in range(1, MAX_ANCHORS + 1)),
+            width=6,
+        )
+        anchor_combo.pack(side=tk.LEFT, padx=(5, 14))
+        anchor_combo.bind("<<ComboboxSelected>>", lambda _event: self.draw())
+        ttk.Label(toolbar, text="Cửa sổ (s):").pack(side=tk.LEFT)
+        span_combo = ttk.Combobox(
+            toolbar, textvariable=self.plot_span_var, state="readonly",
+            values=self.PLOT_SPANS_S, width=5,
+        )
+        span_combo.pack(side=tk.LEFT, padx=(5, 14))
+        span_combo.bind("<<ComboboxSelected>>", lambda _event: self.draw())
+        ttk.Label(
+            toolbar,
+            text="Trên: Raw / Corrected / FW Filter · Dưới: NLOS Δ với ngưỡng 6 và 10 dB",
+            foreground="#64748b",
+        ).pack(side=tk.LEFT)
+        self.canvas = tk.Canvas(plot_frame, background="#111827", highlightthickness=0, height=260)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self.draw())
+
+    def _insert_placeholders(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        self.rows = {
+            anchor_id: self.tree.insert(
+                "", tk.END,
+                values=(f"A{anchor_id}", "—", "—", "NO DATA") + ("—",) * 12,
+            )
+            for anchor_id in range(1, MAX_ANCHORS + 1)
+        }
+
+    @property
+    def meas_enabled(self) -> bool | None:
+        """RANGE_MEAS state reported by the TAG; None until it has told us."""
+        if self.features is None:
+            return None
+        return bool(self.features & TELEM_FEATURE_RANGE_MEAS)
+
+    def reset_session(self) -> None:
+        self.tracker.reset()
+        self.features = None
+        self.uart_baud = None
+        self.queue_drops = None
+        self.uart_tx_overflow = None
+        self.uart_high_water = None
+        self._insert_placeholders()
+        self.summary_var.set("Chưa nhận RANGE_MEAS.")
+        self._update_state()
+        self.draw()
+
+    def clear_statistics(self) -> None:
+        self.tracker.reset()
+        self._insert_placeholders()
+        self.summary_var.set("Đã xóa thống kê RANGE_MEAS.")
+        self.draw()
+
+    def ingest(self, message: RangeMeasMessage, received_s: float) -> None:
+        self.tracker.ingest(message, received_s)
+
+    def set_device_info(self, features: int, uart_baud: int) -> None:
+        self.uart_baud = uart_baud
+        self.set_features(features)
+
+    def set_features(self, features: int) -> None:
+        was_enabled = self.meas_enabled
+        self.features = features
+        if self.meas_enabled and not was_enabled:
+            # The TAG keeps counting meas_seq while RANGE_MEAS is off.
+            self.tracker.restart_sequence()
+        self._update_state()
+
+    def set_tag_counters(
+        self, queue_drops: int, uart_tx_overflow: int, uart_high_water: int
+    ) -> None:
+        """TAG-side counters since boot, from DIAG_SYSTEM."""
+        self.queue_drops = queue_drops
+        self.uart_tx_overflow = uart_tx_overflow
+        self.uart_high_water = uart_high_water
+
+    def _update_state(self) -> None:
+        enabled = self.meas_enabled
+        too_slow = self.uart_baud is not None and self.uart_baud < TELEM_RANGE_MEAS_MIN_BAUD
+        baud = f"UART {self.uart_baud} baud" if self.uart_baud else "UART chưa rõ"
+        if enabled is None:
+            text = "TAG: chưa nhận DEVICE_INFO, chưa rõ RANGE_MEAS đang bật hay tắt."
+        elif enabled:
+            text = f"TAG: RANGE_MEAS BẬT · features 0x{self.features:02X} · {baud}"
+        elif too_slow:
+            text = (
+                f"TAG: RANGE_MEAS TẮT · {baud} < {TELEM_RANGE_MEAS_MIN_BAUD}: "
+                "firmware không cho bật ở tốc độ UART này."
+            )
+        else:
+            text = f"TAG: RANGE_MEAS TẮT · features 0x{self.features:02X} · {baud}"
+        self.state_var.set(text)
+        self.toggle_button.configure(
+            text="Tắt RANGE_MEAS" if enabled else "Bật RANGE_MEAS",
+            state=tk.DISABLED if too_slow and not enabled else tk.NORMAL,
+        )
+
+    def _toggle(self) -> None:
+        self.on_set_meas(not self.meas_enabled)
+
+    def refresh(self, now_s: float, draw: bool | None = None) -> None:
+        """Update the table and summary; redraw the plot when it is visible."""
+        summaries = self.tracker.summaries(now_s)
+        for summary in summaries:
+            item = self.rows.get(summary.anchor_id)
+            if item is None:
+                item = self.tree.insert("", tk.END)
+                self.rows[summary.anchor_id] = item
+            values, tag = self._row(summary)
+            self.tree.item(item, values=values, tags=(tag,))
+        self._update_summary(summaries)
+        visible = self.winfo_ismapped() if draw is None else draw
+        if visible:
+            self.draw()
+
+    @staticmethod
+    def _row(summary: MeasAnchorSummary) -> tuple[tuple[str, ...], str]:
+        message = summary.latest
+        values = (
+            f"A{summary.anchor_id}",
+            _fmt(summary.rate_hz, 1),
+            message.mode_name,
+            " | ".join(status_names(message.status)),
+            f"{message.raw_mm / 1000.0:.3f}",
+            f"{message.corrected_mm / 1000.0:.3f}" if message.flags & MEAS_FLAG_CAL_OK else "—",
+            f"{message.filtered_mm / 1000.0:.3f}" if message.flags & MEAS_FLAG_FILTER_OK else "—",
+            _fmt(summary.noise_mm, 1),
+            _fmt(power_dbm(message.fp_cdbm), 1),
+            _fmt(power_dbm(message.rx_cdbm), 1),
+            _fmt(summary.nlos_mean_db, 1),
+            _fmt(anchor_nlos_db(message), 1),
+            f"{message.ci_ppm_x100 / 100.0:+.2f}",
+            str(message.std_noise),
+            str(message.slot_us),
+            f"{summary.age_s * 1000.0:.0f}",
+        )
+        nlos = summary.nlos_mean_db
+        if summary.stale:
+            tag = "stale"
+        elif nlos is not None and nlos >= NLOS_ALERT_DB:
+            tag = "nlos"
+        elif (nlos is not None and nlos >= NLOS_WARN_DB) or message.status & (
+            STATUS_RANGE_REJECT | STATUS_DS_FALLBACK
+        ):
+            tag = "warn"
+        elif message.status & STATUS_CALIBRATION_MISSING:
+            tag = "cal"
+        else:
+            tag = "ok"
+        return values, tag
+
+    def _update_summary(self, summaries: list[MeasAnchorSummary]) -> None:
+        tracker = self.tracker
+        if not tracker.total:
+            self.summary_var.set(
+                "RANGE_MEAS đang tắt trên TAG." if self.meas_enabled is False
+                else "Chưa nhận RANGE_MEAS."
+            )
+            return
+        parts = [
+            f"Tổng {tracker.total_rate(summaries):.1f} meas/s",
+            f"{tracker.total} bản ghi",
+            f"mất {tracker.lost} (khe hở meas_seq)",
+            "queue drop TAG " + ("—" if self.queue_drops is None else str(self.queue_drops)),
+            "UART TX overflow " + (
+                "—" if self.uart_tx_overflow is None else str(self.uart_tx_overflow)
+            ),
+            "đỉnh TX " + (
+                "—" if self.uart_high_water is None else
+                f"{self.uart_high_water} B "
+                f"({self.uart_high_water * 100 / TAG_UART_TX_BUFFER_BYTES:.0f} %)"
+            ),
+        ]
+        if tracker.restarts:
+            parts.append(f"TAG reboot {tracker.restarts}")
+        self.summary_var.set(" · ".join(parts))
+
+    def draw(self) -> None:
+        canvas = self.canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 240)
+        height = max(canvas.winfo_height(), 180)
+        anchor_id = int(self.plot_anchor_var.get()[1:])
+        try:
+            span_s = float(self.plot_span_var.get())
+        except ValueError:
+            span_s = 10.0
+        points = self.tracker.points(anchor_id, span_s)
+        left, right = 62, width - 16
+        split = int(height * 0.62)
+        range_box = (left, 18, right, split)
+        nlos_box = (left, split + 22, right, height - 24)
+
+        if len(points) < 2:
+            for box in (range_box, nlos_box):
+                canvas.create_rectangle(*box, outline="#374151")
+            canvas.create_text(
+                width / 2, height / 2, text=f"Đang chờ RANGE_MEAS của A{anchor_id}",
+                fill="#9ca3af", font=("Segoe UI", 11),
+            )
+            return
+
+        end = points[-1].tag_time_s
+        start = end - span_s
+
+        def x_of(time_s: float) -> float:
+            return left + (time_s - start) * (right - left) / span_s
+
+        series = (
+            ("raw", "#94a3b8", 1.2, [point.raw_mm for point in points]),
+            ("corrected", "#f59e0b", 1.6, [point.corrected_mm for point in points]),
+            ("filtered", "#38bdf8", 2.0, [point.filtered_mm for point in points]),
+        )
+        distances = [value for *_, values in series for value in values if value is not None]
+        low, high = min(distances), max(distances)
+        padding = max((high - low) * 0.12, 40.0)
+        y_range = self._pane(range_box, low - padding, high + padding,
+                             lambda value: f"{value / 1000.0:.2f}", "Khoảng cách (m)")
+        for name, color, width_px, values in series:
+            self._polyline(points, values, x_of, y_range, color, width_px, f"meas_{name}")
+
+        nlos_values = [point.nlos_db for point in points]
+        present = [value for value in nlos_values if value is not None]
+        low = min(0.0, min(present, default=0.0))
+        high = max(NLOS_ALERT_DB + 2.0, max(present, default=0.0) + 1.0)
+        y_nlos = self._pane(nlos_box, low, high, lambda value: f"{value:.0f}", "NLOS Δ (dB)")
+        for threshold, color in ((NLOS_WARN_DB, "#eab308"), (NLOS_ALERT_DB, "#ef4444")):
+            y = y_nlos(threshold)
+            canvas.create_line(left, y, right, y, fill=color, dash=(4, 3))
+        self._polyline(points, nlos_values, x_of, y_nlos, "#f472b6", 1.4, "meas_nlos")
+
+        legend = (("Raw", "#94a3b8"), ("Corrected", "#f59e0b"), ("FW Filter", "#38bdf8"),
+                  ("NLOS Δ", "#f472b6"))
+        x = left + 110
+        for label, color in legend:
+            canvas.create_line(x, 9, x + 18, 9, fill=color, width=2)
+            canvas.create_text(x + 22, 9, text=label, fill="#cbd5e1", anchor=tk.W)
+            x += 34 + 7 * len(label)
+        latest = points[-1]
+        latest_text = f"A{anchor_id}: Raw {latest.raw_mm / 1000.0:.3f} m"
+        if latest.corrected_mm is not None:
+            latest_text += f" | Corr {latest.corrected_mm / 1000.0:.3f} m"
+        if latest.filtered_mm is not None:
+            latest_text += f" | FW {latest.filtered_mm / 1000.0:.3f} m"
+        if latest.nlos_db is not None:
+            latest_text += f" | Δ {latest.nlos_db:.1f} dB"
+        canvas.create_text(right, 9, text=latest_text, fill="#e5e7eb", anchor=tk.E,
+                           font=("Consolas", 10, "bold"))
+        canvas.create_text(
+            left, height - 10, anchor=tk.W, fill="#9ca3af",
+            text=f"{len(points)} phép đo trong {span_s:g} s cuối (trục X: đồng hồ TAG, meas_time_us)",
+        )
+
+    def _pane(
+        self,
+        box: tuple[int, int, int, int],
+        low: float,
+        high: float,
+        label: Callable[[float], str],
+        title: str,
+    ) -> Callable[[float], float]:
+        left, top, right, bottom = box
+        canvas = self.canvas
+        canvas.create_rectangle(left, top, right, bottom, outline="#374151")
+        span = max(high - low, 1e-9)
+        for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+            y = bottom - fraction * (bottom - top)
+            canvas.create_line(left, y, right, y, fill="#263244")
+            canvas.create_text(left - 7, y, text=label(low + fraction * span),
+                               fill="#9ca3af", anchor=tk.E)
+        canvas.create_text(left + 6, top + 9, text=title, fill="#9ca3af", anchor=tk.W)
+
+        def y_of(value: float) -> float:
+            return bottom - (value - low) * (bottom - top) / span
+
+        return y_of
+
+    def _polyline(
+        self,
+        points: Sequence[MeasPoint],
+        values: Sequence[float | None],
+        x_of: Callable[[float], float],
+        y_of: Callable[[float], float],
+        color: str,
+        width_px: float,
+        tag: str,
+    ) -> None:
+        canvas = self.canvas
+        segment: list[float] = []
+
+        def flush() -> None:
+            if len(segment) >= 4:
+                canvas.create_line(*segment, fill=color, width=width_px, tags=(tag,))
+            elif len(segment) == 2:
+                x, y = segment
+                canvas.create_oval(x - 1.5, y - 1.5, x + 1.5, y + 1.5,
+                                   outline=color, fill=color, tags=(tag,))
+
+        previous_time: float | None = None
+        for point, value in zip(points, values):
+            gap = previous_time is not None and point.tag_time_s - previous_time > self.PLOT_GAP_S
+            if value is None or gap:
+                flush()
+                segment = []
+            if value is not None:
+                segment.extend((x_of(point.tag_time_s), y_of(value)))
+            previous_time = point.tag_time_s
+        flush()

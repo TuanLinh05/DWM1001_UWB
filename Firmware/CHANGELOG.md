@@ -11,7 +11,96 @@ nghiệm thu trên board thật.
 
 ---
 
-## 0. Cập nhật 2026-09-24: bộ lọc range của TAG DevKit
+## 0. Cập nhật sau bản v2
+
+### 0.2 — 2026-09-25: UART 1 Mbaud và RANGE_MEAS trên TAG DevKit
+
+Giống mục 0.1, đây là thay đổi hành vi có chủ đích và **chỉ áp cho TAG DevKit**.
+
+**Lý do.** `RANGE_MEAS` (0x10) gửi một frame 66 byte cho mỗi phép đo: khoảng
+300–400 frame/s với tám anchor, cộng snapshot 50 Hz, tổng cỡ 30 kB/s. UART 115200
+chỉ mang được 11,5 kB/s, nên firmware từ chối RANGE_MEAS dưới
+`TELEM_RANGE_MEAS_MIN_BAUD` (460800). Đây là mục §8.10 (V10) trong
+`Plan/BAO_CAO_KIEM_TRA_FIRMWARE_V2_2026-09-24.md`.
+
+**Vì sao chọn 1 000 000 baud, không phải 921600 như §8.10 viết:**
+
+- nRF52 không tạo được đúng 921600: giá trị `Baud921600` của thanh ghi BAUDRATE
+  thực chạy 941176 baud (+2,1 %), còn 1 000 000 là chính xác;
+- `Sniffer_DevKit` đã chạy UARTE 1 Mbaud qua đúng J-Link VCOM này của DWM1001-DEV.
+
+**Firmware (chỉ `Tag_DevKit`):**
+
+- `app.overlay`: UART0 dùng `nordic,nrf-uarte` (EasyDMA), `current-speed = <1000000>`,
+  giống hệt khối UART của `Sniffer_DevKit`. Driver UARTE nạp tới 32 byte cho mỗi
+  ngắt TX, thay cho 1 byte mỗi ngắt của UART cũ (ở 30 kB/s: khoảng 1000 thay vì
+  30 000 ngắt/s). `uart_tx_zephyr.c` đã hỗ trợ sẵn cả hai driver.
+- `include/uwb_app_config.h`: `UWB_TELEM_DEFAULT_FEATURES` =
+  SNAPSHOT | RANGE_MEAS | DIAG.
+- Settings đã `SAVE_SETTINGS` vẫn thắng giá trị mặc định (thiết kế sẵn có của
+  `uwb_settings.c`). TAG từng lưu settings với firmware cũ sẽ khởi động **không**
+  có RANGE_MEAS. GUI tự bật lại cho phiên; lưu hẳn bằng
+  `uwb_command.py --port COMx set-telemetry --snapshot --meas --diag --save`
+  (hoặc `factory-reset`, nhưng lệnh này xoá cả calibration).
+
+**PC (`Software/UWB_UART_GUI`, bản 1.3.0):**
+
+- Tab mới **RANGE_MEAS**, logic nằm trong `meas_tracker.py` (không phụ thuộc Tk).
+  - Mỗi anchor một dòng: tần số đo thật, mode, status, raw/corrected/FW filter,
+    nhiễu, FP/RX, NLOS Δ (RX − FP), Anchor Δ, clock offset, `std_noise`, slot, tuổi.
+  - Màu dòng theo NLOS/CAL_MISSING/stale.
+  - Dòng tổng hợp: meas/s, số bản ghi mất (khe hở `meas_seq`), queue drop,
+    UART TX overflow và đỉnh bộ đệm TX của TAG.
+  - Biểu đồ từng phép đo theo đồng hồ TAG (khoảng cách + NLOS Δ).
+  - Nút bật/tắt RANGE_MEAS, luôn giữ snapshot cho tab Live.
+- Baud mặc định của GUI và `uwb_command.py` là 1000000. Gateway ESP32-C3 (USB
+  Serial/JTAG) bỏ qua baud; Tag PCB nối USB-UART trực tiếp phải chọn 115200.
+- `SerialWorker`:
+  - khi `DEVICE_INFO` báo UART ≥ 460800 mà RANGE_MEAS đang tắt, tự bật cho phiên
+    (ô "Tự bật khi kết nối");
+  - lệnh từ GUI đi qua hàng đợi, luồng đọc vẫn là nơi duy nhất ghi cổng serial;
+  - sau 3 s không có frame hợp lệ thì ghi gợi ý kiểm tra baud.
+- Recorder: thêm `meas.csv` (một dòng mỗi bản ghi; công suất không đo được để
+  trống) và `meas_records` trong `session.json`.
+- `uwb_command.py set-telemetry` có thêm `--save`.
+- Demo phát `DEVICE_INFO`, RANGE_MEAS (A3 bị NLOS 6 s trong mỗi 20 s) và trả lời
+  `SET_TELEMETRY`.
+
+**Không đổi:**
+
+- `Tag` (PCB) và gateway ESP32-C3 vẫn 115200, UART legacy, mặc định không
+  RANGE_MEAS. Build lại image `Tag` cho features khởi động 0x05.
+- Giao thức, khung frame, anchor, PHY, calibration.
+
+**Test:**
+
+- `tests/test_node_projects.py`: TAG bật sẵn RANGE_MEAS thì UART phải ≥ 460800,
+  và mọi UART trên 115200 phải là UARTE. Hai mutation tương ứng đều bị bắt.
+- GUI:
+  - `tests/test_meas_tracker.py` (mới);
+  - thêm test cho SerialWorker, tab RANGE_MEAS, demo, recorder, encoder RANGE_MEAS
+    và đối chiếu hằng số với header firmware;
+  - tổng 66 test Python, 12 mutation đều bị bắt;
+  - `test_frozen_application_directory_is_executable_parent` chỉ đúng trên
+    Windows và vẫn lỗi trên Linux, giống hệt ở `06f72de`.
+- Runner: 16 bước C/Python của firmware đạt, gateway parser đạt.
+- Tải GUI ở 408 meas/s + 50 snapshot/s, tab RANGE_MEAS đang hiển thị và đang ghi:
+  - luồng GUI bận 9,5 %;
+  - lượt poll dài nhất 10,5 ms (nhịp 40 ms);
+  - recorder ghi 3200/3200 bản ghi, 0 drop.
+- Build Zephyr Tag_DevKit, 0 cảnh báo:
+  - devicetree `nordic,nrf-uarte` @ 1000000, `CONFIG_UART_NRFX_UARTE=y`;
+  - `Telem_UartBaud()` = 1000000;
+  - `s_features` khởi động = 0x07; `factory-reset` cũng về 0x07.
+
+**Nạp:** chỉ cần nạp lại TAG DevKit, chưa thử trên phần cứng. Nghiệm thu theo §8.10
+của báo cáo:
+
+- chạy 10 phút;
+- ở "Hiện chi tiết", CRC lỗi và byte bỏ qua không tăng;
+- tab RANGE_MEAS báo mất 0 và đỉnh TX < 50 %.
+
+### 0.1 — 2026-09-24: bộ lọc range của TAG DevKit
 
 Mục này là ngoại lệ có chủ đích với nguyên tắc "mặc định giữ nguyên hành vi cũ":
 **hành vi của TAG DevKit thay đổi**. Lý do và số liệu nằm trong
@@ -152,7 +241,7 @@ gateway và GUI cũ vẫn đọc được các gói cũ. Loại mới:
 
 | Type | Tên | Nhịp |
 |---|---|---|
-| 0x10 | RANGE_MEAS | từng phép đo (cần UART ≥ 460800 baud, mặc định tắt) |
+| 0x10 | RANGE_MEAS | từng phép đo (cần UART ≥ 460800 baud, mặc định tắt; Tag_DevKit bật từ mục 0.2) |
 | 0x11 | DIAG_ANCHOR | xoay vòng 2 anchor/s |
 | 0x12 | ANCHOR_INFO | khi nhận được TLV từ anchor |
 | 0x13 | CMD_ACK | trả lời lệnh host |

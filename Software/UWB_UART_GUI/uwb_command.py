@@ -7,7 +7,11 @@ Examples (PowerShell):
     py -3.12 uwb_command.py --port COM7 set-cal 1 12.5          # bias 12.5 mm on A1
     py -3.12 uwb_command.py --port COM7 set-cal 1 -12.5 --gui-offset   # GUI "offset" sign
     py -3.12 uwb_command.py --port COM7 set-txpower reference --save
+    py -3.12 uwb_command.py --port COM7 set-telemetry --snapshot --meas --diag --save
     py -3.12 uwb_command.py --port COM7 time-sync --count 20
+
+The default baud is 1000000 (Tag_DevKit). A Tag PCB on a plain USB-UART
+adapter needs --baud 115200; the ESP32-C3 gateway ignores the baud.
 
 Radio changes and SAVE need ranging paused; the tool pauses, applies the
 command and resumes automatically. Do not use it while the drone is armed:
@@ -114,7 +118,9 @@ def print_device_info(message: tp.DeviceInfoMessage) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", required=True)
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=1000000,
+                        help="1000000 for Tag_DevKit (default), 115200 for a Tag PCB "
+                             "on a USB-UART adapter")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("ping")
     sub.add_parser("info")
@@ -135,9 +141,6 @@ def main(argv: list[str]) -> int:
     txp = sub.add_parser("set-txpower")
     txp.add_argument("mode", choices=sorted(TX_POWER_MODES))
     txp.add_argument("value", nargs="?", type=lambda v: int(v, 0), default=0)
-    for name in ("set-ant", "set-txpower", "set-cal", "set-mask"):
-        sub.choices[name].add_argument("--save", action="store_true",
-                                       help="also store the settings in flash")
     sub.add_parser("save")
     sub.add_parser("factory-reset")
     sub.add_parser("reboot")
@@ -149,6 +152,9 @@ def main(argv: list[str]) -> int:
     telem.add_argument("--snapshot", action="store_true")
     telem.add_argument("--meas", action="store_true")
     telem.add_argument("--diag", action="store_true")
+    for name in ("set-ant", "set-txpower", "set-cal", "set-mask", "set-telemetry"):
+        sub.choices[name].add_argument("--save", action="store_true",
+                                       help="also store the settings in flash")
     args = parser.parse_args(argv)
 
     link = TagLink(args.port, args.baud)

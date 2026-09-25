@@ -4,10 +4,20 @@ DWM1001 UWB GROUND CONTROL - GOI DEMO PORTABLE
 1. May demo khong can cai Python.
 2. Double-click DWM1001_UWB_Ground_Control.exe de ket noi UART that.
 3. Double-click CHAY_DEMO.cmd de chay telemetry mo phong khong can board.
-4. Khi dung UART that: bam Lam moi, chon dung COM va giu baud 115200.
+4. Khi dung UART that: bam Lam moi, chon dung COM. Baud: 1000000 (mac dinh)
+   cho Tag_DevKit; 115200 cho Tag PCB noi USB-UART; qua gateway ESP32-C3 thi
+   baud nao cung duoc.
 5. Thu muc data_logs va file anchor_layout.json se duoc tao canh file EXE.
 
-Ban build: 1.2.0 - Windows x64
+Ban build: 1.3.0 - Windows x64
+
+Tab RANGE_MEAS 1.3.0:
+- Moi phep do mot dong ban ghi: Hz that cua tung anchor, ban ghi mat,
+  nhieu, FP/RX, chi bao NLOS (RX - FP), clock offset va thoi gian slot.
+- Dong do = NLOS >= 10 dB, cam = >= 6 dB, vang = chua calibration.
+- Bieu do tung phep do theo dong ho TAG (khoang cach + NLOS).
+- Nut Bat/Tat RANGE_MEAS; GUI tu bat khi UART >= 460800 baud.
+- Khi ghi du lieu, them file meas.csv.
 
 Tab Phan tich 1.2.0:
 - Chon anchor, nguon, so mau (mac dinh 3000), roi bam Bat dau lay mau.

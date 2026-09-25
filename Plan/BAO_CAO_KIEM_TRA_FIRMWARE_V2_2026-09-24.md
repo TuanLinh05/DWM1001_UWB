@@ -24,16 +24,20 @@
   - `Plan/DANH_GIA_SO_SANH_BITCRAZE_VA_HUONG_GIAM_SAI_SO_2026-09-24.md`: hướng giảm sai số. Báo cáo này dùng lại các mã P1–P11, H1–H7, S1–S4, T1–T8 của tài liệu đó.
   - `Firmware/HARDWARE_AB_CHECKLIST.md`.
 
-> **Cập nhật cùng ngày, sau khi viết báo cáo.** Theo đồng ý của chủ dự án, hai
-> việc sau đã được làm trên nhánh `claude/friendly-mendel-0ay4oi`:
+> **Cập nhật sau khi viết báo cáo.** Theo đồng ý của chủ dự án, các việc sau đã
+> được làm trên nhánh `claude/friendly-mendel-0ay4oi`:
 >
-> - áp bản vá §8.1 (tái bắt khoá có nhận biết NLOS);
-> - chuyển **TAG DevKit** sang `MEDIAN_GATE` (§8.2).
+> - 2026-09-24: áp bản vá §8.1 (tái bắt khoá có nhận biết NLOS);
+> - 2026-09-24: chuyển **TAG DevKit** sang `MEDIAN_GATE` (§8.2);
+> - 2026-09-25: §8.10 cho **TAG DevKit**. UART chạy UARTE **1 000 000** baud thay
+>   vì 921600, vì nRF52 chạy mức "921600" thành 941176 baud. `RANGE_MEAS` bật mặc
+>   định, GUI có tab RANGE_MEAS và baud mặc định mới. Gateway ESP32-C3 và project
+>   `Tag` vẫn 115200.
 >
-> Mọi chỗ trong báo cáo ghi "chưa áp", "mặc định LEGACY" hay "known issue" là mô
-> tả trạng thái của `06f72de`, lúc viết báo cáo. Các mục §8.3–§8.14 **chưa làm**.
-> Project `Tag` (PCB riêng) vẫn dùng LEGACY. Chi tiết thay đổi nằm ở mục 0 của
-> `Firmware/CHANGELOG.md`.
+> Mọi chỗ trong báo cáo ghi "chưa áp", "mặc định LEGACY", "115200" hay "known
+> issue" là mô tả trạng thái của `06f72de`, lúc viết báo cáo. Các mục §8.3–§8.9
+> và §8.11–§8.14 **chưa làm**. Project `Tag` (PCB riêng) vẫn dùng LEGACY. Chi tiết
+> thay đổi nằm ở mục 0 của `Firmware/CHANGELOG.md`.
 
 ---
 
@@ -1239,6 +1243,12 @@ Nghiệm thu: trên một clone mới ở **cả Windows lẫn Linux**, `Get-Fil
 - **Chốt profile xong rồi mới calibration (H3)**, vì mọi thay đổi RF đều làm dịch bias.
 
 ### 8.10 [V10] UART cho `RANGE_MEAS`
+
+> **Trạng thái 2026-09-25:** đã làm cho TAG DevKit, nhưng ở **1 000 000 baud**
+> thay vì 921600 như gợi ý dưới đây. Thanh ghi BAUDRATE của nRF52 cho mức
+> "921600" thực chạy 941176 baud, còn 1 Mbaud là chính xác và `Sniffer_DevKit`
+> đã dùng qua cùng J-Link VCOM. GUI và `uwb_command.py` đã đổi baud mặc định.
+> Gateway ESP32-C3 chưa đổi. Xem mục 0.2 của `Firmware/CHANGELOG.md`.
 
 - `Firmware/Tag_DevKit/app.overlay:26`: đổi `current-speed = <921600>;`. VCOM J-Link của DWM1001-DEV đã chạy 1 Mbaud với `Sniffer_DevKit`. `telemetry.c:47-50` có `_Static_assert` kiểm ngân sách băng thông.
 - `ESP32C3_Gateway/main/gateway_config.h:11`: đổi `#define GATEWAY_DWM_BAUD 921600`, và tăng buffer RX UART của ESP32-C3 cho phù hợp.
