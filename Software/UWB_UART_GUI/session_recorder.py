@@ -27,8 +27,10 @@ from host_range_filter import (
     WEAK_POSITION_GAIN_SCALE,
 )
 from telemetry_protocol import (
+    INT16_MIN,
     InfoMessage,
     ParserCounters,
+    RangeMeasMessage,
     RangeMessage,
     StatsMessage,
     status_names,
@@ -49,6 +51,11 @@ def _safe_name(value: str) -> str:
     return cleaned.strip("._") or "UART"
 
 
+def _power(cdbm: int) -> int | str:
+    """Empty cell for a power the TAG did not measure (INT16_MIN)."""
+    return "" if cdbm == INT16_MIN else cdbm
+
+
 class SessionRecorder:
     """Write telemetry on a worker thread so serial/UI processing stays responsive."""
 
@@ -61,6 +68,7 @@ class SessionRecorder:
         self.queue_drops = 0
         self.range_frames = 0
         self.range_samples = 0
+        self.meas_records = 0
         self.info_frames = 0
         self.stats_frames = 0
         self.uart_snapshots = 0
@@ -82,12 +90,14 @@ class SessionRecorder:
         self.session_directory.mkdir()
 
         self._range_file = self._open_text("range.csv")
+        self._meas_file = self._open_text("meas.csv")
         self._stats_file = self._open_text("stats.csv")
         self._uart_file = self._open_text("uart.csv")
         self._info_file = self._open_text("info.jsonl")
         self._event_file = self._open_text("events.log")
         self._raw_file = (self.session_directory / "raw_telemetry.bin").open("wb")
         self._range_writer = csv.writer(self._range_file)
+        self._meas_writer = csv.writer(self._meas_file)
         self._stats_writer = csv.writer(self._stats_file)
         self._uart_writer = csv.writer(self._uart_file)
         self._range_writer.writerow(
@@ -95,6 +105,18 @@ class SessionRecorder:
                 "host_time_iso", "host_elapsed_s", "tag_sequence", "tag_time_ms",
                 "anchor_id", "valid", "status_hex", "status_text", "age_ms",
                 "raw_mm", "filtered_mm", "host_filtered_mm", "fpp_cdbm",
+            )
+        )
+        # One row per RANGE_MEAS record (TYPE 0x10). raw_mm is before any
+        # offset; corrected_mm only means something with flags bit 1 (CAL_OK)
+        # and filtered_mm with bit 2 (FILTER_OK). Unknown powers are empty.
+        self._meas_writer.writerow(
+            (
+                "host_time_iso", "host_elapsed_s", "tag_time_ms", "boot_id",
+                "meas_seq", "meas_time_us", "anchor_id", "txn", "mode", "mode_text",
+                "flags_hex", "status_hex", "status_text", "raw_mm", "corrected_mm",
+                "filtered_mm", "fp_cdbm", "rx_cdbm", "nlos_db", "anchor_fp_cdbm",
+                "anchor_rx_cdbm", "std_noise", "fp_index", "ci_ppm_x100", "slot_us",
             )
         )
         self._stats_writer.writerow(
@@ -130,7 +152,7 @@ class SessionRecorder:
 
     def record_message(
         self,
-        message: InfoMessage | RangeMessage | StatsMessage,
+        message: InfoMessage | RangeMessage | RangeMeasMessage | StatsMessage,
         host_filtered_mm: dict[int, int] | None = None,
     ) -> None:
         self._enqueue((
@@ -216,10 +238,26 @@ class SessionRecorder:
         self,
         host_time: str,
         host_elapsed: float,
-        message: InfoMessage | RangeMessage | StatsMessage,
+        message: InfoMessage | RangeMessage | RangeMeasMessage | StatsMessage,
         host_filtered_mm: dict[int, int],
     ) -> None:
-        if isinstance(message, RangeMessage):
+        if isinstance(message, RangeMeasMessage):
+            nlos_db = message.nlos_indicator_db
+            self._meas_writer.writerow(
+                (
+                    host_time, f"{host_elapsed:.6f}", message.time_ms, message.boot_id,
+                    message.meas_seq, message.meas_time_us, message.anchor_id, message.txn,
+                    message.mode, message.mode_name, f"0x{message.flags:04X}",
+                    f"0x{message.status:02X}", "|".join(status_names(message.status)),
+                    message.raw_mm, message.corrected_mm, message.filtered_mm,
+                    _power(message.fp_cdbm), _power(message.rx_cdbm),
+                    "" if nlos_db is None else f"{nlos_db:.2f}",
+                    _power(message.anchor_fp_cdbm), _power(message.anchor_rx_cdbm),
+                    message.std_noise, message.fp_index, message.ci_ppm_x100, message.slot_us,
+                )
+            )
+            self.meas_records += 1
+        elif isinstance(message, RangeMessage):
             for sample in message.samples:
                 self._range_writer.writerow(
                     (
@@ -282,15 +320,15 @@ class SessionRecorder:
 
     def _flush(self) -> None:
         for handle in (
-            self._range_file, self._stats_file, self._uart_file, self._info_file,
-            self._event_file, self._raw_file,
+            self._range_file, self._meas_file, self._stats_file, self._uart_file,
+            self._info_file, self._event_file, self._raw_file,
         ):
             handle.flush()
 
     def _flush_and_close(self) -> None:
         for handle in (
-            self._range_file, self._stats_file, self._uart_file, self._info_file,
-            self._event_file, self._raw_file,
+            self._range_file, self._meas_file, self._stats_file, self._uart_file,
+            self._info_file, self._event_file, self._raw_file,
         ):
             try:
                 handle.flush()
@@ -310,6 +348,7 @@ class SessionRecorder:
             "error": self.error,
             "range_frames": self.range_frames,
             "range_samples": self.range_samples,
+            "meas_records": self.meas_records,
             "info_frames": self.info_frames,
             "stats_frames": self.stats_frames,
             "uart_snapshots": self.uart_snapshots,

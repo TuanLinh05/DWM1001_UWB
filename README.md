@@ -16,7 +16,7 @@ nằm trong `Firmware/`; mã dùng chung nằm trong `Firmware/common/`.
  DWM1001C TAG  <-------------------------------->  Anchor_1 ... Anchor_8
  address 0x0000                                  address 0x0001 ... 0x0008
        |
-       | UART binary + CRC16 (115200 mặc định)
+       | UART binary + CRC16 (Tag_DevKit 1 Mbaud, Tag PCB 115200)
        v
  USB-UART / ESP32-C3  -------------------------->  GUI / logger / host commands
 ```
@@ -109,9 +109,23 @@ calibrated. Hãy calibration lại rồi mới `SAVE_SETTINGS`. Settings schema 
 
 ## UART và RANGE_MEAS
 
-Baud mặc định của TAG là 115200, phù hợp telemetry snapshot/diagnostics mặc
-định. `RANGE_MEAS` từng phép đo yêu cầu tối thiểu 460800 và sẽ bị firmware từ
-chối ở 115200. Chỉ đổi baud khi đã cập nhật đồng bộ TAG, adapter/gateway và host.
+`RANGE_MEAS` (TYPE 0x10) gửi một bản ghi cho mỗi phép đo, kèm raw/corrected,
+công suất FP/RX, chỉ báo NLOS, clock offset và thời gian slot. Firmware chỉ cho
+bật khi UART đạt tối thiểu 460800 baud.
+
+| Ảnh TAG | UART | Telemetry mặc định |
+|---|---|---|
+| `Tag_DevKit` (DWM1001-DEV, J-Link VCOM) | UARTE 1 000 000 baud | snapshot + RANGE_MEAS + diagnostics |
+| `Tag` (PCB, ESP32-C3 gateway) | 115200 baud | snapshot + diagnostics; RANGE_MEAS bị từ chối |
+
+Tag_DevKit chọn 1 Mbaud vì nRF52 tạo đúng 1 000 000 baud (mức "921600" thực chạy
+941176) và J-Link VCOM của DWM1001-DEV hỗ trợ tốc độ này, giống `Sniffer_DevKit`.
+GUI và `uwb_command.py` mặc định 1000000; gateway ESP32-C3 là thiết bị USB nên
+không phụ thuộc baud; Tag PCB nối USB-UART trực tiếp cần chọn 115200.
+
+Settings đã `SAVE_SETTINGS` từ firmware cũ vẫn giữ feature cũ (không có
+RANGE_MEAS). GUI tự bật RANGE_MEAS cho phiên khi UART đủ nhanh; muốn lưu vĩnh
+viễn: `uwb_command.py --port COMx set-telemetry --snapshot --meas --diag --save`.
 
 ## Tài liệu bắt buộc trước deployment
 

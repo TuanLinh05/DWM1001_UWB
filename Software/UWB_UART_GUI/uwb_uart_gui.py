@@ -25,11 +25,17 @@ except ImportError as exc:  # pragma: no cover - exercised only on missing depen
 
 from telemetry_protocol import (
     AnchorSample,
+    CmdAckMessage,
     DeviceInfoMessage,
     DiagSystemMessage,
     InfoMessage,
+    MEAS_FLAG_ANCHOR_DIAG,
+    MEAS_FLAG_CAL_OK,
+    MEAS_FLAG_FILTER_OK,
+    MEAS_FLAG_RADIO_OK,
     ParserCounters,
     ProtocolError,
+    RangeMeasMessage,
     RangeMessage,
     StatsMessage,
     STATUS_CALIBRATION_MISSING,
@@ -37,30 +43,42 @@ from telemetry_protocol import (
     TelemetryStreamParser,
     decode_frame,
     encode_frame,
+    encode_range_meas_payload,
     fpp_to_legacy_scale_cdbm,
     status_names,
+    TYPE_CMD_ACK,
+    TYPE_DEVICE_INFO,
     TYPE_INFO,
     TYPE_RANGE,
+    TYPE_RANGE_MEAS,
     TYPE_STATS,
     CMD_GET_DEVICE_INFO,
     CMD_PING,
     CMD_SET_TELEMETRY,
+    TELEM_FEATURE_DIAG,
+    TELEM_FEATURE_RANGE_MEAS,
     TELEM_FEATURE_RANGE_SNAPSHOT,
+    TELEM_RANGE_MEAS_MIN_BAUD,
     encode_command,
 )
 from session_recorder import SessionRecorder
 from host_range_filter import HostRangeFilter
 from gui_analysis import MAX_ANCHORS, TelemetryPoint, save_layout
-from gui_views import AnalysisPanel, AnchorMapPanel, CalibrationPanel
+from gui_views import AnalysisPanel, AnchorMapPanel, CalibrationPanel, RangeMeasPanel
 
 
 APP_TITLE = "DWM1001 UWB Ground Control"
-DEFAULT_BAUD = 115200
+# Tag_DevKit runs its UART at 1 Mbaud (RANGE_MEAS). The ESP32-C3 gateway is a
+# USB device and ignores the baud; only a Tag PCB on a plain USB-UART adapter
+# still needs 115200 selected by hand.
+DEFAULT_BAUD = 1000000
 UI_POLL_MS = 40
 HISTORY_LENGTH = 300
 ANALYSIS_HISTORY_LENGTH = 15000
 HOST_HEARTBEAT_S = 1.0
 DEVICE_INFO_RETRY_S = 2.0
+LINK_HINT_AFTER_S = 3.0
+MEAS_REFRESH_S = 0.25
 
 
 def application_directory() -> Path:
@@ -71,17 +89,22 @@ def application_directory() -> Path:
 
 
 class SerialWorker(threading.Thread):
-    def __init__(self, port: str, baud: int, events: queue.Queue) -> None:
+    def __init__(
+        self, port: str, baud: int, events: queue.Queue, auto_enable_meas: bool = True
+    ) -> None:
         super().__init__(name="uwb-serial-reader", daemon=True)
         self.port = port
         self.baud = baud
         self.events = events
+        self.auto_enable_meas = auto_enable_meas
         self.stop_event = threading.Event()
         self._serial: serial.Serial | None = None
         self._command_sequence = int(time.time_ns()) & 0xFFFFFFFF
+        self._requests: queue.Queue[tuple[int, bytes]] = queue.Queue()
         self._tag_online_reported = False
         self._snapshot_requested = False
         self._device_info_seen = False
+        self._link_hint_sent = False
 
     def _send_command(self, command_id: int, arguments: bytes = b"") -> int:
         """Send one command from the reader thread (the sole serial owner)."""
@@ -89,6 +112,57 @@ class SerialWorker(threading.Thread):
         self._command_sequence = (self._command_sequence + 1) & 0xFFFFFFFF
         self._serial.write(encode_command(self._command_sequence, command_id, arguments))
         return self._command_sequence
+
+    def request_command(self, command_id: int, arguments: bytes = b"") -> None:
+        """Queue a command from the GUI thread; the reader thread sends it."""
+        self._requests.put((command_id, bytes(arguments)))
+
+    def _send_requested_commands(self) -> None:
+        while True:
+            try:
+                command_id, arguments = self._requests.get_nowait()
+            except queue.Empty:
+                return
+            self._send_command(command_id, arguments)
+
+    def _configure_session_telemetry(self, message: DeviceInfoMessage) -> None:
+        """Snapshot always (the Live tab needs it) and RANGE_MEAS when the
+        UART can carry it. Session only: settings saved on the TAG stay."""
+        if self._snapshot_requested:
+            return
+        current = message.telemetry_features
+        features = current | TELEM_FEATURE_RANGE_SNAPSHOT
+        if self.auto_enable_meas and message.uart_baud >= TELEM_RANGE_MEAS_MIN_BAUD:
+            features |= TELEM_FEATURE_RANGE_MEAS
+        if features == current:
+            return
+        self._send_command(CMD_SET_TELEMETRY, bytes((features,)))
+        self._snapshot_requested = True
+        if not current & TELEM_FEATURE_RANGE_SNAPSHOT:
+            self.events.put((
+                "notice",
+                "TAG đang tắt RANGE_SNAPSHOT; GUI đã bật lại cho phiên này.",
+            ))
+        if features & ~current & TELEM_FEATURE_RANGE_MEAS:
+            self.events.put((
+                "notice",
+                f"TAG đang tắt RANGE_MEAS (thường do settings đã lưu từ firmware cũ); "
+                f"UART {message.uart_baud} baud đủ nhanh nên GUI đã bật cho phiên này. "
+                "Để TAG tự bật sau reboot: uwb_command.py set-telemetry "
+                "--snapshot --meas --diag --save.",
+            ))
+
+    def _link_hint(self, received_bytes: int) -> str:
+        if received_bytes == 0:
+            return (
+                f"Chưa nhận byte nào sau {LINK_HINT_AFTER_S:.0f} s: kiểm tra đúng cổng COM "
+                "và TAG đã được nạp firmware, đang chạy."
+            )
+        return (
+            f"Nhận {received_bytes} byte nhưng không có frame hợp lệ ở {self.baud} baud: "
+            "kiểm tra baud. Tag_DevKit chạy 1000000; Tag PCB nối USB-UART trực tiếp "
+            "chạy 115200; qua gateway ESP32-C3 thì baud nào cũng được."
+        )
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -108,7 +182,7 @@ class SerialWorker(threading.Thread):
             self.events.put(("connected", self.port))
             self._send_command(CMD_GET_DEVICE_INFO)
             last_ping = 0.0
-            last_device_info_request = time.monotonic()
+            opened_at = last_device_info_request = time.monotonic()
 
             while not self.stop_event.is_set():
                 now = time.monotonic()
@@ -119,6 +193,11 @@ class SerialWorker(threading.Thread):
                         and now - last_device_info_request >= DEVICE_INFO_RETRY_S):
                     self._send_command(CMD_GET_DEVICE_INFO)
                     last_device_info_request = now
+                self._send_requested_commands()
+                if (not self._link_hint_sent and parser.counters.valid_frames == 0
+                        and now - opened_at >= LINK_HINT_AFTER_S):
+                    self._link_hint_sent = True
+                    self.events.put(("notice", self._link_hint(parser.counters.bytes_received)))
 
                 data = self._serial.read(self._serial.in_waiting or 1)
                 report_bytes += len(data)
@@ -139,17 +218,7 @@ class SerialWorker(threading.Thread):
                         if (isinstance(message, DeviceInfoMessage)
                                 and not self._device_info_seen):
                             self._device_info_seen = True
-                            if (not self._snapshot_requested
-                                    and not (message.telemetry_features
-                                             & TELEM_FEATURE_RANGE_SNAPSHOT)):
-                                features = (message.telemetry_features
-                                            | TELEM_FEATURE_RANGE_SNAPSHOT)
-                                self._send_command(CMD_SET_TELEMETRY, bytes((features,)))
-                                self._snapshot_requested = True
-                                self.events.put((
-                                    "notice",
-                                    "TAG đang tắt RANGE_SNAPSHOT; GUI đã bật lại cho phiên này.",
-                                ))
+                            self._configure_session_telemetry(message)
                         self.events.put(("message", message))
 
                 now = time.monotonic()
@@ -169,47 +238,120 @@ class SerialWorker(threading.Thread):
             self.events.put(("disconnected", self.port))
 
 
+DEMO_BOOT_ID = 0x0DE0
+DEMO_UART_BAUD = 1000000
+DEMO_PRE_OFFSET_MM = 30      # demo "raw" range before the calibration offset
+
+
 class DemoWorker(threading.Thread):
-    """End-to-end protocol demo used when hardware is not connected."""
+    """End-to-end protocol demo used when hardware is not connected.
+
+    It speaks the TAG protocol: INFO, DEVICE_INFO, 50 Hz RANGE snapshots,
+    one RANGE_MEAS per measurement (A3 goes through a simulated NLOS episode
+    every 20 s) and a CMD_ACK for SET_TELEMETRY from the RANGE_MEAS tab.
+    """
 
     def __init__(self, events: queue.Queue) -> None:
         super().__init__(name="uwb-demo-source", daemon=True)
         self.events = events
         self.stop_event = threading.Event()
+        self.features = (TELEM_FEATURE_RANGE_SNAPSHOT | TELEM_FEATURE_RANGE_MEAS
+                         | TELEM_FEATURE_DIAG)
+        self._requests: queue.Queue[tuple[int, bytes]] = queue.Queue()
 
     def stop(self) -> None:
         self.stop_event.set()
 
+    def request_command(self, command_id: int, arguments: bytes = b"") -> None:
+        self._requests.put((command_id, bytes(arguments)))
+
+    @staticmethod
+    def _device_info_payload(features: int) -> bytes:
+        return struct.pack(
+            "<BBHIBBBBIHHIBBHHIBBIIIBBBBBBBIBBII",
+            1, 1, 0, 0, 0, 2, features, 0, 0xDE000001, DEMO_BOOT_ID, 1, 0,
+            1, 0, 16436, 16436, 0x0E082848, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            DEMO_UART_BAUD, 0x0F, 0x0F, 0, 0,
+        )
+
+    def _answer_commands(self, parser: TelemetryStreamParser, tag_ms: int) -> None:
+        while True:
+            try:
+                command_id, arguments = self._requests.get_nowait()
+            except queue.Empty:
+                return
+            if command_id == CMD_SET_TELEMETRY and len(arguments) == 1:
+                self.features = arguments[0] & (TELEM_FEATURE_RANGE_SNAPSHOT
+                                                | TELEM_FEATURE_RANGE_MEAS
+                                                | TELEM_FEATURE_DIAG)
+                ack = bytes((command_id, 0x00, self.features))
+            else:
+                ack = bytes((command_id, 0x08))          # UNSUPPORTED in the demo
+            self._emit(parser, encode_frame(TYPE_CMD_ACK, 0, tag_ms, ack))
+
     def run(self) -> None:
         parser = TelemetryStreamParser()
         sequence = 0
-        start = time.monotonic()
+        meas_seq = 0
+        start = last_report = time.monotonic()
+        last_report_bytes = 0
         self.events.put(("connected", "DEMO"))
 
         info_payload = bytes((2, 0x05, 1, 4, 0x0F, 1, 1, 8, 0, 0))
         for anchor_id in range(1, 5):
             info_payload += struct.pack("<Hi", anchor_id, 0)
         self._emit(parser, encode_frame(TYPE_INFO, 0, 0, info_payload))
+        self._emit(parser, encode_frame(
+            TYPE_DEVICE_INFO, 0, 0, self._device_info_payload(self.features)))
 
         while not self.stop_event.wait(0.02):
             sequence += 1
             elapsed = time.monotonic() - start
+            tag_ms = int(elapsed * 1000)
+            self._answer_commands(parser, tag_ms)
             payload = bytearray((4,))
             tag_x = 2.5 + 1.5 * math.cos(elapsed * 0.35)
             tag_y = 2.0 + 1.1 * math.sin(elapsed * 0.48)
             demo_anchors = ((0.0, 0.0), (5.0, 0.0), (2.5, 4.0), (5.0, 4.0))
+            measurements = []
             for anchor_id, (anchor_x, anchor_y) in enumerate(demo_anchors, start=1):
                 ideal_mm = math.hypot(tag_x - anchor_x, tag_y - anchor_y) * 1000.0
-                raw_mm = int(ideal_mm + 12.0 * math.sin(elapsed * 3.1 + anchor_id))
+                # A3 is shadowed 6 s out of every 20 s: longer path, weaker first path.
+                nlos = anchor_id == 3 and elapsed % 20.0 >= 14.0
+                raw_mm = int(ideal_mm + 12.0 * math.sin(elapsed * 3.1 + anchor_id)
+                             + (350.0 + 40.0 * math.sin(elapsed * 17.0) if nlos else 0.0))
                 filtered_mm = int(ideal_mm + 3.0 * math.sin(elapsed * 1.4 + anchor_id))
+                fp_cdbm = -7850 - anchor_id * 35 - (900 if nlos else 0)
+                rx_cdbm = fp_cdbm + (1150 if nlos else 250) + int(
+                    80 * math.sin(elapsed * 2.3 + anchor_id))
                 valid = 1
                 status = 0
                 payload.extend(
-                    struct.pack("<HBBHiih", anchor_id, valid, status, 5, raw_mm, filtered_mm, -7850-anchor_id*35)
+                    struct.pack("<HBBHiih", anchor_id, valid, status, 5, raw_mm, filtered_mm, fp_cdbm)
                 )
-            frame = encode_frame(TYPE_RANGE, sequence, int(elapsed * 1000), bytes(payload))
+                measurements.append((anchor_id, raw_mm, filtered_mm, fp_cdbm, rx_cdbm))
+            frame = encode_frame(TYPE_RANGE, sequence, tag_ms, bytes(payload))
             self._emit(parser, frame[:7])
             self._emit(parser, frame[7:])
+
+            if self.features & TELEM_FEATURE_RANGE_MEAS:
+                for anchor_id, raw_mm, filtered_mm, fp_cdbm, rx_cdbm in measurements:
+                    meas_seq += 1
+                    message = RangeMeasMessage(
+                        sequence=meas_seq, time_ms=tag_ms, boot_id=DEMO_BOOT_ID,
+                        meas_seq=meas_seq,
+                        meas_time_us=int(elapsed * 1e6) + (anchor_id - 1) * 2400,
+                        anchor_id=anchor_id, txn=meas_seq & 0xFF, mode=0,
+                        flags=(MEAS_FLAG_RADIO_OK | MEAS_FLAG_CAL_OK | MEAS_FLAG_FILTER_OK
+                               | MEAS_FLAG_ANCHOR_DIAG),
+                        status=0, raw_mm=raw_mm + DEMO_PRE_OFFSET_MM, corrected_mm=raw_mm,
+                        filtered_mm=filtered_mm, fp_cdbm=fp_cdbm, rx_cdbm=rx_cdbm,
+                        anchor_fp_cdbm=fp_cdbm - 40, anchor_rx_cdbm=rx_cdbm - 25,
+                        std_noise=22 + 3 * anchor_id, fp_index=(745 + anchor_id) * 64 + 17,
+                        ci_ppm_x100=(anchor_id * 2 - 5) * 90, slot_us=2150 + 45 * anchor_id,
+                    )
+                    self._emit(parser, encode_frame(
+                        TYPE_RANGE_MEAS, meas_seq, tag_ms, encode_range_meas_payload(message)))
 
             if sequence % 50 == 0:
                 stats_payload = struct.pack(
@@ -217,9 +359,13 @@ class DemoWorker(threading.Thread):
                 )
                 self._emit(
                     parser,
-                    encode_frame(TYPE_STATS, sequence, int(elapsed * 1000), stats_payload),
+                    encode_frame(TYPE_STATS, sequence, tag_ms, stats_payload),
                 )
-                self.events.put(("parser", (parser.counters.snapshot(), 4050.0)))
+                now = time.monotonic()
+                byte_rate = (parser.counters.bytes_received - last_report_bytes) / max(
+                    now - last_report, 1e-3)
+                last_report, last_report_bytes = now, parser.counters.bytes_received
+                self.events.put(("parser", (parser.counters.snapshot(), byte_rate)))
 
         self.events.put(("disconnected", "DEMO"))
 
@@ -269,6 +415,7 @@ class UwbGui:
         self.last_session_directory: Path | None = None
         self.recording_error_shown = False
         self.last_advanced_refresh = 0.0
+        self.last_meas_refresh = 0.0
         self._last_ui_error: str | None = None
 
         self._configure_window()
@@ -504,6 +651,9 @@ class UwbGui:
         self.graph.pack(fill=tk.BOTH, expand=True)
         self.graph.bind("<Configure>", lambda _event: self._draw_graph())
 
+        self.meas_panel = RangeMeasPanel(self.notebook, self._request_range_meas)
+        self.notebook.add(self.meas_panel, text="  RANGE_MEAS  ")
+
         app_directory = application_directory()
         self.map_panel = AnchorMapPanel(self.notebook, app_directory)
         self.analysis_panel = AnalysisPanel(self.notebook)
@@ -570,7 +720,10 @@ class UwbGui:
             except ValueError:
                 messagebox.showerror(APP_TITLE, "Baud không hợp lệ")
                 return
-            self.worker = SerialWorker(port, baud, self.events)
+            self.worker = SerialWorker(
+                port, baud, self.events,
+                auto_enable_meas=self.meas_panel.auto_enable_var.get(),
+            )
 
         self.last_range_sequence = None
         self.last_log_sequence = -1
@@ -599,6 +752,7 @@ class UwbGui:
         self.map_panel.reset_session()
         self.analysis_panel.reset_session()
         self.calibration_panel.discard_capture()
+        self.meas_panel.reset_session()
         self.connect_button.configure(text="Ngắt kết nối")
         self.port_combo.configure(state="disabled")
         self.baud_combo.configure(state="disabled")
@@ -670,9 +824,7 @@ class UwbGui:
         recorder.stop()
         self.record_button.configure(text="Bắt đầu ghi")
         self.last_session_directory = recorder.session_directory
-        self.record_count_var.set(
-            f"{recorder.range_frames} frame / {recorder.range_samples} mẫu"
-        )
+        self.record_count_var.set(self._recording_counts(recorder))
         if recorder.error:
             self.recording_var.set(f"Lỗi ghi: {recorder.error}")
             if not self.recording_error_shown:
@@ -681,10 +833,12 @@ class UwbGui:
         else:
             self.recording_var.set(f"Đã lưu: {recorder.session_directory}")
             if show_result:
+                meas = (f"\n{recorder.meas_records} bản ghi RANGE_MEAS (meas.csv)."
+                        if recorder.meas_records else "")
                 messagebox.showinfo(
                     APP_TITLE,
                     f"Đã lưu {recorder.range_frames} frame RANGE "
-                    f"({recorder.range_samples} mẫu).\n\n{recorder.session_directory}",
+                    f"({recorder.range_samples} mẫu).{meas}\n\n{recorder.session_directory}",
                 )
 
     def _poll_events(self) -> None:
@@ -746,7 +900,12 @@ class UwbGui:
                         self.recorder.record_uart_stats(counters, byte_rate)
                     self._update_parser_counters(counters, byte_rate)
                 elif event == "message":
-                    if isinstance(payload, RangeMessage):
+                    # RANGE_MEAS is the most frequent message (one per measurement).
+                    if isinstance(payload, RangeMeasMessage):
+                        self.meas_panel.ingest(payload, time.monotonic())
+                        if self.recorder is not None:
+                            self.recorder.record_message(payload)
+                    elif isinstance(payload, RangeMessage):
                         latest_range = payload
                         host_filtered = self._record_history(payload)
                         if self.recorder is not None:
@@ -763,6 +922,9 @@ class UwbGui:
                         self._update_device_info(payload)
                     elif isinstance(payload, DiagSystemMessage):
                         self._update_diag_system(payload)
+                    elif isinstance(payload, CmdAckMessage):
+                        if payload.command_id == CMD_SET_TELEMETRY:
+                            self._handle_telemetry_ack(payload)
         except queue.Empty:
             pass
 
@@ -776,15 +938,25 @@ class UwbGui:
         if (self.worker is not None and self.last_range_received is not None
                 and time.monotonic() - self.last_range_received > 1.0):
             self._mark_stale()
+        now = time.monotonic()
+        if ((self.worker is not None or self.meas_panel.tracker.total)
+                and now - self.last_meas_refresh >= MEAS_REFRESH_S):
+            self.meas_panel.refresh(now)
+            self.last_meas_refresh = now
         self._refresh_recording_status()
+
+    @staticmethod
+    def _recording_counts(recorder: SessionRecorder) -> str:
+        text = f"{recorder.range_frames} frame / {recorder.range_samples} mẫu"
+        if recorder.meas_records:
+            text += f" / {recorder.meas_records} meas"
+        return text
 
     def _refresh_recording_status(self) -> None:
         recorder = self.recorder
         if recorder is None:
             return
-        self.record_count_var.set(
-            f"{recorder.range_frames} frame / {recorder.range_samples} mẫu"
-        )
+        self.record_count_var.set(self._recording_counts(recorder))
         if recorder.error is not None or not recorder.active:
             self.stop_recording()
 
@@ -808,16 +980,53 @@ class UwbGui:
         self.rate_var.set(f"{byte_rate:,.0f} B/s")
 
     def _update_device_info(self, message: DeviceInfoMessage) -> None:
+        self.meas_panel.set_device_info(message.telemetry_features, message.uart_baud)
         dirty = "+dirty" if message.git_dirty else ""
         self._append_log(
             f"DEVICE git={message.git_hash:08x}{dirty} cfg={message.build_config_hash:08x} "
             f"cal_profile={message.calibration_profile_id:08x} proto=v{message.frame_version} "
             f"boot={message.boot_count} txpwr=0x{message.tx_power_register:08X} "
             f"ant={message.tx_antenna_delay}/{message.rx_antenna_delay} "
-            f"xtal_otp=0x{message.otp_xtal_trim:02X} baud={message.uart_baud}"
+            f"xtal_otp=0x{message.otp_xtal_trim:02X} baud={message.uart_baud} "
+            f"telem=0x{message.telemetry_features:02X}"
         )
 
+    def _request_range_meas(self, enable: bool) -> None:
+        """RANGE_MEAS on/off for this session (the RANGE_MEAS tab button)."""
+        worker = self.worker
+        if worker is None:
+            messagebox.showwarning(APP_TITLE, "Hãy kết nối UART trước khi bật/tắt RANGE_MEAS.")
+            return
+        features = self.meas_panel.features
+        if features is None:
+            features = TELEM_FEATURE_RANGE_SNAPSHOT | TELEM_FEATURE_DIAG
+        # The Live tab and range.csv are built from the snapshot: keep it on.
+        features |= TELEM_FEATURE_RANGE_SNAPSHOT
+        if enable:
+            features |= TELEM_FEATURE_RANGE_MEAS
+            self.meas_panel.tracker.restart_sequence()
+        else:
+            features &= ~TELEM_FEATURE_RANGE_MEAS
+        worker.request_command(CMD_SET_TELEMETRY, bytes((features,)))
+        self._append_log(
+            f"SET_TELEMETRY 0x{features:02X}: RANGE_MEAS {'ON' if enable else 'OFF'} "
+            "cho phiên này"
+        )
+
+    def _handle_telemetry_ack(self, ack: CmdAckMessage) -> None:
+        features = f"0x{ack.data[0]:02X}" if ack.data else "-"
+        if ack.data:
+            self.meas_panel.set_features(ack.data[0])
+        if ack.ok:
+            self._append_log(f"TELEMETRY features={features}")
+        else:
+            self._append_log(
+                f"SET_TELEMETRY bị từ chối: {ack.result_name} (features={features})"
+            )
+
     def _update_diag_system(self, message: DiagSystemMessage) -> None:
+        self.meas_panel.set_tag_counters(
+            message.meas_queue_drops, message.uart_tx_overflow, message.uart_high_water)
         now = time.monotonic()
         problems = (message.fault_hold or message.spi_errors or message.cycle_overruns
                     or message.config_mismatches or message.uart_tx_overflow)

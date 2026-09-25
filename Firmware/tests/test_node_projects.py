@@ -117,6 +117,32 @@ def validate_node(name: str, role: str, project: str) -> None:
         for option in ("CONFIG_SETTINGS=y", "CONFIG_NVS=y", "CONFIG_FLASH_MAP=y",
                        "CONFIG_HWINFO=y", "CONFIG_REBOOT=y"):
             require(option in prj, f"{name}: prj.conf is missing {option}")
+        validate_tag_uart(name, node, config)
+
+
+def validate_tag_uart(name: str, node: Path, config: str) -> None:
+    """The telemetry defaults must fit the UART the overlay configures.
+
+    Below TELEM_RANGE_MEAS_MIN_BAUD the firmware drops a RANGE_MEAS default
+    without an error, and above 115200 only the EasyDMA UARTE keeps the CPU
+    out of one interrupt per byte.
+    """
+    overlay = read(node / "app.overlay")
+    speeds = re.findall(r"current-speed\s*=\s*<(\d+)>", overlay)
+    require(len(speeds) == 1, f"{name}: app.overlay must set exactly one UART current-speed")
+    baud = int(speeds[0])
+
+    telemetry = read(COMMON / "include/telemetry.h")
+    minimum = re.search(r"^#define\s+TELEM_RANGE_MEAS_MIN_BAUD\s+(\d+)U", telemetry, re.MULTILINE)
+    require(minimum is not None, "telemetry.h: TELEM_RANGE_MEAS_MIN_BAUD not found")
+    default = re.search(r"^#define\s+UWB_TELEM_DEFAULT_FEATURES((?:[^\n]*\\\n)*[^\n]*)",
+                        config, re.MULTILINE)
+    if default is not None and "TELEM_FEATURE_RANGE_MEAS" in default.group(1):
+        require(baud >= int(minimum.group(1)),
+                f"{name}: RANGE_MEAS is on by default but the UART runs at {baud} baud")
+    if baud > 115200:
+        require('compatible = "nordic,nrf-uarte";' in overlay,
+                f"{name}: {baud} baud needs the EasyDMA UARTE (nordic,nrf-uarte)")
 
 
 def validate_topology() -> None:

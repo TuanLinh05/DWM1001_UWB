@@ -19,7 +19,9 @@ hai loại phần cứng.
 | Nạp/debug | J-Link tích hợp trên devkit | Dùng cùng cáp USB cấp nguồn |
 
 SPI1 ngoài trên header Raspberry Pi được tắt vì firmware TAG không sử dụng.
-UART0 chạy 115200 baud, 8N1. Không cần ESP32-C3 để test board devkit.
+UART0 chạy UARTE (EasyDMA) 1 000 000 baud, 8N1, đủ cho `RANGE_MEAS` từng phép
+đo; J-Link VCOM hỗ trợ tốc độ này (Sniffer_DevKit dùng cùng cấu hình). Không
+cần ESP32-C3 để test board devkit.
 
 Hệ UWB không có bước pair thủ công: TAG thăm dò các địa chỉ Anchor cố định
 trong cùng PAN và Anchor chỉ trả lời POLL hợp lệ dành cho nó. Kết nối GUI là
@@ -59,14 +61,21 @@ khi chạy script.
 2. Sau reset, khi chưa bật Anchor cả ba LED phải tắt. Khi có trao đổi UWB thành
    công, D9 xanh sáng liên tục và tắt khoảng 1 s sau khi mất toàn bộ Anchor.
    D8 đỏ báo lỗi radio; D11 xanh dương chỉ sáng khi GUI đang kết nối hai chiều.
-3. Mở cổng COM do J-Link tạo ra ở 115200 8N1.
+3. Mở cổng COM do J-Link tạo ra ở 1000000 8N1 (baud mặc định của GUI và
+   `uwb_command.py`).
 4. Mặc định `TELEM_ASCII=0`, dùng GUI/parser hiện tại để đọc packet binary. GUI
    gửi `PING` mỗi giây và tự bật `RANGE_SNAPSHOT` cho phiên hiện tại nếu cấu
-   hình lưu trước đó đã tắt nó.
-5. Để xem trực tiếp bằng terminal, đặt `TELEM_ASCII=1` trong
-   `include/uwb_app_config.h`, build và flash lại; khi test xong đổi về `0` để
-   tương thích gateway/GUI binary.
-6. Bật lần lượt A1, A1+A2 rồi đủ tám Anchor; kiểm tra timeout, lỗi SPI, tần số
+   hình lưu trước đó đã tắt nó. Tab **RANGE_MEAS** hiển thị từng phép đo: tần số
+   đo thật của mỗi anchor, bản ghi mất, nhiễu, FP/RX, chỉ báo NLOS, clock offset
+   và thời gian slot.
+5. Firmware bật sẵn `RANGE_MEAS`. Nếu TAG từng `SAVE_SETTINGS` với firmware cũ
+   (115200), feature đã lưu không có RANGE_MEAS: GUI tự bật cho phiên; muốn lưu
+   hẳn thì chạy
+   `py -3.12 uwb_command.py --port COMx set-telemetry --snapshot --meas --diag --save`.
+6. Để xem trực tiếp bằng terminal, đặt `TELEM_ASCII=1` trong
+   `include/uwb_app_config.h`, build và flash lại, mở terminal ở 1000000 baud;
+   khi test xong đổi về `0` để tương thích gateway/GUI binary.
+7. Bật lần lượt A1, A1+A2 rồi đủ tám Anchor; kiểm tra timeout, lỗi SPI, tần số
    chu kỳ và UART overflow trước khi chạy lâu.
 
 `UWB_DS_CALIBRATED_MASK` cố ý bằng `0`. Range thô vẫn được gửi để bring-up,
@@ -75,12 +84,13 @@ Không sao chép offset/antenna delay đã đo trên PCB tự phát triển sang
 
 ## Các file chỉ thay đổi cho devkit
 
-- `app.overlay`: dùng D9/P0.30 và UART qua J-Link VCOM; tắt SPI1 ngoài.
+- `app.overlay`: dùng D9/P0.30 và UARTE 1 Mbaud qua J-Link VCOM; tắt SPI1 ngoài.
 - `scripts/build.ps1`: build project `Tag_DevKit`.
 - `scripts/flash.ps1`: flash qua runner J-Link.
 - `scripts/ncs_env.ps1`: tự nạp môi trường NCS/toolchain/J-Link cho task VS Code.
 - `.vscode/`: task/debug dùng J-Link, không còn cấu hình ST-LINK/OpenOCD.
-- `include/uwb_app_config.h`: ghi rõ profile hiệu chuẩn riêng cho devkit.
+- `include/uwb_app_config.h`: ghi rõ profile hiệu chuẩn riêng cho devkit, bộ lọc
+  `MEDIAN_GATE` và telemetry mặc định có `RANGE_MEAS`.
 
 Các file driver, ranging, filter và telemetry còn lại là bản clone của TAG tại
 thời điểm chuyển đổi và không được thay đổi về thuật toán.

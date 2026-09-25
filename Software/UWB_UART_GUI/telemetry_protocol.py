@@ -79,6 +79,15 @@ TELEM_FEATURE_RANGE_SNAPSHOT = 0x01
 TELEM_FEATURE_RANGE_MEAS = 0x02
 TELEM_FEATURE_DIAG = 0x04
 
+# telemetry.h: the TAG refuses RANGE_MEAS on a UART slower than this.
+TELEM_RANGE_MEAS_MIN_BAUD = 460800
+# uart_tx.h UART_TX_BUF_SIZE: the TAG TX ring behind DIAG uart_high_water.
+TAG_UART_TX_BUFFER_BYTES = 1024
+
+# RANGE_MEAS (TYPE 0x10) payload, see Telem_SendRangeMeas() in telemetry.c.
+RANGE_MEAS_FORMAT = "<BHIQHBBHBiiihhhhHHhH"
+RANGE_MEAS_PAYLOAD_SIZE = struct.calcsize(RANGE_MEAS_FORMAT)
+
 INT16_MIN = -32768
 
 STATUS_TIMEOUT = 0x01
@@ -183,6 +192,10 @@ class RangeMeasMessage:
     @property
     def calibrated(self) -> bool:
         return bool(self.flags & MEAS_FLAG_CAL_OK)
+
+    @property
+    def mode_name(self) -> str:
+        return MEAS_MODE_NAMES.get(self.mode, f"0x{self.mode:02X}")
 
     @property
     def nlos_indicator_db(self) -> float | None:
@@ -527,11 +540,23 @@ def _require_schema(frame: Frame, minimum_length: int, name: str) -> None:
 
 
 def decode_range_meas(frame: Frame) -> RangeMeasMessage:
-    if len(frame.payload) != 50:
+    if len(frame.payload) != RANGE_MEAS_PAYLOAD_SIZE:
         raise ProtocolError(f"invalid RANGE_MEAS payload length {len(frame.payload)}")
-    _require_schema(frame, 50, "RANGE_MEAS")
-    values = struct.unpack("<BHIQHBBHBiiihhhhHHhH", frame.payload)
+    _require_schema(frame, RANGE_MEAS_PAYLOAD_SIZE, "RANGE_MEAS")
+    values = struct.unpack(RANGE_MEAS_FORMAT, frame.payload)
     return RangeMeasMessage(frame.sequence, frame.time_ms, *values[1:])
+
+
+def encode_range_meas_payload(message: RangeMeasMessage) -> bytes:
+    """Inverse of decode_range_meas (GUI demo source and tests)."""
+
+    return struct.pack(
+        RANGE_MEAS_FORMAT, 1, message.boot_id, message.meas_seq, message.meas_time_us,
+        message.anchor_id, message.txn, message.mode, message.flags, message.status,
+        message.raw_mm, message.corrected_mm, message.filtered_mm,
+        message.fp_cdbm, message.rx_cdbm, message.anchor_fp_cdbm, message.anchor_rx_cdbm,
+        message.std_noise, message.fp_index, message.ci_ppm_x100, message.slot_us,
+    )
 
 
 def decode_diag_anchor(frame: Frame) -> DiagAnchorMessage:

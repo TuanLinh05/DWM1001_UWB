@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import struct
 import sys
 import unittest
@@ -20,10 +21,17 @@ from telemetry_protocol import (  # noqa: E402
     TYPE_CMD_ACK,
     TYPE_RANGE_MEAS,
     TYPE_SNIFFER_FRAME,
+    RANGE_MEAS_PAYLOAD_SIZE,
+    TAG_UART_TX_BUFFER_BYTES,
+    TELEM_FEATURE_DIAG,
+    TELEM_FEATURE_RANGE_MEAS,
+    TELEM_FEATURE_RANGE_SNAPSHOT,
+    TELEM_RANGE_MEAS_MIN_BAUD,
     TelemetryStreamParser,
     decode_frame,
     encode_command,
     encode_frame,
+    encode_range_meas_payload,
     fpp_to_legacy_scale_cdbm,
 )
 
@@ -45,11 +53,43 @@ class TelemetryV2Tests(unittest.TestCase):
         self.assertAlmostEqual(message.nlos_indicator_db, 8.0)
         self.assertEqual(message.ci_ppm_x100, 150)
 
+    def test_range_meas_encoder_is_the_inverse_of_the_decoder(self) -> None:
+        payload = struct.pack(
+            "<BHIQHBBHBiiihhhhHHhH", 1, 0xBEEF, 0xFFFFFFFF, 2**63 + 5, 8, 0xFF, 2, 0x000F,
+            0x90, -1, -2147483648, 2147483647, -32768, 32767, -1, 1, 0xFFFF, 0, -32768, 0xFFFF,
+        )
+        message = _decode(TYPE_RANGE_MEAS, payload, sequence=0xFFFFFFFF)
+        self.assertEqual(RANGE_MEAS_PAYLOAD_SIZE, 50)
+        self.assertEqual(encode_range_meas_payload(message), payload)
+        self.assertEqual(message.mode_name, "SS_FALLBACK")
+        self.assertEqual(_decode(TYPE_RANGE_MEAS, encode_range_meas_payload(message)).meas_seq,
+                         0xFFFFFFFF)
+
     def test_range_meas_rejects_bad_length_and_schema(self) -> None:
         with self.assertRaises(ProtocolError):
             _decode(TYPE_RANGE_MEAS, bytes(49))
         with self.assertRaises(ProtocolError):
             _decode(TYPE_RANGE_MEAS, bytes((2,)) + bytes(49))
+
+    def test_host_constants_match_firmware_headers(self) -> None:
+        include = Path(__file__).resolve().parents[3] / "Firmware" / "common" / "include"
+        if not include.is_dir():
+            self.skipTest("firmware sources are not next to the GUI")
+
+        def define(header: str, name: str) -> int:
+            text = (include / header).read_text(encoding="utf-8")
+            match = re.search(rf"^#define\s+{name}\s+(0x[0-9A-Fa-f]+|\d+)U\b", text, re.MULTILINE)
+            self.assertIsNotNone(match, f"{name} not found in {header}")
+            return int(match.group(1), 0)
+
+        self.assertEqual(define("telemetry.h", "TELEM_RANGE_MEAS_MIN_BAUD"),
+                         TELEM_RANGE_MEAS_MIN_BAUD)
+        self.assertEqual(define("telemetry.h", "TELEM_FEATURE_RANGE_SNAPSHOT"),
+                         TELEM_FEATURE_RANGE_SNAPSHOT)
+        self.assertEqual(define("telemetry.h", "TELEM_FEATURE_RANGE_MEAS"),
+                         TELEM_FEATURE_RANGE_MEAS)
+        self.assertEqual(define("telemetry.h", "TELEM_FEATURE_DIAG"), TELEM_FEATURE_DIAG)
+        self.assertEqual(define("uart_tx.h", "UART_TX_BUF_SIZE"), TAG_UART_TX_BUFFER_BYTES)
 
     def test_cmd_ack(self) -> None:
         message = _decode(TYPE_CMD_ACK, bytes((CMD_SET_DS_CAL, 5)), sequence=33)

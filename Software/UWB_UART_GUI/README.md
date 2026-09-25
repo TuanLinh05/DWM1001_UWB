@@ -3,6 +3,8 @@
 GUI Windows nhận telemetry binary của firmware `Tag`, kiểm tra CRC và hiển thị:
 
 - raw/filtered distance, valid, status, age và FPP của A1..A8;
+- từng phép đo `RANGE_MEAS`: tần số đo thật, bản ghi mất, nhiễu, FP/RX, chỉ báo
+  NLOS, clock offset và thời gian slot của mỗi anchor;
 - INFO của firmware và calibration mask;
 - poll/OK/timeout/RX error/overrun/UART overflow;
 - tốc độ UART, CRC error, byte bị bỏ qua và sequence bị mất;
@@ -28,6 +30,38 @@ cho phiên bản firmware 8 anchor.
 Đồ thị Raw / Host Filter / Firmware Filter được tách khỏi tab Live và chiếm toàn
 bộ vùng nội dung của tab. Có thể chọn A1..A8 và xóa riêng lịch sử của anchor
 đang xem. Trục Y tự scale theo tối đa 300 mẫu gần nhất.
+
+### RANGE_MEAS
+
+Snapshot 50 Hz ở tab Live chỉ giữ giá trị cuối của mỗi anchor. `RANGE_MEAS`
+(TYPE 0x10) là một bản ghi cho **mỗi** phép đo thành công, nên tab này cho thấy
+chuyện gì xảy ra bên trong chu kỳ:
+
+| Cột | Ý nghĩa |
+|---|---|
+| Hz | Số phép đo thành công mỗi giây của anchor (2 s gần nhất) |
+| Mode / Status | DS, SS hoặc SS_FALLBACK; cờ trạng thái của lần đo |
+| Raw / Corrected / FW Filter | Raw trước offset; Corrected chỉ có khi anchor đã calibration; FW Filter chỉ có khi bộ lọc TAG nhận mẫu |
+| Nhiễu (mm) | Độ lệch chuẩn của hiệu hai raw liên tiếp / √2 trong 2 s; vẫn đúng khi TAG di chuyển chậm |
+| FP / RX (dBm) | Công suất first path và tổng của RESP tại TAG |
+| NLOS Δ (dB) | RX − FP trung bình 2 s: < 6 dB thường LOS, > 10 dB thường NLOS (APS006) |
+| Anchor Δ (dB) | RX − FP của FINAL đo tại anchor (DS-TWR REPORT) |
+| CI (ppm) | Clock offset anchor so với TAG từ carrier integrator |
+| Noise / Slot / Age | `std_noise` của DW1000, thời gian slot (µs), tuổi bản ghi cuối |
+
+Màu dòng: xanh = tốt, vàng = `CAL_MISSING`, cam = NLOS Δ ≥ 6 dB, fallback hoặc
+reject, đỏ = NLOS Δ ≥ 10 dB, xám = hơn 1 s không có bản ghi. Dòng tổng hợp báo
+tổng meas/s, số bản ghi mất (khe hở `meas_seq`), `meas_queue_drops` và UART TX
+overflow của TAG (từ DIAG). Biểu đồ bên dưới vẽ từng phép đo của một anchor theo
+đồng hồ TAG (`meas_time_us`) trong 5–60 s: khoảng cách Raw/Corrected/FW Filter
+ở trên và NLOS Δ với ngưỡng 6/10 dB ở dưới.
+
+Khi kết nối, nếu `DEVICE_INFO` báo UART ≥ 460800 baud mà RANGE_MEAS đang tắt,
+GUI tự bật cho phiên (bỏ chọn **Tự bật khi kết nối** để tắt hành vi này). Nút
+**Bật/Tắt RANGE_MEAS** gửi `SET_TELEMETRY` nhưng luôn giữ snapshot cho tab Live;
+thay đổi chỉ có hiệu lực tới khi TAG reboot, trừ khi lưu bằng
+`uwb_command.py ... set-telemetry --snapshot --meas --diag --save`. Ở 115200 baud
+firmware từ chối RANGE_MEAS nên nút bị khóa.
 
 ### Bản đồ 2D / 3D
 
@@ -115,7 +149,16 @@ chu kỳ đo. Không dùng nghiệm có RMS/residual lớn hoặc geometry condi
 
 ## Kết nối phần cứng
 
-Firmware Tag phát UART0 **115200, 8N1**, packet binary:
+| Nguồn | Baud trong GUI |
+|---|---|
+| `Tag_DevKit` qua J-Link VCOM của DWM1001-DEV | **1000000** (mặc định) |
+| `Tag` PCB qua gateway ESP32-C3 (USB Serial/JTAG) | tùy ý, gateway bỏ qua baud |
+| `Tag` PCB nối USB-UART 3.3 V trực tiếp | **115200** |
+
+Nếu sau 3 s không có frame hợp lệ, GUI ghi gợi ý vào ô sự kiện: nhận được byte
+mà không có frame thường là sai baud.
+
+Firmware `Tag` (PCB) phát UART0 **115200, 8N1**, packet binary:
 
 | Tag DWM1001C | Đích |
 |---|---|
@@ -146,11 +189,12 @@ Nếu máy chưa có PySerial:
 py -3.12 -m pip install -r requirements.txt
 ```
 
-Nhấn **Làm mới**, chọn đúng COM không phải `Standard Serial over Bluetooth`, giữ
-baud 115200 và nhấn **Kết nối**. Dòng vàng "đã mở COM; đang chờ TAG" chỉ xác
-nhận cổng serial. Dòng xanh "TAG online" xuất hiện sau khi nhận được frame hợp
-lệ. GUI gửi `PING` mỗi giây; nếu `DEVICE_INFO` cho biết `RANGE_SNAPSHOT` đang
-tắt, GUI bật lại bit này cho phiên chạy hiện tại để đồ thị không bị trống.
+Nhấn **Làm mới**, chọn đúng COM không phải `Standard Serial over Bluetooth`, chọn
+baud theo bảng ở trên (mặc định 1000000 cho Tag_DevKit) và nhấn **Kết nối**.
+Dòng vàng "đã mở COM; đang chờ TAG" chỉ xác nhận cổng serial. Dòng xanh "TAG
+online" xuất hiện sau khi nhận được frame hợp lệ. GUI gửi `PING` mỗi giây; nếu
+`DEVICE_INFO` cho biết `RANGE_SNAPSHOT` đang tắt, GUI bật lại bit này cho phiên
+chạy hiện tại để đồ thị không bị trống, và bật `RANGE_MEAS` khi UART đủ nhanh.
 
 ## Thu và lưu dữ liệu
 
@@ -164,6 +208,7 @@ nhấn **Dừng và lưu**. Mỗi lần ghi tạo một thư mục riêng theo t
 | File | Nội dung |
 |---|---|
 | `range.csv` | Một dòng cho mỗi Anchor: host/tag time, sequence, valid, status, raw/FW filtered/host filtered mm và FPP |
+| `meas.csv` | Một dòng cho mỗi bản ghi RANGE_MEAS: `meas_seq`, `meas_time_us`, mode, flags, status, raw/corrected/filtered mm, FP/RX, NLOS Δ, công suất phía anchor, `std_noise`, `fp_index`, clock offset, slot. Công suất không đo được để trống |
 | `stats.csv` | Poll, OK, timeout, RX error, overrun, UART overflow và tần số |
 | `uart.csv` | Tốc độ byte/s và bộ đếm parser phía PC: frame, CRC, byte bỏ, length/version/decode error |
 | `info.jsonl` | Cấu hình firmware/calibration nhận được trong phiên |
