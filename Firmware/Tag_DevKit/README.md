@@ -19,9 +19,10 @@ hai loại phần cứng.
 | Nạp/debug | J-Link tích hợp trên devkit | Dùng cùng cáp USB cấp nguồn |
 
 SPI1 ngoài trên header Raspberry Pi được tắt vì firmware TAG không sử dụng.
-UART0 chạy UARTE (EasyDMA) 1 000 000 baud, 8N1, đủ cho `RANGE_MEAS` từng phép
-đo; J-Link VCOM hỗ trợ tốc độ này (Sniffer_DevKit dùng cùng cấu hình). Không
-cần ESP32-C3 để test board devkit.
+UART0 chạy UARTE (EasyDMA) 460800 baud, 8N1, đủ cho `RANGE_MEAS` từng phép đo
+(tám anchor khoảng 20 kB/s, 44 % dung lượng). Không dùng 1 Mbaud: J-Link VCOM
+của devkit làm sai CRC khoảng 70 % byte ở tốc độ đó, kể cả khi đã tắt MSD.
+Không cần ESP32-C3 để test board devkit.
 
 Hệ UWB không có bước pair thủ công: TAG thăm dò các địa chỉ Anchor cố định
 trong cùng PAN và Anchor chỉ trả lời POLL hợp lệ dành cho nó. Kết nối GUI là
@@ -61,7 +62,7 @@ khi chạy script.
 2. Sau reset, khi chưa bật Anchor cả ba LED phải tắt. Khi có trao đổi UWB thành
    công, D9 xanh sáng liên tục và tắt khoảng 1 s sau khi mất toàn bộ Anchor.
    D8 đỏ báo lỗi radio; D11 xanh dương chỉ sáng khi GUI đang kết nối hai chiều.
-3. Mở cổng COM do J-Link tạo ra ở 1000000 8N1 (baud mặc định của GUI và
+3. Mở cổng COM do J-Link tạo ra ở 460800 8N1 (baud mặc định của GUI và
    `uwb_command.py`).
 4. Mặc định `TELEM_ASCII=0`, dùng GUI/parser hiện tại để đọc packet binary. GUI
    gửi `PING` mỗi giây và tự bật `RANGE_SNAPSHOT` cho phiên hiện tại nếu cấu
@@ -73,7 +74,7 @@ khi chạy script.
    hẳn thì chạy
    `py -3.12 uwb_command.py --port COMx set-telemetry --snapshot --meas --diag --save`.
 6. Để xem trực tiếp bằng terminal, đặt `TELEM_ASCII=1` trong
-   `include/uwb_app_config.h`, build và flash lại, mở terminal ở 1000000 baud;
+   `include/uwb_app_config.h`, build và flash lại, mở terminal ở 460800 baud;
    khi test xong đổi về `0` để tương thích gateway/GUI binary.
 7. Bật lần lượt A1, A1+A2 rồi đủ tám Anchor; kiểm tra timeout, lỗi SPI, tần số
    chu kỳ và UART overflow trước khi chạy lâu.
@@ -84,7 +85,7 @@ Không sao chép offset/antenna delay đã đo trên PCB tự phát triển sang
 
 ## Các file chỉ thay đổi cho devkit
 
-- `app.overlay`: dùng D9/P0.30 và UARTE 1 Mbaud qua J-Link VCOM; tắt SPI1 ngoài.
+- `app.overlay`: dùng D9/P0.30 và UARTE 460800 qua J-Link VCOM; tắt SPI1 ngoài.
 - `scripts/build.ps1`: build project `Tag_DevKit`.
 - `scripts/flash.ps1`: flash qua runner J-Link.
 - `scripts/ncs_env.ps1`: tự nạp môi trường NCS/toolchain/J-Link cho task VS Code.

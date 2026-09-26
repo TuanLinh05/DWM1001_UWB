@@ -24,7 +24,7 @@ idf.py flash
 
 Sau khi flash, đóng mọi cửa sổ monitor đang giữ cổng COM. Mở
 `Software\UWB_UART_GUI\run_gui.ps1` và chọn COM của ESP32-C3. USB Serial/JTAG
-bỏ qua baud phía PC, nên giữ baud mặc định của GUI (1000000) hay chọn 115200
+bỏ qua baud phía PC, nên giữ baud mặc định của GUI (460800) hay chọn 115200
 đều được. Không dùng `idf.py monitor` đồng thời với GUI.
 
 ESP-IDF chưa được cài trong môi trường hiện tại nên project này cần được build

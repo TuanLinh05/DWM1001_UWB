@@ -50,7 +50,7 @@
 
 /* Telemetry at boot: snapshot + one RANGE_MEAS (0x10) per measurement +
  * diagnostics. RANGE_MEAS needs >= 460800 baud; app.overlay runs UART0 at
- * 1 Mbaud (UARTE). Settings saved earlier with SAVE_SETTINGS keep their own
+ * 460800 (UARTE). Settings saved earlier with SAVE_SETTINGS keep their own
  * features and override this default until the next SAVE_SETTINGS or
  * FACTORY_RESET. Expands to TELEM_FEATURE_* from telemetry.h at its use. */
 #define UWB_TELEM_DEFAULT_FEATURES \

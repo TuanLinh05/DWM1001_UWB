@@ -16,7 +16,7 @@ nằm trong `Firmware/`; mã dùng chung nằm trong `Firmware/common/`.
  DWM1001C TAG  <-------------------------------->  Anchor_1 ... Anchor_8
  address 0x0000                                  address 0x0001 ... 0x0008
        |
-       | UART binary + CRC16 (Tag_DevKit 1 Mbaud, Tag PCB 115200)
+       | UART binary + CRC16 (Tag_DevKit 460800, Tag PCB 115200)
        v
  USB-UART / ESP32-C3  -------------------------->  GUI / logger / host commands
 ```
@@ -115,13 +115,16 @@ bật khi UART đạt tối thiểu 460800 baud.
 
 | Ảnh TAG | UART | Telemetry mặc định |
 |---|---|---|
-| `Tag_DevKit` (DWM1001-DEV, J-Link VCOM) | UARTE 1 000 000 baud | snapshot + RANGE_MEAS + diagnostics |
+| `Tag_DevKit` (DWM1001-DEV, J-Link VCOM) | UARTE 460800 baud | snapshot + RANGE_MEAS + diagnostics |
 | `Tag` (PCB, ESP32-C3 gateway) | 115200 baud | snapshot + diagnostics; RANGE_MEAS bị từ chối |
 
-Tag_DevKit chọn 1 Mbaud vì nRF52 tạo đúng 1 000 000 baud (mức "921600" thực chạy
-941176) và J-Link VCOM của DWM1001-DEV hỗ trợ tốc độ này, giống `Sniffer_DevKit`.
-GUI và `uwb_command.py` mặc định 1000000; gateway ESP32-C3 là thiết bị USB nên
-không phụ thuộc baud; Tag PCB nối USB-UART trực tiếp cần chọn 115200.
+Tag_DevKit chạy 460800 baud. Ở 1 Mbaud, J-Link VCOM (OB-STM32F072) của
+DWM1001-DEV vẫn chuyển đủ số byte nhưng 72 % bị sai CRC, kể cả khi đã tắt MSD
+(log 2026-09-26): frame dài và frame gửi liền nhau không bao giờ tới nguyên vẹn,
+nên A8 (luôn gửi ngay sau snapshot) trông như mất hẳn. Tám anchor ở chu kỳ
+29 Hz tạo khoảng 20 kB/s, tức 44 % dung lượng của 460800. GUI và
+`uwb_command.py` mặc định 460800; gateway ESP32-C3 là thiết bị USB nên không
+phụ thuộc baud; Tag PCB nối USB-UART trực tiếp cần chọn 115200.
 
 Settings đã `SAVE_SETTINGS` từ firmware cũ vẫn giữ feature cũ (không có
 RANGE_MEAS). GUI tự bật RANGE_MEAS cho phiên khi UART đủ nhanh; muốn lưu vĩnh

@@ -109,7 +109,7 @@ Khung: `AA 55 | VER=1 | TYPE | LEN | SEQ | TIME | payload | CRC16-CCITT`.
 | Type | Gói | Nhịp |
 |---|---|---|
 | 0x00 / 0x01 / 0x02 | INFO / RANGE / STATS | 1 Hz / mỗi chu kỳ / 1 Hz |
-| 0x10 | RANGE_MEAS (từng phép đo) | cần UART ≥ 460800 baud; Tag_DevKit (1 Mbaud) bật mặc định, Tag (115200) tắt |
+| 0x10 | RANGE_MEAS (từng phép đo) | cần UART ≥ 460800 baud; Tag_DevKit (460800) bật mặc định, Tag (115200) tắt |
 | 0x11 / 0x12 | DIAG_ANCHOR / ANCHOR_INFO | 2 anchor/s / khi nhận TLV |
 | 0x13 | CMD_ACK | trả lời lệnh |
 | 0x14 | SNIFFER_FRAME | chỉ vai trò sniffer |
@@ -148,11 +148,12 @@ Quy trình A/B và tiêu chí nghiệm thu: `HARDWARE_AB_CHECKLIST.md`.
 - TAG DevKit dùng D9 xanh cho liên kết UWB, D8 đỏ cho fault và D11 xanh dương
   cho heartbeat/lệnh GUI.
 - TAG (PCB) dùng UART0 115200 baud sang ESP32-C3; anchor tắt UART0.
-- Tag_DevKit dùng UARTE 1 Mbaud qua J-Link VCOM để mang RANGE_MEAS; GUI và
-  `uwb_command.py` mặc định 1000000.
+- Tag_DevKit dùng UARTE 460800 qua J-Link VCOM để mang RANGE_MEAS; GUI và
+  `uwb_command.py` mặc định 460800. Ở 1 Mbaud J-Link VCOM làm sai CRC ~70 % byte.
 - SPI1 ngoài tắt ở mọi vai trò để không chạm các đường R9–R12 sang ESP32-C3.
 - ESP GPIO10 là đầu vào `ESP_IRQ/RDY`, không dùng làm LED.
-- Sniffer_DevKit dùng UARTE 1 Mbaud (DWM1001-DEV, J-Link VCOM).
+- Sniffer_DevKit dùng UARTE 1 Mbaud (DWM1001-DEV, J-Link VCOM); chưa kiểm trên
+  phần cứng, và TAG DevKit cùng đường này đã hỏng dữ liệu ở 1 Mbaud.
 
 Chi tiết chân và quyết định thiết kế: `HARDWARE_COMPATIBILITY.md`.
 
