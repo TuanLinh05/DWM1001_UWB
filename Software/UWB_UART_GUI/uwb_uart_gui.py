@@ -68,10 +68,11 @@ from gui_views import AnalysisPanel, AnchorMapPanel, CalibrationPanel, RangeMeas
 
 
 APP_TITLE = "DWM1001 UWB Ground Control"
-# Tag_DevKit runs its UART at 1 Mbaud (RANGE_MEAS). The ESP32-C3 gateway is a
+# Tag_DevKit runs its UART at 460800 (RANGE_MEAS): at 1 Mbaud the J-Link VCOM
+# of the DWM1001-DEV corrupted ~70 % of the bytes. The ESP32-C3 gateway is a
 # USB device and ignores the baud; only a Tag PCB on a plain USB-UART adapter
 # still needs 115200 selected by hand.
-DEFAULT_BAUD = 1000000
+DEFAULT_BAUD = 460800
 UI_POLL_MS = 40
 HISTORY_LENGTH = 300
 ANALYSIS_HISTORY_LENGTH = 15000
@@ -79,6 +80,10 @@ HOST_HEARTBEAT_S = 1.0
 DEVICE_INFO_RETRY_S = 2.0
 LINK_HINT_AFTER_S = 3.0
 MEAS_REFRESH_S = 0.25
+# Share of received bytes the parser throws away (CRC/length errors) above
+# which the link, not the radio, is losing anchor records.
+UART_CORRUPT_WARN_PCT = 1.0
+UART_WARN_LOG_S = 10.0
 
 
 def application_directory() -> Path:
@@ -160,8 +165,9 @@ class SerialWorker(threading.Thread):
             )
         return (
             f"Nhận {received_bytes} byte nhưng không có frame hợp lệ ở {self.baud} baud: "
-            "kiểm tra baud. Tag_DevKit chạy 1000000; Tag PCB nối USB-UART trực tiếp "
-            "chạy 115200; qua gateway ESP32-C3 thì baud nào cũng được."
+            "kiểm tra baud. Tag_DevKit chạy 460800 (firmware trước 2026-09-26: "
+            "1000000); Tag PCB nối USB-UART trực tiếp chạy 115200; qua gateway "
+            "ESP32-C3 thì baud nào cũng được."
         )
 
     def stop(self) -> None:
@@ -285,6 +291,10 @@ class DemoWorker(threading.Thread):
                                                 | TELEM_FEATURE_RANGE_MEAS
                                                 | TELEM_FEATURE_DIAG)
                 ack = bytes((command_id, 0x00, self.features))
+            elif command_id == CMD_GET_DEVICE_INFO:
+                self._emit(parser, encode_frame(
+                    TYPE_DEVICE_INFO, 0, tag_ms, self._device_info_payload(self.features)))
+                continue
             else:
                 ack = bytes((command_id, 0x08))          # UNSUPPORTED in the demo
             self._emit(parser, encode_frame(TYPE_CMD_ACK, 0, tag_ms, ack))
@@ -414,6 +424,14 @@ class UwbGui:
         self.recorder: SessionRecorder | None = None
         self.last_session_directory: Path | None = None
         self.recording_error_shown = False
+        # A recording wants full telemetry; set on start and on every
+        # (re)connection, cleared once the TAG state is known and requested.
+        self._record_telemetry_pending = False
+        # UART link quality from the parser counters (reported every second).
+        self._uart_previous: ParserCounters | None = None
+        self._uart_bad_pct: float | None = None
+        self._online_port: str | None = None
+        self._last_uart_warning = -math.inf
         self.last_advanced_refresh = 0.0
         self.last_meas_refresh = 0.0
         self._last_ui_error: str | None = None
@@ -748,11 +766,16 @@ class UwbGui:
         self.uptime_var.set("-")
         self.loss_var.set("0")
         self._update_parser_counters(ParserCounters(), 0.0)
+        self._uart_previous = None
+        self._uart_bad_pct = None
+        self._online_port = None
         self._draw_graph()
         self.map_panel.reset_session()
         self.analysis_panel.reset_session()
         self.calibration_panel.discard_capture()
         self.meas_panel.reset_session()
+        if self.recorder is not None:
+            self._record_telemetry_pending = True
         self.connect_button.configure(text="Ngắt kết nối")
         self.port_combo.configure(state="disabled")
         self.baud_combo.configure(state="disabled")
@@ -790,9 +813,9 @@ class UwbGui:
             self.stop_recording(show_result=True)
 
     def start_recording(self) -> None:
-        if self.worker is None:
-            messagebox.showwarning(APP_TITLE, "Hãy kết nối UART trước khi bắt đầu ghi.")
-            return
+        """Record everything until "Dừng và lưu": every telemetry type of all
+        anchors. The session survives a disconnect and continues after the
+        next connection."""
         source = "DEMO" if self.demo else self.port_labels.get(
             self.port_var.get(), self.port_var.get().split(" ", 1)[0]
         )
@@ -811,9 +834,46 @@ class UwbGui:
             recorder.record_event(f"ANCHOR LAYOUT SNAPSHOT ERROR: {exc}")
         self.recording_error_shown = False
         self.record_button.configure(text="Dừng và lưu")
-        self.recording_var.set(f"Đang ghi: {recorder.session_directory.name}")
+        self._show_recording_state()
         self.record_count_var.set("0 frame / 0 mẫu")
         self._append_log(f"RECORD START {recorder.session_directory}")
+        if self.worker is None:
+            self._append_log("RECORD: chưa kết nối UART; dữ liệu được ghi từ lúc kết nối.")
+        self._record_telemetry_pending = True
+        self._request_full_telemetry()
+
+    def _show_recording_state(self) -> None:
+        recorder = self.recorder
+        if recorder is None:
+            return
+        waiting = "" if self.worker is not None else " · chờ kết nối UART để ghi tiếp"
+        self.recording_var.set(f"Đang ghi: {recorder.session_directory.name}{waiting}")
+
+    def _request_full_telemetry(self, request_info: bool = True) -> None:
+        """While recording, make the TAG send snapshot + DIAG, and RANGE_MEAS
+        when its UART can carry it, so every anchor record reaches the log.
+        Waits for DEVICE_INFO while the TAG state is unknown."""
+        worker = self.worker
+        if worker is None or self.recorder is None or not self._record_telemetry_pending:
+            return
+        features = self.meas_panel.features
+        baud = self.meas_panel.uart_baud
+        if features is None or baud is None:
+            worker.request_command(CMD_GET_DEVICE_INFO)
+            return
+        self._record_telemetry_pending = False
+        wanted = TELEM_FEATURE_RANGE_SNAPSHOT | TELEM_FEATURE_DIAG
+        if baud >= TELEM_RANGE_MEAS_MIN_BAUD:
+            wanted |= TELEM_FEATURE_RANGE_MEAS
+        if features & wanted != wanted:
+            worker.request_command(CMD_SET_TELEMETRY, bytes((features | wanted,)))
+            self._append_log(
+                f"RECORD: SET_TELEMETRY 0x{features | wanted:02X} để ghi đủ "
+                "snapshot/RANGE_MEAS/DIAG cho phiên này"
+            )
+        if request_info:
+            # Puts DEVICE_INFO (build, OTP, settings) at the start of the log.
+            worker.request_command(CMD_GET_DEVICE_INFO)
 
     def stop_recording(self, show_result: bool = False) -> None:
         recorder = self.recorder
@@ -835,10 +895,14 @@ class UwbGui:
             if show_result:
                 meas = (f"\n{recorder.meas_records} bản ghi RANGE_MEAS (meas.csv)."
                         if recorder.meas_records else "")
+                diag = recorder.message_counts.get("diag_anchor.csv", 0)
+                diag_text = f"\n{diag} bản ghi DIAG_ANCHOR (diag_anchor.csv)." if diag else ""
                 messagebox.showinfo(
                     APP_TITLE,
                     f"Đã lưu {recorder.range_frames} frame RANGE "
-                    f"({recorder.range_samples} mẫu).{meas}\n\n{recorder.session_directory}",
+                    f"({recorder.range_samples} mẫu).{meas}{diag_text}\n"
+                    "Tổng kết từng anchor: summary.csv; từng giây: anchor_timeline.csv."
+                    f"\n\n{recorder.session_directory}",
                 )
 
     def _poll_events(self) -> None:
@@ -866,9 +930,10 @@ class UwbGui:
                     self.connection_var.set(f"Đã mở {payload}; đang chờ TAG trả lời")
                     self.connection_label.configure(style="Pending.TLabel")
                     self._append_log(f"OPEN {payload}")
+                    self._show_recording_state()
                 elif event == "tag_online":
-                    self.connection_var.set(f"TAG online: {payload}")
-                    self.connection_label.configure(style="Connected.TLabel")
+                    self._online_port = str(payload)
+                    self._show_link_state()
                 elif event == "notice":
                     self._append_log(str(payload))
                 elif event == "disconnected":
@@ -877,6 +942,7 @@ class UwbGui:
                         "Mất kết nối; phiên lấy mẫu đã được hủy."
                     )
                     self._mark_stale()
+                    self._online_port = None
                     self.connection_var.set("Đã ngắt kết nối")
                     self.connection_label.configure(style="Disconnected.TLabel")
                     self.worker = None
@@ -884,8 +950,9 @@ class UwbGui:
                     self.port_combo.configure(state="readonly")
                     self.baud_combo.configure(state="readonly")
                     self._append_log(f"CLOSE {payload}")
-                    if self.recorder is not None:
-                        self.stop_recording()
+                    # Keep recording: the same session resumes on reconnect,
+                    # and the timeline shows the gap as empty seconds.
+                    self._show_recording_state()
                 elif event == "error":
                     self._append_log(f"SERIAL ERROR: {payload}")
                     messagebox.showerror(APP_TITLE, f"Lỗi UART:\n{payload}")
@@ -899,27 +966,25 @@ class UwbGui:
                     if self.recorder is not None:
                         self.recorder.record_uart_stats(counters, byte_rate)
                     self._update_parser_counters(counters, byte_rate)
+                    self._check_uart_quality(counters)
                 elif event == "message":
+                    host_filtered = None
+                    if isinstance(payload, RangeMessage):
+                        latest_range = payload
+                        host_filtered = self._record_history(payload)
+                    # Every decoded type is logged, not only what the tabs show.
+                    if self.recorder is not None:
+                        self.recorder.record_message(payload, host_filtered)
                     # RANGE_MEAS is the most frequent message (one per measurement).
                     if isinstance(payload, RangeMeasMessage):
                         self.meas_panel.ingest(payload, time.monotonic())
-                        if self.recorder is not None:
-                            self.recorder.record_message(payload)
-                    elif isinstance(payload, RangeMessage):
-                        latest_range = payload
-                        host_filtered = self._record_history(payload)
-                        if self.recorder is not None:
-                            self.recorder.record_message(payload, host_filtered)
                     elif isinstance(payload, InfoMessage):
-                        if self.recorder is not None:
-                            self.recorder.record_message(payload)
                         self._update_info(payload)
                     elif isinstance(payload, StatsMessage):
-                        if self.recorder is not None:
-                            self.recorder.record_message(payload)
                         self._update_stats(payload)
                     elif isinstance(payload, DeviceInfoMessage):
                         self._update_device_info(payload)
+                        self._request_full_telemetry(request_info=False)
                     elif isinstance(payload, DiagSystemMessage):
                         self._update_diag_system(payload)
                     elif isinstance(payload, CmdAckMessage):
@@ -950,6 +1015,9 @@ class UwbGui:
         text = f"{recorder.range_frames} frame / {recorder.range_samples} mẫu"
         if recorder.meas_records:
             text += f" / {recorder.meas_records} meas"
+        diag = recorder.message_counts.get("diag_anchor.csv", 0)
+        if diag:
+            text += f" / {diag} diag"
         return text
 
     def _refresh_recording_status(self) -> None:
@@ -978,6 +1046,39 @@ class UwbGui:
         self.crc_var.set(str(counters.crc_errors))
         self.discarded_var.set(str(counters.discarded_bytes))
         self.rate_var.set(f"{byte_rate:,.0f} B/s")
+
+    def _show_link_state(self) -> None:
+        if self._online_port is None:
+            return
+        if self._uart_bad_pct is None:
+            self.connection_var.set(f"TAG online: {self._online_port}")
+            self.connection_label.configure(style="Connected.TLabel")
+        else:
+            self.connection_var.set(
+                f"TAG online: {self._online_port} · UART hỏng {self._uart_bad_pct:.0f}% byte")
+            self.connection_label.configure(style="Pending.TLabel")
+
+    def _check_uart_quality(self, counters: ParserCounters) -> None:
+        """Flag a link that corrupts telemetry. Its lost frames look like
+        missing anchors in every tab although the UWB exchanges succeed."""
+        previous, self._uart_previous = self._uart_previous, counters
+        if previous is None or counters.bytes_received <= previous.bytes_received:
+            return
+        received = counters.bytes_received - previous.bytes_received
+        discarded = counters.discarded_bytes - previous.discarded_bytes
+        crc_errors = counters.crc_errors - previous.crc_errors
+        percent = 100.0 * discarded / received
+        self._uart_bad_pct = percent if percent >= UART_CORRUPT_WARN_PCT else None
+        self._show_link_state()
+        now = time.monotonic()
+        if self._uart_bad_pct is not None and now - self._last_uart_warning >= UART_WARN_LOG_S:
+            self._last_uart_warning = now
+            self._append_log(
+                f"UART LỖI: {percent:.0f}% byte bị loại, {crc_errors} frame sai CRC trong "
+                "1 s. Frame mất ngẫu nhiên nên anchor trông như mất tín hiệu dù UWB vẫn "
+                "đo. Tag_DevKit qua J-Link VCOM: dùng firmware 460800 baud (1 Mbaud "
+                "hỏng ~70 % byte); còn lỗi thì giảm baud tiếp hoặc dùng USB-UART rời."
+            )
 
     def _update_device_info(self, message: DeviceInfoMessage) -> None:
         self.meas_panel.set_device_info(message.telemetry_features, message.uart_baud)

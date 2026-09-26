@@ -4,12 +4,31 @@ DWM1001 UWB GROUND CONTROL - GOI DEMO PORTABLE
 1. May demo khong can cai Python.
 2. Double-click DWM1001_UWB_Ground_Control.exe de ket noi UART that.
 3. Double-click CHAY_DEMO.cmd de chay telemetry mo phong khong can board.
-4. Khi dung UART that: bam Lam moi, chon dung COM. Baud: 1000000 (mac dinh)
-   cho Tag_DevKit; 115200 cho Tag PCB noi USB-UART; qua gateway ESP32-C3 thi
+4. Khi dung UART that: bam Lam moi, chon dung COM. Baud: 460800 (mac dinh)
+   cho Tag_DevKit (firmware cu truoc 2026-09-26: 1000000); 115200 cho Tag PCB noi USB-UART; qua gateway ESP32-C3 thi
    baud nao cung duoc.
 5. Thu muc data_logs va file anchor_layout.json se duoc tao canh file EXE.
 
-Ban build: 1.3.0 - Windows x64
+Ban build: 1.4.2 - Windows x64
+
+Baud 1.4.2:
+- Tag_DevKit chuyen sang 460800 vi J-Link VCOM hong ~70% byte o 1000000.
+
+Canh bao UART 1.4.1:
+- Khi >1% byte UART bi loai (sai CRC), dong trang thai chuyen vang
+  "UART hong N% byte" va o su kien ghi UART LOI. Luc do anchor trong nhu
+  mat tin hieu nhung thuc ra la mat frame tren duong UART.
+- session.json ghi uart_discarded_pct va meas_delivered_pct.
+
+Ghi du lieu 1.4.0:
+- Bam Bat dau ghi truoc hoac sau khi ket noi; phien ghi chay lien tuc toi
+  khi bam Dung va luu. Mat ket noi khong dung phien, ket noi lai ghi tiep.
+- Ghi du moi loai goi: them diag_anchor.csv, anchor_info.csv,
+  diag_system.csv, device_info.csv, cmd_ack.csv.
+- anchor_timeline.csv: moi giay mot dong cho moi anchor A1..A8, ke ca
+  anchor khong co du lieu.
+- summary.csv: tong ket tung anchor khi dung ghi (Hz, % DS/fallback,
+  FP/RX, clock offset, timeout, boot count cua anchor...).
 
 Tab RANGE_MEAS 1.3.0:
 - Moi phep do mot dong ban ghi: Hz that cua tung anchor, ban ghi mat,

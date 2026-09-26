@@ -151,12 +151,22 @@ chu kỳ đo. Không dùng nghiệm có RMS/residual lớn hoặc geometry condi
 
 | Nguồn | Baud trong GUI |
 |---|---|
-| `Tag_DevKit` qua J-Link VCOM của DWM1001-DEV | **1000000** (mặc định) |
+| `Tag_DevKit` qua J-Link VCOM của DWM1001-DEV | **460800** (mặc định; firmware trước 2026-09-26 chạy 1000000) |
 | `Tag` PCB qua gateway ESP32-C3 (USB Serial/JTAG) | tùy ý, gateway bỏ qua baud |
 | `Tag` PCB nối USB-UART 3.3 V trực tiếp | **115200** |
 
 Nếu sau 3 s không có frame hợp lệ, GUI ghi gợi ý vào ô sự kiện: nhận được byte
 mà không có frame thường là sai baud.
+
+Khi hơn 1 % số byte nhận trong một giây bị parser loại (CRC/độ dài sai), dòng
+trạng thái đổi sang vàng "TAG online · UART hỏng N% byte" và ô sự kiện ghi cảnh
+báo `UART LỖI` (tối đa 10 s một lần). Lúc đó frame mất ngẫu nhiên, frame dài và
+frame gửi liền nhau mất nhiều nhất, nên anchor trông như mất tín hiệu dù UWB vẫn
+đo bình thường. `session.json` lưu `uart_discarded_pct` và `meas_delivered_pct`
+(tỉ lệ RANGE_MEAS nhận được theo `meas_seq`). J-Link OB-STM32F072 của
+DWM1001-DEV ở 1 Mbaud không flow control làm hỏng khoảng 70 % byte, tắt MSD
+cũng không đỡ; vì vậy Tag_DevKit nay chạy 460800. Nếu 460800 vẫn còn cảnh báo,
+giảm tiếp hoặc dùng USB-UART rời nối vào P0.05/P0.11.
 
 Firmware `Tag` (PCB) phát UART0 **115200, 8N1**, packet binary:
 
@@ -190,7 +200,7 @@ py -3.12 -m pip install -r requirements.txt
 ```
 
 Nhấn **Làm mới**, chọn đúng COM không phải `Standard Serial over Bluetooth`, chọn
-baud theo bảng ở trên (mặc định 1000000 cho Tag_DevKit) và nhấn **Kết nối**.
+baud theo bảng ở trên (mặc định 460800 cho Tag_DevKit) và nhấn **Kết nối**.
 Dòng vàng "đã mở COM; đang chờ TAG" chỉ xác nhận cổng serial. Dòng xanh "TAG
 online" xuất hiện sau khi nhận được frame hợp lệ. GUI gửi `PING` mỗi giây; nếu
 `DEVICE_INFO` cho biết `RANGE_SNAPSHOT` đang tắt, GUI bật lại bit này cho phiên
@@ -202,11 +212,23 @@ Thanh **Thu dữ liệu** ở đầu cửa sổ mặc định được thu gọn
 các bảng và đồ thị. Nút ghi, trạng thái và số mẫu luôn hiển thị; nhấn **Hiện chi
 tiết** khi cần đổi thư mục hoặc xem thống kê UART/firmware.
 
-Sau khi UART đã kết nối, chọn thư mục rồi nhấn **Bắt đầu ghi**. Khi hoàn tất,
-nhấn **Dừng và lưu**. Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
+Chọn thư mục rồi nhấn **Bắt đầu ghi**, trước hoặc sau khi kết nối UART đều được.
+Phiên ghi chạy liên tục tới khi nhấn **Dừng và lưu** (hoặc đóng GUI): mất kết
+nối không dừng phiên, kết nối lại thì dữ liệu ghi tiếp vào cùng thư mục, còn
+khoảng mất kết nối hiện thành các giây rỗng trong `anchor_timeline.csv`. Khi bắt
+đầu ghi và mỗi lần kết nối lại, GUI xin `DEVICE_INFO` và bật snapshot + DIAG,
+cộng RANGE_MEAS nếu UART của TAG ≥ 460800 baud (chỉ cho phiên, không lưu vào
+TAG). Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
 
 | File | Nội dung |
 |---|---|
+| `summary.csv` | Viết khi dừng: một dòng cho mỗi Anchor A1..A8 trong cả phiên — số phép đo, Hz, % DS / SS_FALLBACK, khe hở dài nhất, raw mean/std/min/max, FP/RX, NLOS Δ, clock offset, slot, % snapshot valid/timeout, bộ đếm DIAG_ANCHOR (tổng và mức tăng trong phiên), build/config hash và boot count do anchor báo |
+| `anchor_timeline.csv` | Mỗi giây một dòng cho **mỗi** Anchor A1..A8, kể cả khi không có dữ liệu: số phép đo, Hz, DS/SS/fallback, raw, FP/RX, NLOS, clock offset, slot, snapshot valid/timeout, status cuối và bộ đếm DIAG_ANCHOR mới nhất |
+| `diag_anchor.csv` | Mọi frame DIAG_ANCHOR (TAG gửi 2 anchor/giây): success, RESP/REPORT timeout, RX error, poll bỏ qua, DS fallback, txn mismatch, probe, streak, backed-off, thời gian slot/chờ RESP |
+| `anchor_info.csv` | Mọi frame ANCHOR_INFO: vị trí, build hash + dirty, config hash, TX power, antenna delay, boot count của anchor |
+| `diag_system.csv` | Mọi frame DIAG_SYSTEM của TAG: chu kỳ, overrun, SPI/recovery, active mask, UART/queue, từng loại RX error, DS/fallback, nhiệt độ |
+| `device_info.csv` | Mọi frame DEVICE_INFO: git/config hash, OTP (PARTID, trim thạch anh), TX power, antenna delay, baud, telemetry features, mask |
+| `cmd_ack.csv` | Phản hồi của TAG cho lệnh GUI gửi (kèm `result_name`) |
 | `range.csv` | Một dòng cho mỗi Anchor: host/tag time, sequence, valid, status, raw/FW filtered/host filtered mm và FPP |
 | `meas.csv` | Một dòng cho mỗi bản ghi RANGE_MEAS: `meas_seq`, `meas_time_us`, mode, flags, status, raw/corrected/filtered mm, FP/RX, NLOS Δ, công suất phía anchor, `std_noise`, `fp_index`, clock offset, slot. Công suất không đo được để trống |
 | `stats.csv` | Poll, OK, timeout, RX error, overrun, UART overflow và tần số |
@@ -215,9 +237,13 @@ nhấn **Dừng và lưu**. Mỗi lần ghi tạo một thư mục riêng theo t
 | `events.log` | Kết nối, lỗi protocol, STALE và sự kiện trên GUI |
 | `raw_telemetry.bin` | Ghép liên tiếp các frame binary đã qua kiểm tra CRC |
 | `anchor_layout.json` | Snapshot tọa độ ENU đang được bản đồ/solver sử dụng |
-| `session.json` | Metadata, thời lượng và tổng số bản ghi/drop |
+| `session.json` | Metadata, thời lượng, tổng số bản ghi/drop và số frame từng loại (`message_counts`) |
 
-Writer chạy ở thread riêng và flush mỗi giây. Nếu hàng đợi ghi đầy hoặc ổ đĩa
+Các loại frame khác (ví dụ `gateway_health.csv` khi đi qua ESP32-C3) cũng tự có
+file riêng khi xuất hiện; cột lấy theo đúng trường đã giải mã, hash/mask ghi hex.
+`summary.csv` và `anchor_timeline.csv` chỉ giữ tổng chạy (không giữ từng mẫu) nên
+phiên dài không làm tăng RAM. Hz trong `summary.csv` chia cho toàn bộ thời lượng
+phiên, kể cả lúc chờ kết nối. Writer chạy ở thread riêng và flush mỗi giây. Nếu hàng đợi ghi đầy hoặc ổ đĩa
 lỗi, `queue_drops`/`error` được lưu trong `session.json` và GUI hiển thị lỗi.
 `session.json` cũng ghi phiên bản/tham số Host Filter để tái lập phép thử.
 
