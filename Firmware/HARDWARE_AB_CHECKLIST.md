@@ -27,14 +27,16 @@ và giữ `UWB_DS_CALIBRATED_MASK = 0` cho tới khi Bước 7 hoàn tất.
 
 Flash theo thứ tự ở `CHANGELOG.md` §1 (anchor trước, TAG sau).
 
-- [ ] Chỉ cấp nguồn Anchor: LED trạng thái tắt (không có TAG); nếu nhấp nhanh
+- [ ] Chỉ cấp nguồn Anchor: LED chớp nhanh 3 lần khi khởi động, sau đó tắt và
+      chỉ chớp ngắn mỗi 2 s (radio đang nghe, không có TAG); nếu nhấp nhanh
       150 ms thì đó là fault, không phải link.
 - [ ] Chỉ cấp nguồn TAG DevKit, chưa mở GUI: D9 xanh, D8 đỏ, D11 xanh dương đều
       tắt sau thời gian khởi động.
 - [ ] Mở GUI: trạng thái chuyển từ vàng "đang chờ TAG" sang xanh "TAG online";
       D11 xanh dương sáng. Tắt GUI: D11 tắt trong tối đa 2,5 s.
 - [ ] Bật một Anchor đúng ID: LED link của TAG và Anchor cùng sáng trong tối đa
-      1 s sau exchange cuối; tắt Anchor thì cả hai không được tiếp tục chớp.
+      1 s sau exchange cuối; tắt Anchor thì LED TAG tắt. Anchor nháy 1 Hz
+      nghĩa là nó nhận POLL nhưng exchange DS-TWR không hoàn tất.
 - [ ] `DEVICE_INFO` (0x16) của TAG và `ANCHOR_INFO` (0x12) báo đúng git hash +
       config hash, cờ dirty = 0; PARTID/LOTID của TAG khớp nhãn dán.
 - [ ] `DIAG_SYSTEM` (0x15): `recovery_count = 0`, `fault_reboot_count = 0`,

@@ -15,7 +15,7 @@ với TAG DevKit và A1–A4. ID ngắn lần lượt là `0x0005` … `0x0008`.
 | A8 | `dist/anchor_8_stm32f103.hex` | ST-LINK Utility |
 
 Các HEX bắt đầu ở `0x08000000`, không có bootloader offset. Mỗi ảnh có
-25.936 byte dữ liệu flash; linker dùng 25.940/65.536 byte flash và
+26.096 byte dữ liệu flash; linker dùng 26.100/65.536 byte flash và
 7.500/20.480 byte RAM. Chạy `python Firmware/tools/verify_stm32_images.py`
 để kiểm checksum Intel HEX, vector khởi động, giới hạn flash, ID nguồn và
 việc bốn ảnh khác nhau. **Build và kiểm file không thay thế thử nghiệm trên
@@ -73,6 +73,17 @@ sau đó gỡ ổ này. Muốn build riêng: `-Anchors 5` hoặc `-Anchors 6,7,8
 3. Bật TAG và chỉ một anchor vừa nạp. Kiểm TAG nhận đúng ID A5/A6/A7/A8,
    có RESPONSE/REPORT và raw range thay đổi khi di chuyển. Sau đó bật dần
    đến đủ tám anchor, kiểm timeout và chu kỳ bằng telemetry/sniffer.
+
+LED PC13 (active-low) cho biết anchor đi được tới bước nào, không cần UART:
+
+| LED | Nghĩa |
+|---|---|
+| 3 chớp nhanh ngay khi cấp nguồn/reset | Firmware đã chạy, LED nối đúng. Lặp lại liên tục = board tự reset (nguồn, watchdog) |
+| Sáng liên tục | Có ít nhất một exchange DS-TWR hoàn chỉnh (REPORT đã phát) trong 1 s gần nhất |
+| Nháy 1 Hz (500 ms sáng/500 ms tắt) | Nhận được POLL gửi cho anchor này nhưng exchange không hoàn tất: RESP trễ (HPDWARN), mất FINAL hoặc REPORT |
+| Tắt, chớp ngắn mỗi 2 s | Radio chạy và đang nghe, nhưng chưa nhận POLL nào cho anchor này |
+| Nháy nhanh 150 ms | Radio lỗi (không đọc được DW1000, PLL không khóa…), đang thử khởi tạo lại |
+| Tắt hẳn, không có 3 chớp lúc cấp nguồn | Firmware không chạy: kiểm nạp (Program & Verify), BOOT0 = 0, nguồn 3,3 V |
 4. A1–A4 là DWM1001C/nRF52832: dùng ảnh `Firmware/Anchor_1` …
    `Firmware/Anchor_4` và J-Link/OpenOCD, **không dùng ST-LINK Utility**.
 

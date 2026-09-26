@@ -22,15 +22,18 @@
  * UART0 uses P0.05/P0.11.  With factory-default solder bridges J14/J15 closed,
  * it is exposed as the on-board J-Link USB Virtual COM port.
  *
- * RANGE_MEAS sends one 66-byte frame per measurement (about 300-400 per
- * second with eight anchors) next to the 50 Hz snapshots: ~30 kB/s, which is
- * far beyond 115200 baud (11.5 kB/s). Use the EasyDMA UARTE at 1 Mbaud, as
- * Sniffer_DevKit does on the same board: the nRF52 generates exactly
- * 1000000 baud (its "921600" setting really runs at 941176), and the J-Link
- * virtual COM port supports it. The GUI and uwb_command.py default to it.
+ * RANGE_MEAS sends one 66-byte frame per measurement next to the per-cycle
+ * snapshot. Measured with eight anchors (29 Hz cycle): ~20 kB/s, far beyond
+ * 115200 baud (11.5 kB/s), so UART0 uses the EasyDMA UARTE at 460800
+ * (~46 kB/s, 44 % load; RANGE_MEAS needs >= 460800).
+ *
+ * Not 1 Mbaud: on 2026-09-26 the J-Link OB-STM32F072 VCOM of this board
+ * delivered the bytes at 1 Mbaud but 72 % of them failed CRC, with and
+ * without its MSD disabled. Long and back-to-back frames never arrived.
+ * The GUI and uwb_command.py default to 460800.
  */
 &uart0 {
 	compatible = "nordic,nrf-uarte";
-	current-speed = <1000000>;
+	current-speed = <460800>;
 	status = "okay";
 };

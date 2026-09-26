@@ -13,6 +13,49 @@ nghiệm thu trên board thật.
 
 ## 0. Cập nhật sau bản v2
 
+### 0.4 — 2026-09-26: Tag_DevKit UART 460800 thay cho 1 Mbaud
+
+Chỉ đổi `Tag_DevKit/app.overlay` (`current-speed = <460800>`), chú thích trong
+`uwb_app_config.h`, baud mặc định của GUI 1.4.2 và `uwb_command.py`. Không đổi
+RF hay giao thức; mục 0.2 bị thay thế ở phần chọn baud.
+
+**Lý do (hai log phần cứng 2026-09-26, TAG DevKit + 8 anchor):**
+
+- PC nhận khoảng 18,9 kB/s, gần bằng lượng TAG gửi (khoảng 20 kB/s), nhưng
+  72 % byte bị parser loại vì sai CRC. Kết quả giống hệt sau khi đã tắt MSD của
+  J-Link OB-STM32F072 (`MSDDisable`).
+- Frame dài hoặc gửi liền nhau không bao giờ tới: 0 snapshot RANGE, 0 INFO,
+  0 DIAG trong 128 s; RANGE_MEAS lọt khoảng 33 %. Bản ghi của A8 luôn đi ngay
+  sau snapshot nên mất 100 %, khiến A8 trông như không có tín hiệu.
+- Phía UWB bình thường: 234 exchange OK/s = 8 anchor × 29,3 Hz, 26 timeout
+  từ lúc TAG boot; A5–A7 (STM32) hoàn tất DS-TWR 99,7–99,9 %.
+
+Tám anchor ở chu kỳ 29 Hz tạo khoảng 20 kB/s, bằng 44 % dung lượng của 460800.
+nRF52 chạy mức này ở 457143 baud thực, J-Link khoảng 461538: lệch khoảng 1 %.
+
+Firmware Tag_DevKit cũ vẫn phát 1 Mbaud: phải chọn 1000000 trong GUI tới khi
+nạp bản mới. `Sniffer_DevKit` vẫn 1 Mbaud và chưa kiểm trên phần cứng.
+
+### 0.3 — 2026-09-25: LED trạng thái anchor chẩn đoán được
+
+Chỉ đổi `common/src/app/main_anchor.c`; không đổi RF, giao thức hay timing
+ranging. Lần nạp thử đầu tiên, bốn anchor STM32 A5–A8 đều không nháy LED. Với
+quy ước cũ, điều đó không phân biệt được "firmware không chạy", "không nghe
+được POLL" và "có POLL nhưng DS-TWR không hoàn tất": LED chỉ sáng khi có
+REPORT, còn lại tắt, và không có tín hiệu khởi động như firmware CubeIDE cũ.
+
+| LED | Nghĩa |
+|---|---|
+| 3 chớp nhanh khi khởi động | Firmware chạy; lặp lại = reboot loop |
+| Sáng liên tục | Exchange DS-TWR hoàn chỉnh trong 1 s gần nhất (như cũ) |
+| Nháy 1 Hz | Có POLL cho anchor này (`anchor_stats.polls` tăng) nhưng không hoàn tất |
+| Chớp ngắn 50 ms mỗi 2 s | Radio đang nghe, chưa có POLL cho anchor này |
+| Nháy nhanh 150 ms | Radio fault (như cũ) |
+
+Ghi LED chỉ khi mức thay đổi, nên vòng lặp anchor không thêm truy cập GPIO mỗi
+lượt. Chớp khởi động (0,72 s) chạy trước khi watchdog bật. Áp cho cả A1–A4
+nếu build lại, nhưng không bắt buộc nạp lại A1–A4.
+
 ### 0.2 — 2026-09-25: UART 1 Mbaud và RANGE_MEAS trên TAG DevKit
 
 Giống mục 0.1, đây là thay đổi hành vi có chủ đích và **chỉ áp cho TAG DevKit**.
