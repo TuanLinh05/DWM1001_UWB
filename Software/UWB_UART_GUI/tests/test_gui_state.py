@@ -1,8 +1,11 @@
 """Widget-state regression checks; no serial hardware or visible window needed."""
+import csv
 import sys
 import time
 import math
 import queue
+import shutil
+import uuid
 from dataclasses import replace
 from pathlib import Path
 import tkinter as tk
@@ -17,9 +20,11 @@ from telemetry_protocol import (
     CMD_SET_TELEMETRY,
     CmdAckMessage,
     DeviceInfoMessage,
+    DiagAnchorMessage,
     MEAS_FLAG_CAL_OK,
     MEAS_FLAG_FILTER_OK,
     MEAS_FLAG_RADIO_OK,
+    ParserCounters,
     RangeMeasMessage,
     RangeMessage,
     STATUS_CALIBRATION_MISSING,
@@ -80,12 +85,116 @@ MEAS_A2 = RangeMeasMessage(
 )
 
 
+DIAG_A5 = DiagAnchorMessage(
+    sequence=0, time_ms=0, anchor_id=5, active=True, backed_off=True, calibrated=False,
+    success=120, resp_timeouts=340, poll_tx_timeouts=0, rx_errors=12, poll_skipped=55,
+    cal_missing=120, ds_ok=0, report_timeouts=60, ds_fallbacks=60, txn_mismatch=1,
+    probes=22, resp_streak=3, ds_streak=4, slot_us=3100, slot_max_us=5600,
+    resp_wait_max_us=2650, processing_max_us=310, poll_tx_max_us=420,
+)
+
+
 class GuiStateTests(unittest.TestCase):
     @staticmethod
     def close_app(root):
         for callback in root.tk.call('after', 'info'):
             root.after_cancel(callback)
         root.destroy()
+
+    def test_recording_keeps_every_message_and_survives_disconnect(self):
+        logs = Path(__file__).resolve().parents[1] / f".gui-record-test-{uuid.uuid4().hex}"
+        self.addCleanup(shutil.rmtree, logs, True)
+        root = tk.Tk()
+        root.withdraw()
+        app = None
+        try:
+            app = UwbGui(root)
+            app.log_directory_var.set(str(logs))
+            app.start_recording()                         # allowed before connecting
+            self.assertIsNotNone(app.recorder)
+            self.assertIn("chờ kết nối", app.recording_var.get())
+
+            worker = FakeWorker()
+            app.worker = worker
+            app._record_telemetry_pending = True          # what connect() sets
+            app.events.put(("connected", "COM_TEST"))
+            app.events.put(("message", demo_device_info(telemetry_features=0x01)))
+            app.events.put(("message", DIAG_A5))
+            app._poll_events_once()
+            # Snapshot only on a 1 Mbaud TAG: RANGE_MEAS and DIAG are added.
+            self.assertEqual(worker.requests, [(CMD_SET_TELEMETRY, bytes((0x07,)))])
+            self.assertNotIn("chờ kết nối", app.recording_var.get())
+
+            app.events.put(("disconnected", "COM_TEST"))
+            app._poll_events_once()
+            self.assertIsNotNone(app.recorder)            # still the same session
+            self.assertIn("chờ kết nối", app.recording_var.get())
+            session = app.recorder.session_directory
+            app.stop_recording()
+            self.assertIn("1 diag", app.record_count_var.get())
+        finally:
+            if app is not None and app.recorder is not None:
+                app.recorder.stop()
+            self.close_app(root)
+
+        with (session / "diag_anchor.csv").open(encoding="utf-8", newline="") as handle:
+            diag = list(csv.DictReader(handle))
+        self.assertEqual([(row["anchor_id"], row["resp_timeouts"]) for row in diag],
+                         [("5", "340")])
+        self.assertTrue((session / "device_info.csv").is_file())
+        self.assertTrue((session / "summary.csv").is_file())
+        self.assertIn("CLOSE COM_TEST", (session / "events.log").read_text(encoding="utf-8"))
+
+    def test_corrupting_uart_is_flagged_in_the_status_line(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = UwbGui(root)
+            app.events.put(("tag_online", "COM14"))
+            # Counters of the 2026-09-26 log: 72 % of the bytes failed CRC.
+            app.events.put(("parser", (ParserCounters(472042, 1967, 343091, 4060, 475), 19025.0)))
+            app.events.put(("parser", (ParserCounters(490869, 2057, 356046, 4210, 494), 18827.0)))
+            app._poll_events_once()
+            self.assertIn("UART hỏng 69% byte", app.connection_var.get())
+            self.assertEqual(str(app.connection_label.cget("style")), "Pending.TLabel")
+            log = app.log_text.get("1.0", tk.END)
+            self.assertIn("UART LỖI: 69% byte bị loại, 150 frame sai CRC", log)
+
+            app.events.put(("parser", (ParserCounters(509000, 2400, 356046, 4210, 494), 18000.0)))
+            app._poll_events_once()
+            self.assertEqual(app.connection_var.get(), "TAG online: COM14")
+            self.assertEqual(str(app.connection_label.cget("style")), "Connected.TLabel")
+        finally:
+            self.close_app(root)
+
+    def test_recording_requests_only_missing_telemetry(self):
+        # (TAG features, TAG UART baud) -> SET_TELEMETRY argument, or None
+        cases = ((0x07, 1_000_000, None), (0x05, 1_000_000, 0x07),
+                 (0x01, 115_200, 0x05), (0x05, 115_200, None))
+        logs = Path(__file__).resolve().parents[1] / f".gui-record-test-{uuid.uuid4().hex}"
+        self.addCleanup(shutil.rmtree, logs, True)
+        root = tk.Tk()
+        root.withdraw()
+        app = None
+        try:
+            app = UwbGui(root)
+            app.log_directory_var.set(str(logs))
+            for features, baud, expected in cases:
+                with self.subTest(features=features, baud=baud):
+                    worker = FakeWorker()
+                    app.worker = worker
+                    app.meas_panel.set_device_info(features, baud)
+                    app.start_recording()
+                    telemetry = [args for command, args in worker.requests
+                                 if command == CMD_SET_TELEMETRY]
+                    self.assertEqual(telemetry, [] if expected is None else [bytes((expected,))])
+                    self.assertFalse(app._record_telemetry_pending)
+                    app.stop_recording()
+        finally:
+            if app is not None:
+                app.stop_recording()
+                app.worker = None
+            self.close_app(root)
 
     def test_serial_worker_enables_range_meas_only_on_a_fast_uart(self):
         # (auto enable, TAG UART baud, TAG features) -> features the GUI requests
@@ -134,7 +243,7 @@ class GuiStateTests(unittest.TestCase):
         worker = SerialWorker("COM_TEST", 115200, queue.Queue())
         garbage = worker._link_hint(500)
         self.assertIn("115200 baud", garbage)
-        self.assertIn("Tag_DevKit chạy 1000000", garbage)
+        self.assertIn("Tag_DevKit chạy 460800", garbage)
         self.assertIn("cổng COM", worker._link_hint(0))
 
     def test_demo_answers_set_telemetry(self):

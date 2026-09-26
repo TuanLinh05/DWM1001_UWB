@@ -14,14 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from session_recorder import SessionRecorder  # noqa: E402
 from telemetry_protocol import (  # noqa: E402
+    AnchorInfoMessage,
     AnchorSample,
+    CmdAckMessage,
+    DiagAnchorMessage,
+    DiagSystemMessage,
     INT16_MIN,
     InfoMessage,
     ParserCounters,
+    RX_ERROR_FIELDS,
     RangeMeasMessage,
     RangeMessage,
     StatsMessage,
 )
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 class SessionRecorderTests(unittest.TestCase):
@@ -57,6 +67,10 @@ class SessionRecorderTests(unittest.TestCase):
             )
             recorder.record_uart_stats(
                 ParserCounters(4000, 100, 3, 1, 2, 4, 5), 4123.5
+            )
+            # One second later: 2000 new bytes, 200 of them discarded.
+            recorder.record_uart_stats(
+                ParserCounters(6000, 150, 203, 11, 2, 4, 5), 2000.0
             )
         finally:
             recorder.stop()
@@ -112,7 +126,13 @@ class SessionRecorderTests(unittest.TestCase):
         self.assertEqual(metadata["meas_records"], 1)
         self.assertEqual(metadata["info_frames"], 1)
         self.assertEqual(metadata["stats_frames"], 1)
-        self.assertEqual(metadata["uart_snapshots"], 1)
+        self.assertEqual(metadata["uart_snapshots"], 2)
+        # The first snapshot is only the baseline of the cumulative counters.
+        self.assertEqual((metadata["uart_bytes_received"], metadata["uart_discarded_bytes"],
+                          metadata["uart_crc_errors"]), (2000, 200, 10))
+        self.assertEqual(metadata["uart_discarded_pct"], 10.0)
+        self.assertEqual((metadata["meas_seq_expected"], metadata["meas_delivered_pct"]),
+                         (1, 100.0))
         self.assertEqual(metadata["raw_frames"], 1)
         self.assertEqual(metadata["raw_bytes"], 4)
         self.assertEqual(metadata["event_lines"], 1)
@@ -127,6 +147,74 @@ class SessionRecorderTests(unittest.TestCase):
         )
         self.assertIsNone(metadata["host_filter"]["maximum_range_mm"])
         self.assertIsNone(metadata["host_filter"]["snap_after_samples"])
+
+        # The whole session is summarised per anchor, A1..A8 even without data.
+        summary = read_csv(session / "summary.csv")
+        self.assertEqual([row["anchor_id"] for row in summary], [str(n) for n in range(1, 9)])
+        self.assertEqual(summary[1]["meas_count"], "1")
+        self.assertEqual(summary[1]["ss_fallback_count"], "1")
+        self.assertEqual(summary[0]["snap_frames"], "1")
+        timeline = read_csv(session / "anchor_timeline.csv")
+        self.assertEqual(len(timeline) % 8, 0)
+        self.assertGreaterEqual(len(timeline), 8)
+        self.assertEqual(metadata["anchor_timeline_rows"], len(timeline))
+        self.assertTrue(metadata["summary_written"])
+
+    def test_every_other_message_type_gets_its_own_csv(self) -> None:
+        test_root = Path(__file__).resolve().parents[1]
+        temporary = test_root / f".recorder-test-{uuid.uuid4().hex}"
+        temporary.mkdir()
+        self.addCleanup(shutil.rmtree, temporary, True)
+        recorder = SessionRecorder(temporary, "COM7", 1_000_000)
+        try:
+            recorder.record_message(DiagAnchorMessage(
+                7, 1000, 5, True, True, False, 120, 340, 0, 12, 55, 120, 0, 60, 60, 1, 22,
+                3, 4, 3100, 5600, 2650, 310, 420,
+            ))
+            recorder.record_message(AnchorInfoMessage(
+                8, 1100, 6, 0x02, False, (1000, -2000, 2500), 0x202F8AE9, True, 0,
+                16436, 16436, 4, 0x4C2C721F,
+            ))
+            recorder.record_message(CmdAckMessage(9, 1200, 0x0F, 0x08, bytes((0x07,))))
+            recorder.record_message(DiagSystemMessage(
+                10, 1300, 0xBEEF, 2, 0x10, 60_000, 2400, 25_100, 31_000, 2300, 0, 0, 0,
+                59, 0, 0, False, 0, False, 0xFF, 0, 0, 700, 3, 60, 0, 0, False, 1,
+                {name: index for index, name in enumerate(RX_ERROR_FIELDS)},
+                900, 300, 280, 0, 31.5, None,
+            ))
+        finally:
+            recorder.stop()
+
+        session = recorder.session_directory
+        diag = read_csv(session / "diag_anchor.csv")
+        self.assertEqual(len(diag), 1)
+        self.assertEqual((diag[0]["anchor_id"], diag[0]["backed_off"]), ("5", "1"))
+        self.assertEqual((diag[0]["resp_timeouts"], diag[0]["report_timeouts"]), ("340", "60"))
+        self.assertIn("host_elapsed_s", diag[0])
+
+        info = read_csv(session / "anchor_info.csv")[0]
+        self.assertEqual((info["build_hash"], info["build_config_hash"]),
+                         ("0x202F8AE9", "0x4C2C721F"))
+        self.assertEqual((info["position_x_mm"], info["position_z_mm"]), ("1000", "2500"))
+        self.assertEqual((info["build_dirty"], info["anchor_status"]), ("1", "0x2"))
+
+        ack = read_csv(session / "cmd_ack.csv")[0]
+        self.assertEqual((ack["result_name"], ack["data"]), ("UNSUPPORTED", "07"))
+
+        system = read_csv(session / "diag_system.csv")[0]
+        self.assertEqual((system["active_mask"], system["reset_cause"]), ("0xFF", "0x10"))
+        self.assertEqual((system["rx_errors_fcs"], system["rx_errors_soft_resets"]), ("1", "10"))
+        self.assertEqual((system["temperature_c"], system["vbat_v"]), ("31.500", ""))
+
+        metadata = json.loads((session / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["message_counts"], {
+            "anchor_info.csv": 1, "cmd_ack.csv": 1,
+            "diag_anchor.csv": 1, "diag_system.csv": 1,
+        })
+        summary = {row["anchor_id"]: row for row in read_csv(session / "summary.csv")}
+        self.assertEqual((summary["5"]["resp_timeouts_total"], summary["5"]["diag_frames"]),
+                         ("340", "1"))
+        self.assertEqual(summary["6"]["anchor_boot_last"], "4")
 
 
 if __name__ == "__main__":

@@ -10,8 +10,9 @@ Examples (PowerShell):
     py -3.12 uwb_command.py --port COM7 set-telemetry --snapshot --meas --diag --save
     py -3.12 uwb_command.py --port COM7 time-sync --count 20
 
-The default baud is 1000000 (Tag_DevKit). A Tag PCB on a plain USB-UART
-adapter needs --baud 115200; the ESP32-C3 gateway ignores the baud.
+The default baud is 460800 (Tag_DevKit; firmware built before 2026-09-26 ran
+1000000). A Tag PCB on a plain USB-UART adapter needs --baud 115200; the
+ESP32-C3 gateway ignores the baud.
 
 Radio changes and SAVE need ranging paused; the tool pauses, applies the
 command and resumes automatically. Do not use it while the drone is armed:
@@ -118,8 +119,8 @@ def print_device_info(message: tp.DeviceInfoMessage) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", required=True)
-    parser.add_argument("--baud", type=int, default=1000000,
-                        help="1000000 for Tag_DevKit (default), 115200 for a Tag PCB "
+    parser.add_argument("--baud", type=int, default=460800,
+                        help="460800 for Tag_DevKit (default), 115200 for a Tag PCB "
                              "on a USB-UART adapter")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("ping")
