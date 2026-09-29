@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import struct
-from typing import Union
+from typing import Mapping, Union
 
 
 SOF = b"\xAA\x55"
@@ -28,12 +28,14 @@ TYPE_SNIFFER_FRAME = 0x14
 TYPE_DIAG_SYSTEM = 0x15
 TYPE_DEVICE_INFO = 0x16
 TYPE_GATEWAY_HEALTH = 0x17
+TYPE_RANGE_BURST = 0x18
 TYPE_CMD = 0x20
 
 INFO_FLAG_HW_ANTENNA_DELAY = 0x01
 INFO_FLAG_LEGACY_OFFSET = 0x02
 INFO_FLAG_DS_BUILD = 0x04
 INFO_FLAG_FPP_CORRECTED = 0x20
+INFO_FLAG_BURST = 0x40
 
 # Firmware before the RXPACC fix reported first-path power 20*log10(4) dB too
 # low. Host code tuned on those logs converts corrected FPP back with this.
@@ -45,6 +47,17 @@ MEAS_FLAG_FILTER_OK = 0x0004
 MEAS_FLAG_ANCHOR_DIAG = 0x0008
 
 MEAS_MODE_NAMES = {0: "DS", 1: "SS", 2: "SS_FALLBACK"}
+
+# RANGE_BURST (0x18) per-anchor flags: bits 0-1 mode (MEAS_MODE_NAMES, 3 = none).
+BURST_FLAG_MODE_MASK = 0x03
+BURST_MODE_NONE = 0x03
+BURST_FLAG_CAL_OK = 0x04
+BURST_FLAG_VALID = 0x08
+BURST_FLAG_ANCHOR_LATE = 0x10
+BURST_FLAG_RADIO_OK = 0x20
+BURST_RANGE_NONE = 0xFFFF
+BURST_HEADER_SIZE = 22
+BURST_ENTRY_SIZE = 8
 
 # Host -> TAG commands (Firmware/common/include/uwb_cmd.h).
 CMD_PING = 0x01
@@ -62,6 +75,7 @@ CMD_REBOOT = 0x0C
 CMD_TIME_SYNC = 0x0D
 CMD_SET_LOCK = 0x0E
 CMD_SET_TELEMETRY = 0x0F
+CMD_SET_BURST = 0x10
 
 CMD_RESULT_NAMES = {
     0x00: "OK",
@@ -206,6 +220,88 @@ class RangeMeasMessage:
 
 
 @dataclass(frozen=True)
+class BurstAnchor:
+    """One anchor of one burst cycle, as the TAG packs it (8 bytes)."""
+
+    anchor_id: int
+    status: int
+    flags: int
+    range_mm: int | None        # calibrated with CAL_OK, raw otherwise
+    fp_cdbm: int                # INT16_MIN = unknown; 0.5 dB resolution
+    rx_cdbm: int                # fp + (RX - FP); INT16_MIN = unknown
+    ci_ppm_x100: int            # INT16_MIN = unknown; 0.25 ppm resolution
+
+    @property
+    def radio_ok(self) -> bool:
+        return bool(self.flags & BURST_FLAG_RADIO_OK)
+
+    @property
+    def mode(self) -> int:
+        return self.flags & BURST_FLAG_MODE_MASK
+
+    @property
+    def mode_name(self) -> str:
+        return "NONE" if self.mode == BURST_MODE_NONE else MEAS_MODE_NAMES.get(self.mode, "?")
+
+
+@dataclass(frozen=True)
+class RangeBurstMessage:
+    """Every anchor of one burst DS-TWR cycle (TYPE 0x18), one cycle late.
+
+    t_us is the POLL time of that cycle on the TAG clock, period_us the POLL
+    to next POLL interval (0 = unknown, 65535 = saturated).
+    """
+
+    sequence: int
+    time_ms: int
+    boot_id: int
+    cycle_seq: int
+    meas_seq_first: int
+    t_us: int
+    period_us: int
+    anchors: tuple[BurstAnchor, ...]
+
+    def to_range_meas(self, offsets_um: Mapping[int, int] | None = None
+                      ) -> tuple[RangeMeasMessage, ...]:
+        """The completed exchanges as RANGE_MEAS records, numbered the way
+        the TAG numbers them (meas_seq_first, +1, ... over RADIO_OK entries).
+
+        A calibrated range_mm is the corrected value; raw_mm is rebuilt with
+        the INFO offsets (corrected = raw - offset) when they are given.
+        filtered_mm is the same range with FILTER_OK when the TAG conditioner
+        accepted it (the burst record carries no separate filter output).
+        Fields a burst record does not carry are 0 or INT16_MIN.
+        """
+
+        records = []
+        meas_seq = self.meas_seq_first
+        for anchor in self.anchors:
+            if not anchor.radio_ok or anchor.range_mm is None:
+                continue
+            flags = MEAS_FLAG_RADIO_OK
+            corrected = anchor.range_mm
+            raw = anchor.range_mm
+            if anchor.flags & BURST_FLAG_CAL_OK:
+                flags |= MEAS_FLAG_CAL_OK
+                if offsets_um:
+                    raw = corrected + round(offsets_um.get(anchor.anchor_id, 0) / 1000.0)
+            if anchor.flags & BURST_FLAG_VALID:
+                flags |= MEAS_FLAG_FILTER_OK
+            records.append(RangeMeasMessage(
+                sequence=self.sequence, time_ms=self.time_ms, boot_id=self.boot_id,
+                meas_seq=meas_seq & 0xFFFFFFFF, meas_time_us=self.t_us,
+                anchor_id=anchor.anchor_id, txn=self.cycle_seq & 0xFF, mode=anchor.mode,
+                flags=flags, status=anchor.status, raw_mm=raw, corrected_mm=corrected,
+                filtered_mm=corrected if flags & MEAS_FLAG_FILTER_OK else 0,
+                fp_cdbm=anchor.fp_cdbm, rx_cdbm=anchor.rx_cdbm,
+                anchor_fp_cdbm=INT16_MIN, anchor_rx_cdbm=INT16_MIN, std_noise=0,
+                fp_index=0, ci_ppm_x100=anchor.ci_ppm_x100, slot_us=0,
+            ))
+            meas_seq += 1
+        return tuple(records)
+
+
+@dataclass(frozen=True)
 class DiagAnchorMessage:
     sequence: int
     time_ms: int
@@ -231,6 +327,7 @@ class DiagAnchorMessage:
     resp_wait_max_us: int
     processing_max_us: int
     poll_tx_max_us: int
+    burst_late: int = 0          # RESPs whose anchor missed its burst slot
 
 
 @dataclass(frozen=True)
@@ -316,6 +413,15 @@ class DiagSystemMessage:
     ds_final_tx_timeout: int
     temperature_c: float | None
     vbat_v: float | None
+    # Burst DS-TWR (firmware 0.5+; None/0 from older firmware).
+    burst_mode: int | None = None
+    burst_base_uus: int = 0
+    burst_slot_uus: int = 0
+    burst_final_margin_uus: int = 0
+    burst_gap_us: int = 0
+    burst_period_us: int = 0
+    burst_final_late: int = 0
+    burst_record_drops: int = 0
 
 
 @dataclass(frozen=True)
@@ -383,7 +489,7 @@ DecodedMessage = Union[
     GatewayHealthMessage,
     InfoMessage, RangeMessage, StatsMessage, RangeMeasMessage, DiagAnchorMessage,
     AnchorInfoMessage, CmdAckMessage, SnifferFrameMessage, DiagSystemMessage,
-    DeviceInfoMessage,
+    DeviceInfoMessage, RangeBurstMessage,
 ]
 
 RX_ERROR_FIELDS = (
@@ -559,12 +665,63 @@ def encode_range_meas_payload(message: RangeMeasMessage) -> bytes:
     )
 
 
+def _burst_fp_cdbm(code: int) -> int:
+    return INT16_MIN if code == 0xFF else -code * 50
+
+
+def decode_range_burst(frame: Frame) -> RangeBurstMessage:
+    payload = frame.payload
+    _require_schema(frame, BURST_HEADER_SIZE, "RANGE_BURST")
+    boot_id, cycle_seq, meas_seq_first, t_us, period_us, count = struct.unpack_from(
+        "<HIIQHB", payload, 1)
+    if len(payload) != BURST_HEADER_SIZE + BURST_ENTRY_SIZE * count:
+        raise ProtocolError(
+            f"invalid RANGE_BURST payload length {len(payload)} for {count} anchors")
+    anchors = []
+    for offset in range(BURST_HEADER_SIZE, len(payload), BURST_ENTRY_SIZE):
+        anchor_id, status, flags, range_mm, fp_code, nlos_code, ci_code = struct.unpack_from(
+            "<BBBHBBb", payload, offset)
+        fp_cdbm = _burst_fp_cdbm(fp_code)
+        rx_cdbm = (INT16_MIN if fp_cdbm == INT16_MIN or nlos_code == 0xFF
+                   else fp_cdbm + nlos_code * 10)
+        anchors.append(BurstAnchor(
+            anchor_id=anchor_id, status=status, flags=flags,
+            range_mm=None if range_mm == BURST_RANGE_NONE else range_mm,
+            fp_cdbm=fp_cdbm, rx_cdbm=rx_cdbm,
+            ci_ppm_x100=INT16_MIN if ci_code == -128 else ci_code * 25,
+        ))
+    return RangeBurstMessage(frame.sequence, frame.time_ms, boot_id, cycle_seq,
+                             meas_seq_first, t_us, period_us, tuple(anchors))
+
+
+def encode_range_burst_payload(message: RangeBurstMessage) -> bytes:
+    """Inverse of decode_range_burst (GUI demo source and tests)."""
+
+    payload = bytearray(struct.pack(
+        "<BHIIQHB", 1, message.boot_id, message.cycle_seq, message.meas_seq_first,
+        message.t_us, min(message.period_us, 0xFFFF), len(message.anchors)))
+    for anchor in message.anchors:
+        fp_code = 0xFF if anchor.fp_cdbm == INT16_MIN else max(
+            0, min(254, (-anchor.fp_cdbm + 25) // 50))
+        nlos_code = 0xFF if INT16_MIN in (anchor.fp_cdbm, anchor.rx_cdbm) else max(
+            0, min(254, (anchor.rx_cdbm - anchor.fp_cdbm + 5) // 10))
+        ci_code = -128 if anchor.ci_ppm_x100 == INT16_MIN else max(
+            -127, min(127, round(anchor.ci_ppm_x100 / 25)))
+        payload += struct.pack(
+            "<BBBHBBb", anchor.anchor_id, anchor.status, anchor.flags,
+            BURST_RANGE_NONE if anchor.range_mm is None else anchor.range_mm,
+            fp_code, nlos_code, ci_code)
+    return bytes(payload)
+
+
 def decode_diag_anchor(frame: Frame) -> DiagAnchorMessage:
     _require_schema(frame, 73, "DIAG_ANCHOR")
     v = struct.unpack_from("<BHBB11IHH5I", frame.payload)
+    burst_late = struct.unpack_from("<I", frame.payload, 73)[0] \
+        if len(frame.payload) >= 77 else 0
     return DiagAnchorMessage(
         frame.sequence, frame.time_ms, v[1], bool(v[2]), bool(v[3] & 0x01),
-        bool(v[3] & 0x02), *v[4:],
+        bool(v[3] & 0x02), *v[4:], burst_late=burst_late,
     )
 
 
@@ -603,6 +760,14 @@ def decode_diag_system(frame: Frame) -> DiagSystemMessage:
     rx_errors = dict(zip(RX_ERROR_FIELDS, v[28:39]))
     temperature = None if v[43] == INT16_MIN else v[43] / 100.0
     vbat = None if v[44] == 0 else v[44] / 1000.0
+    burst: dict[str, int | None] = {}
+    if len(frame.payload) >= 168:
+        b = struct.unpack_from("<B5HII", frame.payload, 149)
+        burst = dict(
+            burst_mode=b[0], burst_base_uus=b[1], burst_slot_uus=b[2],
+            burst_final_margin_uus=b[3], burst_gap_us=b[4], burst_period_us=b[5],
+            burst_final_late=b[6], burst_record_drops=b[7],
+        )
     return DiagSystemMessage(
         frame.sequence, frame.time_ms,
         boot_id=v[1], boot_count=v[2], reset_cause=v[3], uptime_ms=v[4],
@@ -615,7 +780,7 @@ def decode_diag_system(frame: Frame) -> DiagSystemMessage:
         cmd_rejected=v[24], cmd_crc_errors=v[25], locked=bool(v[26]),
         settings_status=v[27], rx_errors=rx_errors, ds_ok=v[39], ds_fallback=v[40],
         ds_report_timeout=v[41], ds_final_tx_timeout=v[42],
-        temperature_c=temperature, vbat_v=vbat,
+        temperature_c=temperature, vbat_v=vbat, **burst,
     )
 
 
@@ -750,4 +915,34 @@ _DECODERS = {
     TYPE_DIAG_SYSTEM: decode_diag_system,
     TYPE_DEVICE_INFO: decode_device_info,
     TYPE_GATEWAY_HEALTH: decode_gateway_health,
+    TYPE_RANGE_BURST: decode_range_burst,
 }
+
+
+@dataclass(frozen=True)
+class BurstSettings:
+    """SET_BURST (0x10) arguments and CMD_ACK data."""
+
+    mode: int                   # 0 sequential, 1 burst (0xFF = keep, arguments only)
+    base_uus: int
+    slot_uus: int
+    final_margin_uus: int
+    gap_us: int
+    period_us: int
+
+    def encode(self) -> bytes:
+        return struct.pack("<B5H", self.mode, self.base_uus, self.slot_uus,
+                           self.final_margin_uus, self.gap_us, self.period_us)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "BurstSettings":
+        if len(data) != 11:
+            raise ProtocolError(f"invalid SET_BURST data length {len(data)}")
+        return cls(*struct.unpack("<B5H", data))
+
+    def cycle_estimate_us(self, anchors: int = 8) -> float:
+        """Approximate POLL-to-POLL time: POLL preamble, FINAL at base +
+        (n - 1) slots + margin after it, FINAL tail, gap and ~150 us of TAG
+        work. period_us in RANGE_BURST is the measured value."""
+        final_uus = self.base_uus + max(anchors - 1, 0) * self.slot_uus + self.final_margin_uus
+        return final_uus * 1.0256 + 150.0 + 30.0 + self.gap_us + 150.0

@@ -46,6 +46,15 @@
 #define ANCHOR_RX_IDLE_RESTART_MS 200U
 
 /**
+ * v3 burst: the receiver is turned on this long before the FINAL RMARKER
+ * announced in the POLL (the FINAL preamble plus margin for clock offset and
+ * DX_TIME's 9-bit granularity). Between its own RESP and this moment the
+ * anchor's receiver is off, so it never has to read the other anchors'
+ * RESPs; if the moment already passed, it listens at once.
+ */
+#define ANCHOR_BURST_FINAL_LEAD_UUS (DW_PHY_PREAMBLE_UUS + 40U)
+
+/**
  * 1: RESP is sent with WAIT4RESP in DS mode so the receiver is on for FINAL
  * without MCU latency.
  */
@@ -96,6 +105,12 @@ typedef struct {
     uint32_t stray_frames;
     uint32_t txn_mismatch;
     uint32_t idle_rx_restarts;
+    /* v3 burst (appended: the offsets above stay valid for ST-LINK reads) */
+    uint32_t burst_polls;         /* broadcast POLLs that included this anchor */
+    uint32_t burst_not_in_mask;   /* broadcast POLLs that left it out */
+    uint32_t burst_finals;        /* broadcast FINALs received: Rb for the TAG */
+    uint32_t burst_final_missed;  /* FINAL did not arrive before the timeout */
+    uint32_t burst_rx_late;       /* delayed FINAL RX was late: opened at once */
 } AnchorStats_t;
 
 extern AnchorStats_t anchor_stats;

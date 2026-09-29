@@ -110,6 +110,8 @@ static uint8_t info_flags(void)
 #if UWB_USE_DS_TWR
     flags |= TELEM_INFO_FLAG_DS_BUILD;
 #endif
+    if (Tag_BurstMode())
+        flags |= TELEM_INFO_FLAG_BURST;
     flags |= (uint8_t)(((uint8_t)UWB_LEGACY_ADAPTIVE_MODE <<
                         TELEM_INFO_FLAG_LEGACY_ADAPTIVE_SHIFT) &
                        TELEM_INFO_FLAG_LEGACY_ADAPTIVE_MASK);
@@ -318,6 +320,79 @@ void Telem_SendRangeMeas(const TagMeasurement_t *m)
 }
 
 /* ========================================================================== */
+/*                     RANGE_BURST (0x18)                                      */
+/* ========================================================================== */
+
+static uint8_t burst_fp_code(int16_t fp_cdbm)
+{
+    /* -dBm in 0.5 dB steps: 0..254 = 0..-127 dBm, 255 = unknown. */
+    if (fp_cdbm == INT16_MIN)
+        return 0xFFU;
+    const int32_t code = (-(int32_t)fp_cdbm + 25) / 50;
+    return (uint8_t)(code < 0 ? 0 : (code > 254 ? 254 : code));
+}
+
+static uint8_t burst_nlos_code(int16_t fp_cdbm, int16_t rx_cdbm)
+{
+    /* RX - FP in 0.1 dB steps: 0..254, 255 = unknown. */
+    if (fp_cdbm == INT16_MIN || rx_cdbm == INT16_MIN)
+        return 0xFFU;
+    const int32_t code = ((int32_t)rx_cdbm - (int32_t)fp_cdbm + 5) / 10;
+    return (uint8_t)(code < 0 ? 0 : (code > 254 ? 254 : code));
+}
+
+static uint8_t burst_ci_code(int16_t ci_ppm_x100)
+{
+    /* Signed, 0.25 ppm steps: -127..127 = -31.75..+31.75 ppm, -128 = unknown. */
+    if (ci_ppm_x100 == INT16_MIN)
+        return 0x80U;
+    const int32_t v = ci_ppm_x100 >= 0 ? (ci_ppm_x100 + 12) / 25 : (ci_ppm_x100 - 12) / 25;
+    const int32_t clamped = v < -127 ? -127 : (v > 127 ? 127 : v);
+    return (uint8_t)(int8_t)clamped;
+}
+
+/*
+ * schema[1]=1 boot_id[2] cycle_seq[4] meas_seq_first[4] t_us[8] period_us[2]
+ * count[1] then count x (anchor_id[1] status[1] flags[1] range_mm[2]
+ * fp_code[1] nlos_code[1] ci_code[1])              = 22 + 8 x count bytes
+ * flags: bits 0-1 mode (0 DS, 1 SS, 2 SS fallback, 3 none), bit2 CAL_OK,
+ * bit3 VALID, bit4 ANCHOR_LATE, bit5 RADIO_OK. range_mm is calibrated with
+ * CAL_OK and raw otherwise; 0xFFFF = none. The RADIO_OK entries take
+ * meas_seq_first, meas_seq_first + 1, ... in order.
+ */
+void Telem_SendRangeBurst(const TagBurstRecord_t *rec)
+{
+#if !TELEM_ASCII
+    uint8_t buf[TELEM_MAX_FRAME];
+    uint16_t off = TELEM_HDR_LEN;
+    const uint8_t count = rec->count > TAG_NUM_ANCHORS ? TAG_NUM_ANCHORS : rec->count;
+
+    buf[off++] = TELEM_SCHEMA_V2;
+    off += telem_put_u16(&buf[off], uwb_health.boot_id);
+    off += telem_put_u32(&buf[off], rec->cycle_seq);
+    off += telem_put_u32(&buf[off], rec->meas_seq_first);
+    off += telem_put_u64(&buf[off], rec->t_us);
+    off += telem_put_u16(&buf[off],
+                         (uint16_t)(rec->period_us > 0xFFFFU ? 0xFFFFU : rec->period_us));
+    buf[off++] = count;
+    for (uint8_t k = 0U; k < count; k++)
+    {
+        const TagBurstAnchor_t *a = &rec->anchor[k];
+        buf[off++] = a->anchor_id;
+        buf[off++] = a->status;
+        buf[off++] = a->flags;
+        off += telem_put_u16(&buf[off], a->range_mm);
+        buf[off++] = burst_fp_code(a->fp_cdbm);
+        buf[off++] = burst_nlos_code(a->fp_cdbm, a->rx_cdbm);
+        buf[off++] = burst_ci_code(a->ci_ppm_x100);
+    }
+    send_frame(buf, TELEM_TYPE_RANGE_BURST, rec->cycle_seq, (uint16_t)(off - TELEM_HDR_LEN));
+#else
+    (void)rec;
+#endif
+}
+
+/* ========================================================================== */
 /*                     DIAG_ANCHOR (0x11)                                      */
 /* ========================================================================== */
 
@@ -327,7 +402,10 @@ void Telem_SendRangeMeas(const TagMeasurement_t *m)
  * poll_skipped[4] cal_missing[4] ds_ok[4] report_timeouts[4] ds_fallbacks[4]
  * txn_mismatch[4] probes[4] resp_streak[2] ds_streak[2] slot_us[4]
  * slot_max_us[4] resp_wait_max_us[4] processing_max_us[4] poll_tx_max_us[4]
- *                                                               = 73 bytes
+ * burst_late[4]                                                 = 77 bytes
+ * In the burst scheme slot_us is the RESP arrival time after the POLL,
+ * processing_max_us the longest RESP read, and burst_late counts RESPs whose
+ * anchor reported a missed slot.
  */
 void Telem_SendDiagAnchor(uint8_t i)
 {
@@ -339,9 +417,7 @@ void Telem_SendDiagAnchor(uint8_t i)
     uint16_t off = TELEM_HDR_LEN;
     uint8_t calibrated = 0U;
     (void)Tag_GetDsCalibration((uint16_t)(i + 1U), NULL, &calibrated);
-    const uint8_t backed_off =
-        (anchor_response_timeout_streak[i] >= TAG_OFFLINE_AFTER_TIMEOUTS
-         || anchor_ds_incomplete_streak[i] >= TAG_OFFLINE_AFTER_TIMEOUTS) ? 1U : 0U;
+    const uint8_t backed_off = Tag_AnchorBackedOff(i);
 
     buf[off++] = TELEM_SCHEMA_V2;
     off += telem_put_u16(&buf[off], (uint16_t)(i + 1U));
@@ -365,6 +441,7 @@ void Telem_SendDiagAnchor(uint8_t i)
     off += telem_put_u32(&buf[off], anchor_response_wait_max_us[i]);
     off += telem_put_u32(&buf[off], anchor_processing_max_us[i]);
     off += telem_put_u32(&buf[off], anchor_poll_tx_duration_max_us[i]);
+    off += telem_put_u32(&buf[off], anchor_burst_late_count[i]);
 
     send_frame(buf, TELEM_TYPE_DIAG_ANCHOR, s_frame_seq++, (uint16_t)(off - TELEM_HDR_LEN));
 #else
@@ -444,6 +521,8 @@ void Telem_SendCmdAck(uint32_t cmd_seq, uint8_t cmd_id, uint8_t result,
  * lde[4] overrun[4] preamble_to[4] sfd_to[4] filtered[4] incomplete[4]
  * soft_resets[4] ds_ok[4] ds_fallback[4] ds_report_timeout[4]
  * ds_final_tx_timeout[4] temp_centi[2] vbat_mv[2]              = 149 bytes
+ * burst[1] base_uus[2] slot_uus[2] final_margin_uus[2] gap_us[2]
+ * period_us[2] burst_final_late[4] burst_record_drops[4]        = 168 bytes
  */
 void Telem_SendDiagSystem(void)
 {
@@ -498,6 +577,16 @@ void Telem_SendDiagSystem(void)
     off += telem_put_u32(&buf[off], ds_final_tx_timeout_count);
     off += telem_put_u16(&buf[off], (uint16_t)temp);
     off += telem_put_u16(&buf[off], vbat);
+    TagBurstTiming_t timing;
+    Tag_GetBurstTiming(&timing);
+    buf[off++] = Tag_BurstMode();
+    off += telem_put_u16(&buf[off], timing.base_uus);
+    off += telem_put_u16(&buf[off], timing.slot_uus);
+    off += telem_put_u16(&buf[off], timing.final_margin_uus);
+    off += telem_put_u16(&buf[off], timing.gap_us);
+    off += telem_put_u16(&buf[off], timing.period_us);
+    off += telem_put_u32(&buf[off], tag_burst_final_late_count);
+    off += telem_put_u32(&buf[off], tag_burst_record_drops);
 
     send_frame(buf, TELEM_TYPE_DIAG_SYSTEM, s_frame_seq++, (uint16_t)(off - TELEM_HDR_LEN));
 #endif
@@ -528,7 +617,7 @@ void Telem_SendDeviceInfo(void)
     off += telem_put_u16(&buf[off], TAG_ADDR);
     off += telem_put_u32(&buf[off], (uint32_t)UWB_BUILD_GIT_HASH);
     buf[off++] = (uint8_t)UWB_BUILD_GIT_DIRTY;
-    buf[off++] = (uint8_t)UWB_TAG_FRAME_VERSION;
+    buf[off++] = Tag_FrameVersion();
     buf[off++] = Telem_GetFeatures();
     buf[off++] = (uint8_t)UWB_USE_WAIT4RESP;
     off += telem_put_u32(&buf[off], uwb_health.device_id);

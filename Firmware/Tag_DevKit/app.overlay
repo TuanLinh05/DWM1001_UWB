@@ -19,6 +19,18 @@
 };
 
 /*
+ * DW1000 bus. The board file selects the legacy "nordic,nrf-spi", which
+ * interrupts the CPU after every byte: measured on 2026-09-26, the TAG spent
+ * up to ~0.8 ms of SPI work per processing step, a large part of each 3.9 ms
+ * ranging slot. The EasyDMA SPIM moves a whole register access per transfer.
+ * uwb_platform_spi_xfer() sends header and data as one buffer, so no 1-byte
+ * transfer can hit nRF52832 anomaly 58 (Zephyr also enables its workaround).
+ */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+};
+
+/*
  * UART0 uses P0.05/P0.11.  With factory-default solder bridges J14/J15 closed,
  * it is exposed as the on-board J-Link USB Virtual COM port.
  *

@@ -9,7 +9,14 @@ DWM1001 UWB GROUND CONTROL - GOI DEMO PORTABLE
    baud nao cung duoc.
 5. Thu muc data_logs va file anchor_layout.json se duoc tao canh file EXE.
 
-Ban build: 1.4.2 - Windows x64
+Ban build: 1.5.0 - Windows x64
+
+Burst 1.5.0 (firmware 0.5):
+- Giai ma RANGE_BURST (0x18): moi chu ky mot frame cho ca 8 anchor, ~220 Hz.
+- Tab RANGE_MEAS va meas.csv nhan tung ban ghi nhu truoc.
+- Them burst.csv: moi chu ky mot dong, du A1..A8 (range, mode, FP, NLOS...).
+- Log hien SET_BURST va bo dem burst trong DIAG.
+- Chinh timing: uwb_command.py --port COMx set-burst --slot 300 --gap 300
 
 Baud 1.4.2:
 - Tag_DevKit chuyen sang 460800 vi J-Link VCOM hong ~70% byte o 1000000.

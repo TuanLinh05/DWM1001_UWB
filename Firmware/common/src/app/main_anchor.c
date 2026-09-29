@@ -82,7 +82,8 @@ static void platform_fault_forever(void)
 static uint32_t completed_exchange_count(void)
 {
 #if UWB_USE_DS_TWR
-    return anchor_stats.reports_sent;
+    /* Unicast DS ends with our REPORT, a v3 burst with the TAG's FINAL. */
+    return anchor_stats.reports_sent + anchor_stats.burst_finals;
 #else
     return anchor_stats.resp_sent;
 #endif

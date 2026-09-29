@@ -11,12 +11,15 @@
 };
 
 /*
- * The sniffer forwards every frame on the air (up to ~1600 frames/s with
- * eight anchors), far beyond 115200 baud. Use the EasyDMA UARTE at 1 Mbaud;
- * the DWM1001-DEV J-Link virtual COM port supports it.
+ * The sniffer forwards every frame on the air, far beyond 115200 baud. The
+ * EasyDMA UARTE runs 460800: at 1 Mbaud the J-Link virtual COM port of the
+ * DWM1001-DEV corrupted ~70 % of the bytes (Tag_DevKit logs 2026-09-26).
+ * 460800 carries ~750 frames/s; the burst scheme puts ~2200 frames/s on the
+ * air, so slow the TAG down while sniffing (uwb_command.py set-burst
+ * --period 20000 keeps the slot timing at 50 cycles/s).
  */
 &uart0 {
 	compatible = "nordic,nrf-uarte";
-	current-speed = <1000000>;
+	current-speed = <460800>;
 	status = "okay";
 };

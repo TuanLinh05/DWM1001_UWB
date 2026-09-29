@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file    uwb_frame.h
- * @brief   UWB ranging frame encoding/decoding (protocol v1 and v2).
+ * @brief   UWB ranging frame encoding/decoding (protocol v1, v2 and v3).
  *
  * All frames use the IEEE 802.15.4 data-frame header with 16-bit addresses
  * and PAN ID compression, followed by a function code:
@@ -24,6 +24,21 @@
  *            [16-17] FINAL first-path power (cdBm, i16)
  *            [18-19] FINAL receive power (cdBm, i16)
  *
+ * Version 3 is the one-to-many ("burst") DS-TWR: one broadcast POLL, one
+ * RESP per anchor in its own time slot, one broadcast FINAL, no REPORT. The
+ * anchor's Rb of a cycle rides in its RESP of the NEXT cycle:
+ *   POLL   : dst 0xFFFF [10] ver=3 [11] txn [12] flags [13] anchor_mask
+ *            [14-15] base_uus [16-17] slot_uus [18-19] final_uus [20] info_id
+ *            Anchor with ID a (bit a-1 of the mask) and rank k among the set
+ *            bits sends its RESP RMARKER at POLL_RX + base + k * slot; the
+ *            TAG's FINAL RMARKER is at POLL + final. UUS = 65536 DW ticks.
+ *   RESP   : [10] ver=3 [11] txn [12-15] Da (u32) [16] anchor_status
+ *            [17] prev_txn [18-21] prev Rb (u32) [22-23] prev FINAL
+ *            first-path power [24-25] prev FINAL receive power (cdBm, i16)
+ *            [26] tlv_len [27..] TLV. prev_* are valid only with
+ *            UWB_ANCHOR_ST_PREV_RB and belong to transaction prev_txn.
+ *   FINAL  : dst 0xFFFF [10] ver=3 [11] txn
+ *
  * Lengths passed to the parsers are the RX_FINFO lengths, i.e. they include
  * the 2-byte FCS that the DW1000 appends. Builders return the length
  * without FCS (the DW1000 adds it; TX_FCTRL gets length + 2).
@@ -45,6 +60,7 @@ extern "C" {
 #define UWB_FRAME_FCS_LEN         2U
 #define UWB_FRAME_V1              1U
 #define UWB_FRAME_V2              2U
+#define UWB_FRAME_V3              3U  /* one-to-many (burst) DS-TWR */
 #define UWB_FRAME_BROADCAST       0xFFFFU
 
 /** Largest frame (including FCS) that any node reads from the RX buffer. */
@@ -59,9 +75,17 @@ extern "C" {
 #define UWB_FINAL_V2_RX_LEN       (12U + UWB_FRAME_FCS_LEN)
 #define UWB_REPORT_V1_RX_LEN      (14U + UWB_FRAME_FCS_LEN)
 #define UWB_REPORT_V2_RX_LEN      (20U + UWB_FRAME_FCS_LEN)
+#define UWB_POLL_V3_RX_LEN        (21U + UWB_FRAME_FCS_LEN)
+#define UWB_RESP_V3_MIN_RX_LEN    (27U + UWB_FRAME_FCS_LEN)
+#define UWB_FINAL_V3_RX_LEN       (12U + UWB_FRAME_FCS_LEN)
 
 /** Maximum TLV bytes carried in a v2 RESP. */
 #define UWB_RESP_TLV_MAX          (UWB_FRAME_MAX_RX_LEN - UWB_RESP_V2_MIN_RX_LEN)
+/** Maximum TLV bytes carried in a v3 RESP (the three info TLVs need 34). */
+#define UWB_RESP_V3_TLV_MAX       (UWB_FRAME_MAX_RX_LEN - UWB_RESP_V3_MIN_RX_LEN)
+
+/** One UWB microsecond (UUS) in DW1000 ticks. */
+#define UWB_UUS_TO_DWT            65536ULL
 
 /* POLL v2 flags */
 #define UWB_POLL_FLAG_REQ_INFO    0x01U  /* ask the anchor for its info TLVs */
@@ -70,6 +94,8 @@ extern "C" {
 #define UWB_ANCHOR_ST_POS_VALID   0x01U  /* anchor position is configured */
 #define UWB_ANCHOR_ST_RECOVERED   0x02U  /* radio recovery happened since boot */
 #define UWB_ANCHOR_ST_CFG_DRIFT   0x04U  /* last DW1000 config readback differed */
+#define UWB_ANCHOR_ST_PREV_RB     0x08U  /* v3: prev_txn/prev Rb are valid */
+#define UWB_ANCHOR_ST_LATE        0x10U  /* v3: the previous RESP missed its slot */
 
 /* RESP v2 TLV types */
 #define UWB_TLV_ANCHOR_POSITION   0x01U  /* int32 x_mm, y_mm, z_mm */
@@ -89,9 +115,15 @@ typedef struct {
 } UwbFrameHeader_t;
 
 typedef struct {
-    uint8_t version;
-    uint8_t txn;
-    uint8_t flags;
+    uint8_t  version;
+    uint8_t  txn;
+    uint8_t  flags;
+    /* v3 only */
+    uint8_t  anchor_mask;     /* bit a-1 = anchor ID a answers this cycle */
+    uint16_t base_uus;        /* POLL RMARKER -> first RESP RMARKER */
+    uint16_t slot_uus;        /* RESP RMARKER spacing */
+    uint16_t final_uus;       /* POLL RMARKER -> FINAL RMARKER */
+    uint8_t  info_id;         /* anchor that attaches its info TLVs, 0 = none */
 } UwbPoll_t;
 
 typedef struct {
@@ -101,6 +133,11 @@ typedef struct {
     uint8_t        anchor_status;
     uint8_t        tlv_len;
     const uint8_t *tlv;             /* parse: points into the frame buffer */
+    /* v3 only: the anchor's side of the previous cycle */
+    uint8_t        prev_txn;
+    uint32_t       prev_rb_ticks;   /* Rb: RESP TX RMARKER -> FINAL RX RMARKER */
+    int16_t        prev_final_fp_cdbm;  /* INT16_MIN when unknown */
+    int16_t        prev_final_rx_cdbm;
 } UwbResp_t;
 
 typedef struct {
@@ -142,6 +179,10 @@ int uwb_frame_parse_poll(const uint8_t *frame, uint16_t rx_len, UwbPoll_t *out);
 int uwb_frame_parse_resp(const uint8_t *frame, uint16_t rx_len, UwbResp_t *out);
 int uwb_frame_parse_final(const uint8_t *frame, uint16_t rx_len, UwbFinal_t *out);
 int uwb_frame_parse_report(const uint8_t *frame, uint16_t rx_len, UwbReport_t *out);
+
+/** Rank of anchor ID `anchor_id` among the set bits of a v3 anchor mask,
+ *  i.e. its RESP slot index. @return -1 if the anchor is not in the mask. */
+int uwb_frame_burst_slot(uint8_t anchor_mask, uint16_t anchor_id);
 
 /**
  * Find a TLV of `type` in a RESP TLV area.

@@ -25,9 +25,11 @@ except ImportError as exc:  # pragma: no cover - exercised only on missing depen
 
 from telemetry_protocol import (
     AnchorSample,
+    BurstSettings,
     CmdAckMessage,
     DeviceInfoMessage,
     DiagSystemMessage,
+    INFO_FLAG_BURST,
     InfoMessage,
     MEAS_FLAG_ANCHOR_DIAG,
     MEAS_FLAG_CAL_OK,
@@ -35,6 +37,7 @@ from telemetry_protocol import (
     MEAS_FLAG_RADIO_OK,
     ParserCounters,
     ProtocolError,
+    RangeBurstMessage,
     RangeMeasMessage,
     RangeMessage,
     StatsMessage,
@@ -54,6 +57,7 @@ from telemetry_protocol import (
     TYPE_STATS,
     CMD_GET_DEVICE_INFO,
     CMD_PING,
+    CMD_SET_BURST,
     CMD_SET_TELEMETRY,
     TELEM_FEATURE_DIAG,
     TELEM_FEATURE_RANGE_MEAS,
@@ -412,6 +416,8 @@ class UwbGui:
         # INFO flags of the connected firmware; tells whether FPP uses the
         # corrected RXPACC scale (host filter thresholds use the old scale).
         self.info_flags: int | None = None
+        # Offsets the TAG subtracts (INFO), to rebuild raw_mm of burst records.
+        self.info_offsets_um: dict[int, int] = {}
         self.last_diag_log = 0.0
         self.latest_host_filtered: dict[int, int] = {}
         self.anchor_items: dict[int, str] = {}
@@ -972,6 +978,16 @@ class UwbGui:
                     if isinstance(payload, RangeMessage):
                         latest_range = payload
                         host_filtered = self._record_history(payload)
+                    # One burst cycle carries every anchor: the tabs and meas.csv
+                    # see it as RANGE_MEAS records, burst.csv as one row.
+                    if isinstance(payload, RangeBurstMessage):
+                        records = payload.to_range_meas(self.info_offsets_um)
+                        if self.recorder is not None:
+                            self.recorder.record_burst(payload, records)
+                        received_s = time.monotonic()
+                        for record in records:
+                            self.meas_panel.ingest(record, received_s)
+                        continue
                     # Every decoded type is logged, not only what the tabs show.
                     if self.recorder is not None:
                         self.recorder.record_message(payload, host_filtered)
@@ -990,6 +1006,8 @@ class UwbGui:
                     elif isinstance(payload, CmdAckMessage):
                         if payload.command_id == CMD_SET_TELEMETRY:
                             self._handle_telemetry_ack(payload)
+                        elif payload.command_id == CMD_SET_BURST:
+                            self._handle_burst_ack(payload)
         except queue.Empty:
             pass
 
@@ -1015,6 +1033,8 @@ class UwbGui:
         text = f"{recorder.range_frames} frame / {recorder.range_samples} mẫu"
         if recorder.meas_records:
             text += f" / {recorder.meas_records} meas"
+        if recorder.burst_cycles:
+            text += f" / {recorder.burst_cycles} burst"
         diag = recorder.message_counts.get("diag_anchor.csv", 0)
         if diag:
             text += f" / {diag} diag"
@@ -1125,9 +1145,26 @@ class UwbGui:
                 f"SET_TELEMETRY bị từ chối: {ack.result_name} (features={features})"
             )
 
+    def _handle_burst_ack(self, ack: CmdAckMessage) -> None:
+        if not ack.ok:
+            self._append_log(f"SET_BURST bị từ chối: {ack.result_name}")
+            return
+        try:
+            settings = BurstSettings.decode(ack.data)
+        except ProtocolError as exc:
+            self._append_log(f"SET_BURST: {exc}")
+            return
+        self._append_log(
+            f"BURST mode={'burst' if settings.mode else 'tuần tự'} "
+            f"base={settings.base_uus} slot={settings.slot_uus} "
+            f"margin={settings.final_margin_uus} UUS gap={settings.gap_us} "
+            f"period={settings.period_us} us (~{settings.cycle_estimate_us():.0f} us/chu kỳ)"
+        )
+
     def _update_diag_system(self, message: DiagSystemMessage) -> None:
         self.meas_panel.set_tag_counters(
-            message.meas_queue_drops, message.uart_tx_overflow, message.uart_high_water)
+            message.meas_queue_drops + message.burst_record_drops,
+            message.uart_tx_overflow, message.uart_high_water)
         now = time.monotonic()
         problems = (message.fault_hold or message.spi_errors or message.cycle_overruns
                     or message.config_mismatches or message.uart_tx_overflow)
@@ -1135,17 +1172,25 @@ class UwbGui:
             return
         self.last_diag_log = now
         temp = "-" if message.temperature_c is None else f"{message.temperature_c:.1f}C"
+        burst = ""
+        if message.burst_mode:
+            burst = (f" burst slot={message.burst_slot_uus}UUS "
+                     f"final_late={message.burst_final_late} "
+                     f"rec_drop={message.burst_record_drops}")
         self._append_log(
             f"DIAG cycle={message.cycle_us}us max={message.cycle_max_us}us "
             f"overrun={message.cycle_overruns} recover={message.radio_recoveries} "
             f"spi_err={message.spi_errors} cfg_mismatch={message.config_mismatches} "
             f"rx_lde={message.rx_errors.get('lde', 0)} temp={temp} "
-            f"fault_hold={int(message.fault_hold)} locked={int(message.locked)}"
+            f"fault_hold={int(message.fault_hold)} locked={int(message.locked)}{burst}"
         )
 
     def _update_info(self, message: InfoMessage) -> None:
         self.info_flags = message.flags
+        self.info_offsets_um = dict(message.active_offsets_um)
         mode = "DS-TWR" if message.ranging_mode else "SS-TWR"
+        if message.flags & INFO_FLAG_BURST:
+            mode = "Burst DS-TWR"
         self.info_var.set(
             f"Schema {message.schema} | {mode} | anchors={message.anchor_count} | "
             f"cal_mask=0x{message.calibrated_mask:02X} | filter={message.filter_mode} | "

@@ -15,6 +15,11 @@
  * Every reply uses the protocol version of the POLL that opened the
  * exchange; v2 echoes the TAG's transaction ID (F4).
  *
+ * v3 burst (one-to-many DS-TWR, UWB_USE_DS_TWR): a broadcast POLL carries
+ * the anchor mask and the slot timing. The anchor answers in its own slot,
+ * keeps its receiver off until just before the broadcast FINAL, and returns
+ * the Rb of that exchange inside its RESP of the next cycle.
+ *
  * The GPIO IRQ callback only sets dw1000_irq_flag; all SPI work runs in
  * Anchor_Task(), called from the main loop.
  ******************************************************************************
@@ -56,6 +61,8 @@ typedef enum {
 #if UWB_USE_DS_TWR
     ANCHOR_STATE_WAIT_FINAL = 2,  /* RESP sent, waiting for FINAL from TAG */
     ANCHOR_STATE_TX_REPORT  = 3,  /* REPORT being sent, waiting for TXFRS */
+    ANCHOR_STATE_TX_BURST_RESP   = 4,  /* v3 RESP scheduled in our slot */
+    ANCHOR_STATE_WAIT_BURST_FINAL = 5, /* v3: RX opens just before FINAL */
 #endif
 } AnchorState_t;
 
@@ -82,6 +89,25 @@ AnchorStats_t anchor_stats;
 
 /* Phase 2 (F-09): số lần delayed-TX bị trễ (HPDWARN). Live Expressions. */
 volatile uint32_t anchor_delayed_tx_late_count = 0;
+
+#if UWB_USE_DS_TWR
+/* v3 exchange opened by the last broadcast POLL that included us. */
+typedef struct {
+    uint8_t  txn;
+    uint16_t final_uus;     /* POLL RMARKER -> FINAL RMARKER */
+    uint64_t poll_rx;       /* T2 */
+    uint64_t resp_tx;       /* T3, RMARKER read back after TXFRS */
+} AnchorBurstExchange_t;
+
+static AnchorBurstExchange_t s_burst;
+/* Rb of the last completed v3 exchange, sent in the next RESP. */
+static uint8_t  s_burst_prev_valid = 0U;
+static uint8_t  s_burst_prev_txn   = 0U;
+static uint32_t s_burst_prev_rb    = 0U;
+static int16_t  s_burst_prev_fp_cdbm = INT16_MIN;
+static int16_t  s_burst_prev_rx_cdbm = INT16_MIN;
+static uint8_t  s_burst_late = 0U;   /* our previous RESP missed its slot */
+#endif
 
 /* FIX-01 verify: predicted RMARKER TX vs the TX_TIME read back after TXFRS.
  * A few DTU of quantization error is normal. */
@@ -307,6 +333,156 @@ static void send_report(void)
 }
 #endif
 
+#if UWB_USE_DS_TWR
+/**
+ * @brief  v3 broadcast POLL: schedule our RESP in the slot given by our rank
+ *         in the anchor mask, carrying the Rb of the previous exchange.
+ */
+static void handle_burst_poll(const UwbFrameHeader_t *hdr, const UwbPoll_t *poll)
+{
+    const int slot = uwb_frame_burst_slot(poll->anchor_mask, ANCHOR_ADDR);
+
+    if (slot < 0)
+    {
+        /* Left out this cycle: an Rb kept for the TAG would belong to a
+         * transaction it no longer waits for. */
+        anchor_stats.burst_not_in_mask++;
+        s_burst_prev_valid = 0U;
+        rearm_rx();
+        return;
+    }
+
+    uint8_t poll_rx_ts[5];
+    DW1000_ReadRxTimestamp(poll_rx_ts);
+    const uint64_t poll_rx = ts_to_u64(poll_rx_ts);
+
+    s_active_tag = hdr->src;
+    s_active_version = UWB_FRAME_V3;
+    s_active_txn = poll->txn;
+    anchor_stats.polls++;
+    anchor_stats.burst_polls++;
+
+    /* Same RMARKER prediction as the unicast RESP (FIX-01). */
+    const uint64_t reply_uus = (uint64_t)poll->base_uus
+                             + (uint64_t)slot * (uint64_t)poll->slot_uus;
+    const uint64_t resp_tx = (poll_rx + reply_uus * UWB_UUS_TO_DWT) & 0xFFFFFFFE00ULL;
+    const uint64_t resp_tx_rmarker = (resp_tx + DW1000_ActiveTxAntennaDelay()) & UWB_TS40_MASK;
+    s_predicted_resp_tx_rmarker = resp_tx_rmarker;
+
+    uint8_t tlv[UWB_RESP_V3_TLV_MAX];
+    uint8_t tlv_len = 0U;
+    if (poll->info_id == ANCHOR_ADDR)
+    {
+        tlv_len = build_info_tlvs(tlv);
+        anchor_stats.info_replies++;
+    }
+
+    uint8_t status = anchor_status_byte();
+    if (s_burst_prev_valid)
+        status |= UWB_ANCHOR_ST_PREV_RB;
+    if (s_burst_late)
+        status |= UWB_ANCHOR_ST_LATE;
+
+    const UwbResp_t resp = {
+        .version = UWB_FRAME_V3,
+        .txn = poll->txn,
+        .reply_ticks = (uint32_t)((resp_tx_rmarker - poll_rx) & UWB_TS40_MASK),
+        .anchor_status = status,
+        .tlv_len = tlv_len,
+        .tlv = tlv,
+        .prev_txn = s_burst_prev_txn,
+        .prev_rb_ticks = s_burst_prev_rb,
+        .prev_final_fp_cdbm = s_burst_prev_fp_cdbm,
+        .prev_final_rx_cdbm = s_burst_prev_rx_cdbm,
+    };
+    uint8_t frame[UWB_FRAME_MAX_RX_LEN];
+    const uint16_t len = uwb_frame_build_resp(frame, s_tx_seq++, DW_PAN_ID,
+                                              hdr->src, ANCHOR_ADDR, &resp);
+    /* The TAG pairs this Rb with its previous cycle only: send it once. */
+    s_burst_prev_valid = 0U;
+
+    uint8_t dx[5];
+    for (uint8_t i = 0U; i < 5U; i++)
+        dx[i] = (uint8_t)(resp_tx >> (8U * i));
+
+    DW1000_ClearAllStatus();
+    DW1000_SetDelayedTxTime(dx);
+    DW1000_WriteTxData(frame, len);
+    DW1000_SetTxFrameCtrl((uint16_t)(len + UWB_FRAME_FCS_LEN));
+    if (DW1000_StartTxDelayedEx(0U) != 0)
+    {
+        /* Our slot already passed. Tell the TAG in the next RESP. */
+        s_burst_late = 1U;
+        anchor_delayed_tx_late_count++;
+        anchor_stats.delayed_tx_late++;
+        reset_to_rx_wait();
+        return;
+    }
+
+    s_burst_late = 0U;
+    s_burst.txn = poll->txn;
+    s_burst.final_uus = poll->final_uus;
+    s_burst.poll_rx = poll_rx;
+    s_burst.resp_tx = resp_tx_rmarker;
+    enter_state(ANCHOR_STATE_TX_BURST_RESP);
+}
+
+/** v3 RESP left the antenna: open the receiver just before the FINAL. */
+static void burst_resp_sent(void)
+{
+    DW1000_ReadTxTimestamp(s_result.resp_tx_ts);
+    const uint64_t actual = ts_to_u64(s_result.resp_tx_ts);
+    int64_t err40 = (int64_t)((actual - s_predicted_resp_tx_rmarker) & UWB_TS40_MASK);
+    if (err40 & (1LL << 39))
+        err40 -= (1LL << 40);
+    anchor_tx_prediction_error_dtu = (int32_t)err40;
+    if (err40 < -5 || err40 > 5)
+        anchor_tx_prediction_error_count++;
+
+    s_burst.resp_tx = actual;
+    s_result.ranging_count++;
+    anchor_stats.resp_sent++;
+
+    DW1000_ClearAllStatus();
+    const uint64_t lead = (uint64_t)ANCHOR_BURST_FINAL_LEAD_UUS * UWB_UUS_TO_DWT;
+    const uint64_t final_at = s_burst.poll_rx
+                            + (uint64_t)s_burst.final_uus * UWB_UUS_TO_DWT;
+    if (DW1000_StartRxDelayed((final_at - lead) & UWB_TS40_MASK) != 0)
+        anchor_stats.burst_rx_late++;
+    enter_state(ANCHOR_STATE_WAIT_BURST_FINAL);
+}
+
+/** v3 FINAL of the open exchange: keep Rb for the next RESP, listen again. */
+static void handle_burst_final(void)
+{
+    uint8_t final_rx_ts[5];
+    DW1000_ReadRxTimestamp(final_rx_ts);                     /* T6 */
+
+    /* The next POLL is at least the TAG's gap away: the diagnostics can be
+     * read after the receiver is back on. */
+    DW1000_ClearAllStatus();
+    DW1000_StartRx();
+
+    s_burst_prev_txn = s_burst.txn;
+    s_burst_prev_rb = (uint32_t)((ts_to_u64(final_rx_ts) - s_burst.resp_tx) & UWB_TS40_MASK);
+    s_burst_prev_fp_cdbm = INT16_MIN;
+    s_burst_prev_rx_cdbm = INT16_MIN;
+#if UWB_ANCHOR_REPORT_DIAG
+    DW1000_SignalDiag_t diag;
+    DW1000_ReadSignalDiag(&diag);
+    s_burst_prev_fp_cdbm = dbm_to_cdbm(DW1000_GetFirstPathPower(&diag));
+    s_burst_prev_rx_cdbm = dbm_to_cdbm(DW1000_GetRxPower(&diag));
+#endif
+    s_burst_prev_valid = 1U;
+    anchor_stats.finals++;
+    anchor_stats.burst_finals++;
+
+    /* The next POLL is a whole gap away: a safe window for register checks. */
+    s_quiet_window = 1U;
+    enter_state(ANCHOR_STATE_RX_WAIT);
+}
+#endif
+
 /** Read and classify one received frame. Returns 1 if it was consumed. */
 static void handle_rx_frame(void)
 {
@@ -332,6 +508,19 @@ static void handle_rx_frame(void)
             rearm_rx();
             return;
         }
+        if (poll.version >= UWB_FRAME_V3)
+        {
+#if UWB_USE_DS_TWR
+            if (hdr.dst == UWB_FRAME_BROADCAST || hdr.dst == ANCHOR_ADDR)
+            {
+                handle_burst_poll(&hdr, &poll);
+                return;
+            }
+#endif
+            anchor_stats.stray_frames++;
+            rearm_rx();
+            return;
+        }
         if (hdr.dst != ANCHOR_ADDR)
         {
             /* POLL for another anchor — ignore silently */
@@ -343,6 +532,29 @@ static void handle_rx_frame(void)
     }
 
 #if UWB_USE_DS_TWR
+    if (s_state == ANCHOR_STATE_WAIT_BURST_FINAL
+        && hdr.func == FRAME_FINAL_FUNC
+        && (hdr.dst == UWB_FRAME_BROADCAST || hdr.dst == ANCHOR_ADDR)
+        && hdr.src == s_active_tag)
+    {
+        UwbFinal_t fin;
+        if (!uwb_frame_parse_final(rx_buf, rx_len, &fin)
+            || fin.version != UWB_FRAME_V3)
+        {
+            anchor_stats.stray_frames++;
+            rearm_rx();        /* keep the FINAL deadline */
+            return;
+        }
+        if (fin.txn != s_burst.txn)
+        {
+            anchor_stats.txn_mismatch++;
+            rearm_rx();
+            return;
+        }
+        handle_burst_final();
+        return;
+    }
+
     if (s_state == ANCHOR_STATE_WAIT_FINAL
         && hdr.func == FRAME_FINAL_FUNC
         && hdr.dst == ANCHOR_ADDR
@@ -488,12 +700,22 @@ void Anchor_Task(void)
                 reset_to_rx_wait();
             }
         }
-        else if (s_state == ANCHOR_STATE_TX_REPORT)
+        else if (s_state == ANCHOR_STATE_TX_REPORT
+                 || s_state == ANCHOR_STATE_TX_BURST_RESP)
         {
             if (elapsed > ANCHOR_TX_TIMEOUT_MS)
             {
                 s_result.timeout_count++;
                 anchor_stats.tx_timeouts++;
+                reset_to_rx_wait();
+            }
+        }
+        else if (s_state == ANCHOR_STATE_WAIT_BURST_FINAL)
+        {
+            if (elapsed > ANCHOR_FINAL_TIMEOUT_MS)
+            {
+                anchor_stats.burst_final_missed++;
+                s_quiet_window = 1U;
                 reset_to_rx_wait();
             }
         }
@@ -512,6 +734,7 @@ void Anchor_Task(void)
         case ANCHOR_STATE_RX_WAIT:
 #if UWB_USE_DS_TWR
         case ANCHOR_STATE_WAIT_FINAL:
+        case ANCHOR_STATE_WAIT_BURST_FINAL:
 #endif
         {
             const DW1000_RxEvent_t event = DW1000_ClassifyRx(status);
@@ -568,6 +791,15 @@ void Anchor_Task(void)
         }
 
 #if UWB_USE_DS_TWR
+        case ANCHOR_STATE_TX_BURST_RESP:
+        {
+            if (status & DW_TXFRS_BIT)
+                burst_resp_sent();
+            else
+                reset_to_rx_wait();     /* unexpected IRQ: recover */
+            break;
+        }
+
         case ANCHOR_STATE_TX_REPORT:
         {
             if (status & DW_TXFRS_BIT)
@@ -590,10 +822,13 @@ void Anchor_Task(void)
 
 #if UWB_USE_DS_TWR
     /* A stream of unrelated frames must not keep WAIT_FINAL alive forever. */
-    if (s_state == ANCHOR_STATE_WAIT_FINAL
+    if ((s_state == ANCHOR_STATE_WAIT_FINAL || s_state == ANCHOR_STATE_WAIT_BURST_FINAL)
         && (uint32_t)(uwb_platform_time_ms() - s_state_tick) > ANCHOR_FINAL_TIMEOUT_MS)
     {
-        anchor_stats.final_timeouts++;
+        if (s_state == ANCHOR_STATE_WAIT_BURST_FINAL)
+            anchor_stats.burst_final_missed++;
+        else
+            anchor_stats.final_timeouts++;
         reset_to_rx_wait();
     }
 #endif

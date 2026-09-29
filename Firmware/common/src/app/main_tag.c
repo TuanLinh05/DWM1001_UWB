@@ -158,9 +158,13 @@ int main(void)
             uwb_health_note_progress();
         }
 
+        /* In the burst scheme the RESPs are one slot apart and must be read
+         * at once: pack telemetry and run host commands only between cycles.
+         * Always open in the sequential scheme. */
+        const uint8_t window = Tag_TelemetryWindow();
         const uint8_t features = Telem_GetFeatures();
 
-        if (tag_cycle_ready != 0U) {
+        if (window && tag_cycle_ready != 0U) {
             tag_cycle_ready = 0U;
             if ((features & TELEM_FEATURE_RANGE_SNAPSHOT) != 0U) {
                 TagCycleSnapshot_t snapshot;
@@ -170,16 +174,22 @@ int main(void)
         }
 
         TagMeasurement_t measurement;
-        for (uint8_t k = 0U; k < TAG_MEAS_PER_LOOP && Tag_PopMeasurement(&measurement); k++) {
+        for (uint8_t k = 0U; window && k < TAG_MEAS_PER_LOOP
+                             && Tag_PopMeasurement(&measurement); k++) {
             Telem_SendRangeMeas(&measurement);
         }
 
+        TagBurstRecord_t burst;
+        if (window && Tag_PopBurst(&burst)) {
+            Telem_SendRangeBurst(&burst);
+        }
+
         TagAnchorInfo_t anchor_info;
-        if (Tag_TakeAnchorInfo(&anchor_info)) {
+        if (window && Tag_TakeAnchorInfo(&anchor_info)) {
             Telem_SendAnchorInfo(&anchor_info);
         }
 
-        if ((uint32_t)(now - last_stats_ms) >= TAG_STATS_PERIOD_MS) {
+        if (window && (uint32_t)(now - last_stats_ms) >= TAG_STATS_PERIOD_MS) {
             const uint32_t elapsed = now - last_stats_ms;
             const uint32_t cycles = tag_cycle_count - last_cycle_count;
             const uint32_t successes = response_ok_count - last_ok_count;
@@ -199,12 +209,14 @@ int main(void)
             last_ok_count = response_ok_count;
         }
 
-        if ((uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS) {
+        if (window && (uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS) {
             Telem_SendDeviceInfo();
             last_device_info_ms = now;
         }
 
-        uwb_cmd_poll();
+        if (window) {
+            uwb_cmd_poll();
+        }
 
         /* On the DevKit the blue LED proves a bidirectional GUI link. The GUI
          * sends a PING heartbeat; opening a COM port alone does not light it. */

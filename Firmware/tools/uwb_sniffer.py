@@ -5,6 +5,12 @@ receive timestamp (15.65 ps resolution) and the signal powers. This tool turns
 that into a readable timeline, so slot timing, reply delays and collisions can
 be measured without a logic analyser.
 
+The one-to-many burst (frame v3) is decoded too: broadcast POLL with its
+anchor mask and slot plan, slotted RESPs carrying the previous Rb, broadcast
+FINAL. The summary then shows each anchor's RESP offset from the POLL and
+the cycle period. The sniffer UART (460800) carries ~750 frames/s, so slow the
+TAG while sniffing: uwb_command.py set-burst --period 20000.
+
 Examples (PowerShell):
     py -3.12 uwb_sniffer.py --port COM9
     py -3.12 uwb_sniffer.py --port COM9 --seconds 10 --summary --csv sniff.csv
@@ -27,6 +33,8 @@ sys.path.insert(0, str(GUI_DIR))
 import telemetry_protocol as tp  # noqa: E402
 
 TICKS_PER_US = 63897.6          # 499.2 MHz * 128
+UUS_TO_US = 65536 / TICKS_PER_US  # one UWB microsecond (1.0256 us)
+BROADCAST = 0xFFFF
 FUNC_NAMES = {0x21: "POLL", 0x10: "RESP", 0x23: "FINAL", 0x22: "REPORT",
               0x30: "CFG", 0x31: "CFG_ACK"}
 
@@ -56,7 +64,29 @@ class UwbFrame:
         self.source = int.from_bytes(body[7:9], "little")
         self.function = body[9]
         payload = body[10:]
-        if self.function in (0x21, 0x23) and len(payload) >= 2 and payload[0] == 2:
+        if self.function == 0x21 and len(payload) >= 11 and payload[0] == 3:
+            self.version, self.txn = 3, payload[1]
+            mask = payload[3]
+            base, slot, final = (int.from_bytes(payload[i:i + 2], "little") for i in (4, 6, 8))
+            self.payload_note = (f"mask=0x{mask:02X} base={base} slot={slot} "
+                                 f"final={final} UUS")
+            if payload[10]:
+                self.payload_note += f" info=A{payload[10]}"
+        elif self.function == 0x23 and len(payload) >= 2 and payload[0] == 3:
+            self.version, self.txn = 3, payload[1]
+        elif self.function == 0x10 and len(payload) >= 17 and payload[0] == 3:
+            self.version, self.txn = 3, payload[1]
+            reply = int.from_bytes(payload[2:6], "little")
+            status = payload[6]
+            self.payload_note = f"Da={reply / TICKS_PER_US:.1f}us"
+            if status & 0x08:
+                rb = int.from_bytes(payload[8:12], "little")
+                self.payload_note += f" prev={payload[7]:02X} Rb={rb / TICKS_PER_US:.1f}us"
+            if status & 0x10:
+                self.payload_note += " LATE"
+            if payload[16]:
+                self.payload_note += f" +{payload[16]}B TLV"
+        elif self.function in (0x21, 0x23) and len(payload) >= 2 and payload[0] == 2:
             self.version, self.txn = 2, payload[1]
             if self.function == 0x21 and len(payload) >= 3 and payload[2] & 0x01:
                 self.payload_note = "req_info"
@@ -108,12 +138,31 @@ def summarise(frames: list[UwbFrame]) -> None:
     exchange_us: dict[int, list[float]] = defaultdict(list)
     poll_time: dict[int, int] = {}
     poll_anchor: dict[int, int] = {}
+    burst_poll: int | None = None
+    burst_periods: list[float] = []
+    burst_final: list[float] = []
+    burst_resp: dict[int, list[float]] = defaultdict(list)
+    burst_late = 0
+
+    def since(start: int, now: int) -> float:
+        return ((now - start) & 0xFFFFFFFFFF) / TICKS_PER_US
 
     for frame in frames:
         counts[frame.name] += 1
         if not frame.ok or frame.error:
             continue
-        if frame.function == 0x21:            # POLL
+        if frame.function == 0x21 and frame.destination == BROADCAST:   # burst POLL
+            if burst_poll is not None:
+                burst_periods.append(since(burst_poll, frame.timestamp_ticks))
+            burst_poll = frame.timestamp_ticks
+        elif frame.function == 0x23 and frame.destination == BROADCAST:  # burst FINAL
+            if burst_poll is not None:
+                burst_final.append(since(burst_poll, frame.timestamp_ticks))
+        elif frame.function == 0x10 and frame.version == 3:
+            burst_late += "LATE" in frame.payload_note
+            if burst_poll is not None:
+                burst_resp[frame.source].append(since(burst_poll, frame.timestamp_ticks))
+        elif frame.function == 0x21:          # POLL
             poll_time[frame.destination] = frame.timestamp_ticks
             poll_anchor[frame.destination] = frame.timestamp_ticks
         elif frame.function == 0x10:          # RESP
@@ -148,13 +197,32 @@ def summarise(frames: list[UwbFrame]) -> None:
         print(f"\n  sum of median exchange durations: {total:.0f} us "
               f"({len(exchange_us)} anchors; a 50 Hz cycle budget is 20000 us)")
 
+    if burst_resp or burst_final:
+        print("\nburst POLL -> RESP (us, RMARKER to RMARKER), per anchor:")
+        for anchor in sorted(burst_resp):
+            values = burst_resp[anchor]
+            print(f"  A{anchor}: n={len(values):5d} median={statistics.median(values):8.1f} "
+                  f"min={min(values):8.1f} max={max(values):8.1f}")
+        if burst_final:
+            print(f"  FINAL: n={len(burst_final):5d} "
+                  f"median={statistics.median(burst_final):8.1f} us after the POLL")
+        if burst_periods:
+            # Gaps longer than 3x the median are sniffer drops, not cycles.
+            median = statistics.median(burst_periods)
+            periods = [value for value in burst_periods if value < 3.0 * median]
+            print(f"  POLL -> POLL: median={statistics.median(periods):.1f} us "
+                  f"(~{1e6 / statistics.median(periods):.0f} cycles/s, "
+                  f"{len(burst_periods) - len(periods)} gap(s) from sniffer drops)")
+        print(f"  RESPs flagged LATE (previous slot missed): {burst_late}")
+
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--port", help="serial port of the Sniffer_DevKit")
     source.add_argument("--file", help="previously captured raw stream")
-    parser.add_argument("--baud", type=int, default=1000000)
+    parser.add_argument("--baud", type=int, default=460800,
+                        help="Sniffer_DevKit UART (firmware before 2026-09-26: 1000000)")
     parser.add_argument("--seconds", type=float, default=0.0, help="capture duration")
     parser.add_argument("--csv", help="write the decoded timeline to this CSV")
     parser.add_argument("--summary", action="store_true", help="print timing statistics")

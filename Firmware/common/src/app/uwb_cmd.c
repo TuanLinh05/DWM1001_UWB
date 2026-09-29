@@ -445,6 +445,46 @@ static void execute(uint32_t seq, const uint8_t *payload, uint16_t length,
             break;
         }
 
+        case UWB_CMD_SET_BURST:
+        {
+            if (arg_len != 0U && arg_len != 11U)
+            {
+                reply(seq, id, UWB_CMD_ERR_LENGTH, NULL, 0U);
+                break;
+            }
+            if (arg_len == 11U)
+            {
+                const TagBurstTiming_t timing = {
+                    .base_uus = (uint16_t)(arg[1] | (arg[2] << 8)),
+                    .slot_uus = (uint16_t)(arg[3] | (arg[4] << 8)),
+                    .final_margin_uus = (uint16_t)(arg[5] | (arg[6] << 8)),
+                    .gap_us = (uint16_t)(arg[7] | (arg[8] << 8)),
+                    .period_us = (uint16_t)(arg[9] | (arg[10] << 8)),
+                };
+                if ((arg[0] > 1U && arg[0] != 0xFFU) || Tag_SetBurstTiming(&timing) != 0)
+                {
+                    reply(seq, id, UWB_CMD_ERR_ARGUMENT, NULL, 0U);
+                    break;
+                }
+                if (arg[0] != 0xFFU && Tag_SetBurstMode(arg[0]) != 0)
+                {
+                    reply(seq, id, UWB_CMD_ERR_UNSUPPORTED, NULL, 0U);
+                    break;
+                }
+            }
+            TagBurstTiming_t now;
+            Tag_GetBurstTiming(&now);
+            uint16_t n = 0U;
+            data[n++] = (arg_len == 11U && arg[0] != 0xFFU) ? arg[0] : Tag_BurstMode();
+            n += telem_put_u16(&data[n], now.base_uus);
+            n += telem_put_u16(&data[n], now.slot_uus);
+            n += telem_put_u16(&data[n], now.final_margin_uus);
+            n += telem_put_u16(&data[n], now.gap_us);
+            n += telem_put_u16(&data[n], now.period_us);
+            reply(seq, id, UWB_CMD_OK, data, n);
+            break;
+        }
+
         default:
             reply(seq, id, UWB_CMD_ERR_UNKNOWN, NULL, 0U);
             break;

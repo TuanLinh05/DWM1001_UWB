@@ -2,6 +2,7 @@
 #include "dw1000_hw.h"
 
 #include <errno.h>
+#include <string.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/entropy.h>
@@ -192,36 +193,47 @@ int uwb_platform_spi_set_frequency(uint32_t frequency_hz)
     return 0;
 }
 
+/* Longest DW1000 access: 3-byte header + a 127-byte frame buffer. */
+#define SPI_XFER_MAX (3U + 127U)
+
 int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
                           const uint8_t *tx, uint8_t *rx, size_t length)
 {
-    /* One spi_transceive() per DW1000 register access. The DWM1001 uses the
-     * interrupt-per-byte nRF SPI peripheral, so every extra call (the
-     * baseline issued 2-4 per access) cost a full driver round trip.
-     * During a read the header is clocked out while the received bytes are
-     * discarded (NULL rx buffer), then over-run characters clock the data. */
-    const struct spi_buf tx_buffers[2] = {
-        { .buf = (void *)header, .len = header_length },
-        { .buf = (void *)tx, .len = length },
-    };
-    const struct spi_buf rx_buffers[2] = {
-        { .buf = NULL, .len = header_length },
-        { .buf = rx, .len = length },
-    };
-    const struct spi_buf_set tx_set = {
-        .buffers = tx_buffers,
-        .count = (tx != NULL && length > 0U) ? 2U : 1U,
-    };
-    const struct spi_buf_set rx_set = {
-        .buffers = rx_buffers,
-        .count = 2U,
-    };
+    /* One spi_transceive() with ONE contiguous buffer per DW1000 register
+     * access. Split header/data buffers made the driver run a separate
+     * chunk per buffer: a 1-byte header chunk on the EasyDMA SPIM hits
+     * nRF52832 anomaly 58 (an extra clocked byte) and costs a DMA round
+     * trip, and the legacy SPI paid one interrupt per byte. The staging
+     * buffers are in RAM as EasyDMA requires; SPI runs only from the main
+     * loop, never from an ISR, so static buffers are not shared. */
+    static uint8_t s_tx[SPI_XFER_MAX];
+    static uint8_t s_rx[SPI_XFER_MAX];
+    const size_t total = header_length + length;
 
-    if (header == NULL || header_length == 0U || (tx != NULL && rx != NULL)) {
+    if (header == NULL || header_length == 0U || header_length > 3U
+        || (tx != NULL && rx != NULL) || total > SPI_XFER_MAX) {
         return -EINVAL;
     }
-    return spi_transceive(s_spi, s_active_spi_config, &tx_set,
-                          (rx != NULL && length > 0U) ? &rx_set : NULL);
+
+    memcpy(s_tx, header, header_length);
+    if (tx != NULL) {
+        memcpy(&s_tx[header_length], tx, length);
+    } else {
+        memset(&s_tx[header_length], 0, length);
+    }
+
+    const struct spi_buf tx_buffer = { .buf = s_tx, .len = total };
+    const struct spi_buf rx_buffer = { .buf = s_rx, .len = total };
+    const struct spi_buf_set tx_set = { .buffers = &tx_buffer, .count = 1U };
+    const struct spi_buf_set rx_set = { .buffers = &rx_buffer, .count = 1U };
+    const bool reading = rx != NULL && length > 0U;
+
+    const int error = spi_transceive(s_spi, s_active_spi_config, &tx_set,
+                                     reading ? &rx_set : NULL);
+    if (error == 0 && reading) {
+        memcpy(rx, &s_rx[header_length], length);
+    }
+    return error;
 }
 
 void uwb_platform_cs_set(bool active)

@@ -13,6 +13,78 @@ nghiệm thu trên board thật.
 
 ## 0. Cập nhật sau bản v2
 
+### 0.5 — 2026-09-26: Burst DS-TWR một-nhiều (~220 Hz cho cả 8 anchor)
+
+Thay đổi RF và giao thức **có chủ đích**, áp cho mọi node. Chưa nạp lên phần
+cứng: kiểm chứng bằng host test (simulator thanh ghi DW1000) và build Zephyr.
+
+**Lý do.** Log 2026-09-26: DS-TWR tuần tự cho 8 anchor × 29,3 Hz. Máy tính riêng
+của drone cần ≥ 200 Hz. Mỗi anchor cần 4 frame (POLL, RESP, FINAL, REPORT) và
+mỗi slot ~3,9 ms, nên dù tối ưu thế nào sơ đồ tuần tự cũng không tới được mức
+này. Chuyển sang SS-TWR thì mất độ chính xác vì trôi clock (STM32 lệch
+−16 … −22 ppm so với TAG).
+
+**Sơ đồ mới (khung UWB v3, `tag_ranging.h`, `anchor_ranging.c`):**
+
+1. TAG phát **một POLL broadcast**, mang mask anchor, `base`, `slot`, `final`
+   (đơn vị UUS ≈ 1,0256 µs) và anchor được hỏi TLV info.
+2. Anchor thứ k trong mask gửi RESP có hẹn giờ tại POLL_RX + base + k·slot. RESP
+   chứa Da của chu kỳ này và **Rb của chu kỳ trước** (`prev_txn`, cờ `PREV_RB`).
+3. TAG phát **một FINAL broadcast** có hẹn giờ tại T1 + final. Anchor bật
+   receiver đúng lúc đó (RXDLYE, sớm hơn một preamble + 40 UUS).
+4. Kết quả DS-TWR của chu kỳ n có ngay khi RESP của chu kỳ n+1 tới, tức trễ
+   một chu kỳ (~4,5 ms). Anchor lỡ FINAL thì chu kỳ đó rơi về SS-TWR có bù
+   carrier integrator, được đánh dấu `SS_FALLBACK`.
+
+Mỗi chu kỳ chỉ cần 1 + 8 + 1 = 10 frame thay cho 32 frame. Mặc định
+base 800 / slot 350 / margin 450 UUS, gap 500 µs, tức ~4,5 ms/chu kỳ, **~220 Hz
+cho mỗi anchor** (ước tính; `period_us` trong RANGE_BURST là số đo thật).
+Anchor không trả lời 8 chu kỳ liền thì bị bỏ khỏi mask và được thử lại mỗi
+25 chu kỳ; anchor lỡ slot (HPDWARN) báo cờ `LATE` ở RESP kế tiếp.
+
+**Các thay đổi đi kèm:**
+
+- **Preamble 128 / PAC 8** (`UWB_PHY_PREAMBLE`, mặc định 128, profile ID 3) thay
+  cho 256 / PAC 16: mỗi frame ngắn hơn ~127 µs, đổi lại link budget giảm nhẹ
+  (~3 dB). `-DUWB_PHY_PREAMBLE=256U` build lại bản cũ, nhưng **mọi node phải
+  cùng preamble**. Calibration profile ID đổi theo PHY, nên cal đã lưu với
+  preamble 256 sẽ không được nạp (fail-closed).
+- **SPIM (EasyDMA)** cho DW1000 trên mọi node nRF52 (`&spi2` trong
+  `app.overlay`). Board file dùng SPI cũ, ngắt CPU sau mỗi byte. Header và dữ
+  liệu đi chung một buffer, nên không có transfer 1 byte (anomaly 58).
+- Driver: `DW1000_StartRxDelayed()`, `DRX_TUNE2` theo PAC.
+- **Telemetry `RANGE_BURST` (0x18)**: một frame 22 + 8·n byte cho cả chu kỳ,
+  thay cho 8 frame RANGE_MEAS × 66 byte. Mỗi anchor có id, status, cờ (mode,
+  CAL_OK, VALID, ANCHOR_LATE, RADIO_OK), range mm, FP (0,5 dB), RX−FP (0,1 dB),
+  clock offset (0,25 ppm). Các bản ghi RADIO_OK lấy `meas_seq_first`, +1, …
+  giống RANGE_MEAS. Ở 220 Hz khoảng 22 kB/s, tức ~50 % của 460800. Snapshot
+  RANGE giảm xuống 5 Hz trong chế độ burst. Cả hai cùng bật/tắt bằng
+  `TELEM_FEATURE_RANGE_MEAS`.
+- `DIAG_ANCHOR` thêm `burst_late` (77 B). `DIAG_SYSTEM` thêm mode, timing,
+  `burst_final_late`, `burst_record_drops` (168 B). `INFO` có cờ 0x40 = burst.
+  `DEVICE_INFO.frame_version` = 3 khi chạy burst. GUI cũ bỏ qua phần thêm.
+- **Lệnh `SET_BURST` (0x10)**: đọc hoặc đổi mode (0 tuần tự, 1 burst, 0xFF giữ)
+  và 5 thông số timing. Có hiệu lực ở ranh giới chu kỳ kế tiếp, chỉ lưu trong
+  RAM. Dùng qua `uwb_command.py set-burst`.
+- TAG gửi telemetry và đọc lệnh chỉ trong khoảng nghỉ giữa FINAL và POLL kế
+  tiếp (`Tag_TelemetryWindow()`), để UART không chen vào lúc đọc RESP.
+- `Tag_DevKit` khởi động ở burst (`UWB_TAG_BURST_DEFAULT 1U`); `Tag` PCB vẫn
+  tuần tự. `-DUWB_TAG_BURST_DEFAULT=0U` build bản A/B tuần tự; anchor v3 vẫn
+  trả lời POLL v1/v2 như cũ.
+
+**Thứ tự nạp:** cả 8 anchor trước (A1–A4 qua J-Link, A5–A8 `stm32_anchor/dist`
+qua ST-LINK), TAG sau cùng. Anchor firmware cũ (preamble 256) không nghe được
+TAG mới và ngược lại.
+
+**Host test mới:** `test_tag_burst` (8 anchor có crystal offset riêng, Rb trễ
+một chu kỳ, thiếu FINAL → SS có bù, anchor offline + probe, TLV info kéo dài
+slot, FINAL trễ, SET_BURST, quay về tuần tự), `test_anchor_state` phần v3,
+golden telemetry 10 loại frame. GUI 1.5.0 giải mã RANGE_BURST (bảng RANGE_MEAS,
+`meas.csv`, `burst.csv` mỗi chu kỳ một dòng, `summary.csv`).
+
+**Chưa làm:** sniffer tool và test chuyển động (`test_tag_motion`) chưa mô hình
+hoá khung v3; test chuyển động chạy sơ đồ tuần tự.
+
 ### 0.4 — 2026-09-26: Tag_DevKit UART 460800 thay cho 1 Mbaud
 
 Chỉ đổi `Tag_DevKit/app.overlay` (`current-speed = <460800>`), chú thích trong
