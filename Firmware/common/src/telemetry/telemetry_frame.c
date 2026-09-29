@@ -12,21 +12,32 @@
 #include <stddef.h>
 #include <string.h>
 
+/* Byte-wise table for CRC-16/CCITT-FALSE. The bitwise loop cost ~70 us per
+ * 100-byte frame on the nRF52; with one RANGE_BURST frame per cycle at
+ * 200+ Hz that time is taken from the gaps between cycles. */
+static uint16_t s_crc_table[256];
+static uint8_t  s_crc_table_ready;
+
+static void crc_table_init(void)
+{
+    for (uint16_t v = 0U; v < 256U; v++)
+    {
+        uint16_t crc = (uint16_t)(v << 8);
+        for (uint8_t b = 0U; b < 8U; b++)
+            crc = (crc & 0x8000U) ? (uint16_t)((crc << 1) ^ 0x1021U) : (uint16_t)(crc << 1);
+        s_crc_table[v] = crc;
+    }
+    s_crc_table_ready = 1U;
+}
+
 uint16_t telem_crc16_ccitt(const uint8_t *data, uint16_t length)
 {
     uint16_t crc = 0xFFFFU;
 
+    if (!s_crc_table_ready)
+        crc_table_init();
     for (uint16_t i = 0U; i < length; i++)
-    {
-        crc ^= (uint16_t)data[i] << 8;
-        for (uint8_t b = 0U; b < 8U; b++)
-        {
-            if (crc & 0x8000U)
-                crc = (uint16_t)((crc << 1) ^ 0x1021U);
-            else
-                crc = (uint16_t)(crc << 1);
-        }
-    }
+        crc = (uint16_t)((crc << 8) ^ s_crc_table[(uint8_t)((crc >> 8) ^ data[i])]);
     return crc;
 }
 

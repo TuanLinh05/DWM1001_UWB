@@ -4,7 +4,8 @@
  * @brief   DW1000 register-level driver shared by every DWM1001 node.
  *
  * PHY (verified against the registers written below): Channel 5, PRF 16 MHz,
- * preamble 256, PAC 16, preamble code 4 (TX/RX), 6.8 Mbps, standard SFD.
+ * preamble UWB_PHY_PREAMBLE (128/PAC 8 by default, or 256/PAC 16), preamble
+ * code 4 (TX/RX), 6.8 Mbps, standard SFD.
  *
  * Every register access is a single SPI transaction (header + data). The
  * radio parameters that may change at runtime (antenna delays, TX power,
@@ -424,11 +425,11 @@ int DW1000_Configure(void)
     buf[0] = 0x20; buf[1] = 0x00;
     DW1000_WriteSubReg(DW_REG_DRX_CONF, DW_SUB_DRX_TUNE1b, buf, 2);
 
-    /* DRX_TUNE2: 0x331A0052 for PRF16, PAC16 */
-    buf[0] = 0x52; buf[1] = 0x00; buf[2] = 0x1A; buf[3] = 0x33;
+    /* DRX_TUNE2 for PRF16 and the PAC of the selected preamble */
+    write_le32(buf, DW_DRX_TUNE2_VALUE);
     DW1000_WriteSubReg(DW_REG_DRX_CONF, DW_SUB_DRX_TUNE2, buf, 4);
 
-    /* DRX_SFDTOC: preamble 256 + 1 + SFD 8 - PAC 16 */
+    /* DRX_SFDTOC: preamble + 1 + SFD 8 - PAC */
     buf[0] = (uint8_t)(DW_PHY_SFD_TIMEOUT & 0xFFU);
     buf[1] = (uint8_t)((DW_PHY_SFD_TIMEOUT >> 8) & 0xFFU);
     DW1000_WriteSubReg(DW_REG_DRX_CONF, DW_SUB_DRX_SFDTOC, buf, 2);
@@ -541,7 +542,7 @@ void DW1000_WriteTxData(const uint8_t *data, uint16_t len)
 
 /**
  * TX_FCTRL (0x08, 5 bytes): length incl. FCS in bits [9:0]; TXBR = 6.8 Mbps,
- * TR = ranging, TXPRF = 16 MHz, TXPSR/PE = preamble 256 (DW_TX_FCTRL_UPPER).
+ * TR = ranging, TXPRF = 16 MHz, TXPSR/PE = selected preamble (DW_TX_FCTRL_UPPER).
  */
 void DW1000_SetTxFrameCtrl(uint16_t len)
 {
@@ -618,6 +619,28 @@ void DW1000_StartRx(void)
 {
     const uint8_t buf[2] = { 0x00, 0x01 };  /* bit 8 = RXENAB */
     DW1000_WriteReg(DW_REG_SYS_CTRL, buf, 2);
+}
+
+int DW1000_StartRxDelayed(uint64_t rx_time)
+{
+    uint8_t dx[5];
+    for (uint8_t i = 0U; i < 5U; i++)
+        dx[i] = (uint8_t)(rx_time >> (8U * i));
+    DW1000_SetDelayedTxTime(dx);        /* DX_TIME serves TX and RX */
+
+    const uint8_t buf[2] = { 0x00, 0x03 };  /* bit 8 RXENAB | bit 9 RXDLYE */
+    DW1000_WriteReg(DW_REG_SYS_CTRL, buf, 2);
+
+    /* Too late: the receiver would wait for the 40-bit counter to wrap
+     * (~17 s). Listen now instead; an early frame is simply ignored. */
+    if ((DW1000_ReadStatus() & DW_HPDWARN_BIT) != 0U)
+    {
+        DW1000_ForceRxOff();
+        DW1000_ClearTxStatus();          /* HPDWARN lives with the TX events */
+        DW1000_StartRx();
+        return -1;
+    }
+    return 0;
 }
 
 int DW1000_WaitRxDone(uint32_t timeout_ms)
@@ -835,7 +858,7 @@ uint8_t DW1000_IrqLineActive(void)
 /* ========================================================================== */
 
 #define DW_EXP_CHAN_CTRL    0x21040055UL   /* Ch5, RXPRF16, PCODE4 */
-#define DW_EXP_DRX_TUNE2    0x331A0052UL
+#define DW_EXP_DRX_TUNE2    DW_DRX_TUNE2_VALUE
 
 uint32_t DW1000_VerifyConfig(void)
 {

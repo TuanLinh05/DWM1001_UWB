@@ -12,7 +12,7 @@ nằm trong `Firmware/`; mã dùng chung nằm trong `Firmware/common/`.
 ## Kiến trúc
 
 ```text
-                           DS-TWR v2, Ch5
+                    burst DS-TWR v3, Ch5
  DWM1001C TAG  <-------------------------------->  Anchor_1 ... Anchor_8
  address 0x0000                                  address 0x0001 ... 0x0008
        |
@@ -21,14 +21,16 @@ nằm trong `Firmware/`; mã dùng chung nằm trong `Firmware/common/`.
  USB-UART / ESP32-C3  -------------------------->  GUI / logger / host commands
 ```
 
-- PHY: channel 5, PRF16, preamble 256, PAC16, 6.8 Mbps.
-- Khung UWB v2 có version + transaction ID; tám Anchor phải được flash trước,
-  TAG flash sau.
+- PHY: channel 5, PRF16, preamble 128, PAC8, 6.8 Mbps (từ 0.5; trước đó 256).
+  Mọi node phải cùng preamble.
+- Burst DS-TWR một-nhiều (khung v3): một POLL broadcast, tám RESP theo slot,
+  một FINAL broadcast; ~4,5 ms cho cả tám Anchor (~220 Hz). Anchor vẫn trả lời
+  khung v1/v2 tuần tự. Tám Anchor phải được flash trước, TAG flash sau.
 - Telemetry có INFO/RANGE/STATS, diagnostics, DEVICE_INFO và command/ACK.
 - Calibration fail-closed: dữ liệu chưa calibration vẫn được xuất để đo nhưng
   không mang cờ hợp lệ.
-- Mục tiêu chu kỳ là 20 ms/50 Hz cho đủ tám Anchor. Đây vẫn là mục tiêu phải đo
-  trên phần cứng; ước tính DS-TWR tuần tự hiện là 25–33 ms.
+- DS-TWR tuần tự đo được 29 Hz cho tám Anchor (2026-09-26). Burst ước tính
+  ~220 Hz; con số thật phải đo trên phần cứng (`period_us` trong RANGE_BURST).
 
 ## Cấu trúc repository
 
@@ -125,6 +127,12 @@ nên A8 (luôn gửi ngay sau snapshot) trông như mất hẳn. Tám anchor ở
 29 Hz tạo khoảng 20 kB/s, tức 44 % dung lượng của 460800. GUI và
 `uwb_command.py` mặc định 460800; gateway ESP32-C3 là thiết bị USB nên không
 phụ thuộc baud; Tag PCB nối USB-UART trực tiếp cần chọn 115200.
+
+Ở chế độ burst, Tag_DevKit gửi `RANGE_BURST` (0x18) thay cho RANGE_MEAS: một
+frame cho cả chu kỳ tám Anchor, khoảng 22 kB/s ở 220 Hz (~50 % của 460800).
+GUI 1.5.0 tách mỗi frame thành các bản ghi RANGE_MEAS cho tab RANGE_MEAS và
+`meas.csv`, và ghi thêm `burst.csv`: mỗi chu kỳ một dòng, đủ tám Anchor, dùng
+thẳng cho bộ tính vị trí.
 
 Settings đã `SAVE_SETTINGS` từ firmware cũ vẫn giữ feature cũ (không có
 RANGE_MEAS). GUI tự bật RANGE_MEAS cho phiên khi UART đủ nhanh; muốn lưu vĩnh

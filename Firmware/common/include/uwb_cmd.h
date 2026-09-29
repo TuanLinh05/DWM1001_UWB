@@ -36,8 +36,14 @@
  * | 0x0D | TIME_SYNC       | u64 t1_host_us                     | u64 t1, u64 t2, u64 t3 (TAG µs) |
  * | 0x0E | SET_LOCK        | u8 lock                            | -                   |
  * | 0x0F | SET_TELEMETRY   | u8 features (TELEM_FEATURE_*)      | u8 active features  |
+ * | 0x10 | SET_BURST       | - (query) or u8 mode (0 sequential, | u8 mode, u16 base_uus, |
+ * |      |                 | 1 burst, 0xFF keep), u16 base_uus,  | u16 slot_uus,       |
+ * |      |                 | u16 slot_uus, u16 final_margin_uus, | u16 final_margin_uus, |
+ * |      |                 | u16 gap_us, u16 period_us           | u16 gap_us, u16 period_us |
  *
  * bias_um follows the firmware convention: corrected = measured − bias.
+ * SET_BURST takes effect at the next cycle boundary; the ACK data is the
+ * state that will then be active.
  ******************************************************************************
  */
 
@@ -65,6 +71,7 @@ extern "C" {
 #define UWB_CMD_TIME_SYNC        0x0DU
 #define UWB_CMD_SET_LOCK         0x0EU
 #define UWB_CMD_SET_TELEMETRY    0x0FU
+#define UWB_CMD_SET_BURST        0x10U
 
 #define UWB_CMD_OK               0x00U
 #define UWB_CMD_ERR_UNKNOWN      0x01U

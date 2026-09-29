@@ -63,6 +63,15 @@ thay đổi chỉ có hiệu lực tới khi TAG reboot, trừ khi lưu bằng
 `uwb_command.py ... set-telemetry --snapshot --meas --diag --save`. Ở 115200 baud
 firmware từ chối RANGE_MEAS nên nút bị khóa.
 
+**Chế độ burst (firmware 0.5).** TAG gửi `RANGE_BURST` (0x18), mỗi chu kỳ một
+frame cho cả tám anchor, khoảng 220 chu kỳ/s. GUI tách frame thành các bản ghi
+RANGE_MEAS đánh số giống TAG, nên bảng, khe hở `meas_seq`, biểu đồ và `meas.csv`
+vẫn như trên. `meas_time_us` là thời điểm POLL của chu kỳ (chung cho mọi
+anchor). Raw được dựng lại từ offset trong INFO khi anchor đã calibration.
+Công suất phía anchor, `std_noise`, `fp_index` và slot không có trong gói burst:
+cột để trống hoặc 0. FP có độ phân giải 0,5 dB, NLOS Δ 0,1 dB, CI 0,25 ppm.
+Biểu đồ vẽ tối đa 2500 điểm mỗi đường; thống kê vẫn dùng mọi bản ghi.
+
 ### Bản đồ 2D / 3D
 
 - nhập tọa độ tâm anten X/Y/Z theo hệ ENU, đơn vị mét;
@@ -230,6 +239,7 @@ TAG). Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
 | `device_info.csv` | Mọi frame DEVICE_INFO: git/config hash, OTP (PARTID, trim thạch anh), TX power, antenna delay, baud, telemetry features, mask |
 | `cmd_ack.csv` | Phản hồi của TAG cho lệnh GUI gửi (kèm `result_name`) |
 | `range.csv` | Một dòng cho mỗi Anchor: host/tag time, sequence, valid, status, raw/FW filtered/host filtered mm và FPP |
+| `burst.csv` | Chế độ burst: mỗi chu kỳ một dòng với đủ A1..A8 (`cycle_seq`, `t_us`, `period_us`, số anchor được hỏi/đo được, rồi với từng anchor: mode, `range_mm`, cal, valid, late, status, FP dBm, NLOS Δ, clock offset). Dạng này đưa thẳng vào bộ tính vị trí |
 | `meas.csv` | Một dòng cho mỗi bản ghi RANGE_MEAS: `meas_seq`, `meas_time_us`, mode, flags, status, raw/corrected/filtered mm, FP/RX, NLOS Δ, công suất phía anchor, `std_noise`, `fp_index`, clock offset, slot. Công suất không đo được để trống |
 | `stats.csv` | Poll, OK, timeout, RX error, overrun, UART overflow và tần số |
 | `uart.csv` | Tốc độ byte/s và bộ đếm parser phía PC: frame, CRC, byte bỏ, length/version/decode error |
@@ -237,7 +247,7 @@ TAG). Mỗi lần ghi tạo một thư mục riêng theo thời gian và COM:
 | `events.log` | Kết nối, lỗi protocol, STALE và sự kiện trên GUI |
 | `raw_telemetry.bin` | Ghép liên tiếp các frame binary đã qua kiểm tra CRC |
 | `anchor_layout.json` | Snapshot tọa độ ENU đang được bản đồ/solver sử dụng |
-| `session.json` | Metadata, thời lượng, tổng số bản ghi/drop và số frame từng loại (`message_counts`) |
+| `session.json` | Metadata, thời lượng, tổng số bản ghi/drop và số frame từng loại (`message_counts`); `burst_cycles`, `burst_delivered_pct` (tỷ lệ chu kỳ tới được PC) |
 
 Các loại frame khác (ví dụ `gateway_health.csv` khi đi qua ESP32-C3) cũng tự có
 file riêng khi xuất hiện; cột lấy theo đúng trường đã giải mã, hash/mask ghi hex.

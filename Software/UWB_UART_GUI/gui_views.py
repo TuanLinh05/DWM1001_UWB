@@ -47,6 +47,7 @@ from meas_tracker import (
 )
 from telemetry_protocol import (
     AnchorSample,
+    INT16_MIN,
     MEAS_FLAG_CAL_OK,
     MEAS_FLAG_FILTER_OK,
     RangeMeasMessage,
@@ -1830,6 +1831,10 @@ class CalibrationPanel(ttk.Frame):
             messagebox.showerror("Calibration", f"Không xuất được file:\n{exc}", parent=self)
 
 
+# Canvas polyline budget per series; more points only cost redraw time.
+MAX_PLOT_POINTS = 2500
+
+
 class RangeMeasPanel(ttk.Frame):
     """RANGE_MEAS tab: every measurement record of the TAG, per anchor.
 
@@ -2063,7 +2068,7 @@ class RangeMeasPanel(ttk.Frame):
             _fmt(power_dbm(message.rx_cdbm), 1),
             _fmt(summary.nlos_mean_db, 1),
             _fmt(anchor_nlos_db(message), 1),
-            f"{message.ci_ppm_x100 / 100.0:+.2f}",
+            "—" if message.ci_ppm_x100 == INT16_MIN else f"{message.ci_ppm_x100 / 100.0:+.2f}",
             str(message.std_noise),
             str(message.slot_us),
             f"{summary.age_s * 1000.0:.0f}",
@@ -2136,6 +2141,12 @@ class RangeMeasPanel(ttk.Frame):
 
         end = points[-1].tag_time_s
         start = end - span_s
+        total_points = len(points)
+        if total_points > MAX_PLOT_POINTS:
+            # The burst scheme sends ~250 records/s per anchor: plot every
+            # n-th one (always the latest); statistics use all of them.
+            step = -(-total_points // MAX_PLOT_POINTS)
+            points = points[total_points - 1::-step][::-1]
 
         def x_of(time_s: float) -> float:
             return left + (time_s - start) * (right - left) / span_s
@@ -2182,7 +2193,7 @@ class RangeMeasPanel(ttk.Frame):
                            font=("Consolas", 10, "bold"))
         canvas.create_text(
             left, height - 10, anchor=tk.W, fill="#9ca3af",
-            text=f"{len(points)} phép đo trong {span_s:g} s cuối (trục X: đồng hồ TAG, meas_time_us)",
+            text=f"{total_points} phép đo trong {span_s:g} s cuối (trục X: đồng hồ TAG, meas_time_us)",
         )
 
     def _pane(

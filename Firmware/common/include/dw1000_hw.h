@@ -182,6 +182,7 @@ static inline DW1000_RxEvent_t DW1000_ClassifyRx(uint64_t status)
 #define DW_TRXOFF_BIT       (1UL << 6)   /* Force TRX Off */
 #define DW_WAIT4RESP_BIT    (1UL << 7)   /* Turn the receiver on after this TX */
 #define DW_RXENAB_BIT       (1UL << 8)   /* Enable Receiver */
+#define DW_RXDLYE_BIT       (1UL << 9)   /* Receiver Delayed Enable (at DX_TIME) */
 
 /* ========================================================================== */
 /*                     DEVICE ID                                               */
@@ -201,13 +202,37 @@ static inline DW1000_RxEvent_t DW1000_ClassifyRx(uint64_t status)
 #define DW_PAN_ID           0xDECA  /* PAN Identifier */
 /* ANCHOR_ADDR and TAG_ADDR come from the node's uwb_app_config.h. */
 
-/* Fast-50 profile: Ch5, 6.8Mbps, PRF16, preamble 256, PAC16, standard SFD.
- * DWT_PLEN_256 encoding is 0x24 in TX_FCTRL[21:18]. */
+/* PHY: Ch5, 6.8 Mbps, PRF16, standard SFD, preamble selectable. EVERY node
+ * (TAG, anchors, sniffer) must be built with the same UWB_PHY_PREAMBLE.
+ * 128 symbols (PAC 8) is the default since the one-to-many burst
+ * (2026-09-26): each frame is ~127 us shorter than with 256, at a small cost
+ * in link budget. TX_FCTRL[21:18] holds TXPSR/PE (DWT_PLEN_128 = 0x14,
+ * DWT_PLEN_256 = 0x24); DRX_TUNE2 follows the PAC (DW1000 UM Table 33). */
+#ifndef UWB_PHY_PREAMBLE
+#define UWB_PHY_PREAMBLE         128U
+#endif
+#if UWB_PHY_PREAMBLE == 128U
+#define DW_PHY_PREAMBLE_SYMBOLS  128U
+#define DW_PHY_PAC_SYMBOLS       8U
+#define DW_PHY_SFD_TIMEOUT       129U  /* preamble + 1 + SFD(8) - PAC(8) */
+#define DW_PHY_PROFILE_ID        3U    /* 0=unspecified, 1=legacy1024, 2=Fast-256, 3=Fast-128 */
+#define DW_TX_FCTRL_UPPER        0x0015C000UL
+#define DW_DRX_TUNE2_VALUE       0x311A002DUL  /* PAC8, PRF16 */
+#elif UWB_PHY_PREAMBLE == 256U
 #define DW_PHY_PREAMBLE_SYMBOLS  256U
 #define DW_PHY_PAC_SYMBOLS       16U
 #define DW_PHY_SFD_TIMEOUT       249U  /* preamble + 1 + SFD(8) - PAC(16) */
-#define DW_PHY_PROFILE_ID        2U    /* 0=unspecified, 1=legacy1024, 2=Fast-256 */
+#define DW_PHY_PROFILE_ID        2U
 #define DW_TX_FCTRL_UPPER        0x0025C000UL
+#define DW_DRX_TUNE2_VALUE       0x331A0052UL  /* PAC16, PRF16 */
+#else
+#error "UWB_PHY_PREAMBLE must be 128 or 256"
+#endif
+
+/* Air time of the preamble + SFD in UWB microseconds (1 symbol ~= 0.994 us
+ * at PRF16): how early a delayed TX starts before its RMARKER, and how early
+ * a receiver must be on to catch a frame. */
+#define DW_PHY_PREAMBLE_UUS      (DW_PHY_PREAMBLE_SYMBOLS + 8U)
 
 /* SPI starts at 2 MHz for reset/OTP/LDE, then moves to the 8 MHz maximum of
  * the nRF52832 SPI instance. The driver falls back to 2 MHz if the device-ID
@@ -398,6 +423,15 @@ int DW1000_WaitTxDone(uint32_t timeout_ms);
 
 /** @brief Enable the receiver (RXENAB). */
 void DW1000_StartRx(void);
+
+/**
+ * @brief  Turn the receiver on at DX_TIME (RXENAB | RXDLYE). The 9 LSBs of
+ *         `rx_time` are ignored by the hardware, like for a delayed TX.
+ * @retval 0  = scheduled
+ * @retval -1 = the time had already passed (HPDWARN): the receiver was
+ *              turned on at once instead, so nothing is missed.
+ */
+int DW1000_StartRxDelayed(uint64_t rx_time);
 
 /**
  * @brief  Wait for a frame to be received.

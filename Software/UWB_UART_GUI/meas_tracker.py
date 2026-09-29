@@ -23,7 +23,7 @@ from telemetry_protocol import (
 
 RATE_WINDOW_S = 2.0      # rate, noise and NLOS mean use the last 2 s
 STALE_AFTER_S = 1.0      # no record for 1 s: the anchor row is stale
-HISTORY_POINTS = 4000    # per anchor for the plot (> 60 s at 50 Hz)
+HISTORY_POINTS = 16000   # per anchor for the plot (60 s at the ~250 Hz burst rate)
 NOISE_MIN_DIFFERENCES = 5
 # DW1000 APS006 Part 3: RX level minus first-path power below ~6 dB is
 # likely line of sight, above ~10 dB likely non line of sight.

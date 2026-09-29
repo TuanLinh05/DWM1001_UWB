@@ -22,3 +22,13 @@
 &uart0 {
 	status = "disabled";
 };
+
+/*
+ * DW1000 bus: EasyDMA SPIM instead of the board's per-byte-interrupt SPI.
+ * In the v3 burst the slot-0 anchor must read the POLL and schedule its
+ * RESP within the base delay (~0.8 ms). uwb_platform_spi_xfer() never
+ * issues a 1-byte transfer (nRF52832 anomaly 58).
+ */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+};

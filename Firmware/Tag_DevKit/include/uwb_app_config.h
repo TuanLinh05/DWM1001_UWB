@@ -45,10 +45,20 @@
  * (ACTIVE) only for a controlled A/B of the Legacy path. */
 #define UWB_LEGACY_ADAPTIVE_MODE 0U
 
+/* One-to-many burst DS-TWR v3 (tag_ranging.h): one broadcast POLL, eight
+ * slotted RESPs, one broadcast FINAL, ~4.5 ms per cycle for all eight
+ * anchors instead of ~34 ms sequentially. Every anchor must run the v3
+ * responder. SET_BURST switches schemes and tunes the slots at run time;
+ * -DUWB_TAG_BURST_DEFAULT=0U builds the sequential A/B. */
+#ifndef UWB_TAG_BURST_DEFAULT
+#define UWB_TAG_BURST_DEFAULT 1U
+#endif
+
 /* Set to 1 for human-readable CSV, or 0 for the binary packet protocol. */
 #define TELEM_ASCII 0
 
-/* Telemetry at boot: snapshot + one RANGE_MEAS (0x10) per measurement +
+/* Telemetry at boot: snapshot + per-measurement records (RANGE_BURST 0x18
+ * per cycle in the burst scheme, RANGE_MEAS 0x10 when sequential) +
  * diagnostics. RANGE_MEAS needs >= 460800 baud; app.overlay runs UART0 at
  * 460800 (UARTE). Settings saved earlier with SAVE_SETTINGS keep their own
  * features and override this default until the next SAVE_SETTINGS or

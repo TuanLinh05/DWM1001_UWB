@@ -446,6 +446,128 @@ uint8_t Tag_PopMeasurement(TagMeasurement_t *out);
 extern volatile uint32_t tag_meas_queue_drops;
 
 /* ========================================================================== */
+/*                     ONE-TO-MANY (BURST) DS-TWR, protocol v3                 */
+/* ========================================================================== */
+
+/**
+ * Ranging scheme at boot (Tag_SetBurstMode() switches at run time).
+ *   0: sequential unicast DS-TWR v2, one anchor after the other (~30 Hz per
+ *      anchor with eight anchors).
+ *   1: burst v3: one broadcast POLL, one RESP per anchor in its own slot, one
+ *      broadcast FINAL; each anchor returns that exchange's Rb in its RESP of
+ *      the next cycle, so a range is published one cycle after it was
+ *      measured (~200+ Hz for all eight anchors).
+ * Anchors must run firmware with the v3 responder; it still answers v1/v2.
+ * Requires UWB_USE_DS_TWR.
+ */
+#ifndef UWB_TAG_BURST_DEFAULT
+#define UWB_TAG_BURST_DEFAULT       0U
+#endif
+
+/* Burst timing defaults (runtime: Tag_SetBurstTiming / SET_BURST command).
+ * UUS = UWB microsecond = 65536 DW1000 ticks ~= 1.026 us. */
+#ifndef UWB_BURST_BASE_UUS
+#define UWB_BURST_BASE_UUS          800U   /* POLL -> slot-0 RESP (slowest anchor's POLL work) */
+#endif
+#ifndef UWB_BURST_SLOT_UUS
+#define UWB_BURST_SLOT_UUS          350U   /* RESP air time (~205 us) + TAG read + margin */
+#endif
+#ifndef UWB_BURST_FINAL_MARGIN_UUS
+#define UWB_BURST_FINAL_MARGIN_UUS  450U   /* last RESP -> FINAL: tail, TAG work, FINAL preamble */
+#endif
+#ifndef UWB_BURST_GAP_US
+#define UWB_BURST_GAP_US            500U   /* FINAL sent -> next POLL: anchors back in RX */
+#endif
+#ifndef UWB_BURST_PERIOD_US
+#define UWB_BURST_PERIOD_US         0U     /* minimum POLL-to-POLL period, 0 = no cap */
+#endif
+
+/** Extra slot width in the cycle whose RESP carries an anchor's info TLVs. */
+#define UWB_BURST_INFO_EXTRA_UUS    64U
+/** One anchor sends its info TLVs this often. */
+#define UWB_BURST_INFO_PERIOD_MS    1000U
+/** RANGE snapshot (0x01) rate in burst mode: the Live view, not the data. */
+#define UWB_BURST_SNAPSHOT_PERIOD_MS 200U
+/** An anchor missing this many cycles in a row leaves the mask (its slot
+ *  shortens every cycle) and is probed every UWB_BURST_PROBE_CYCLES. */
+#define UWB_BURST_OFFLINE_AFTER     8U
+#define UWB_BURST_PROBE_CYCLES      25U
+/** RX window after the last slot's RMARKER: the RESP tail (~65 us without
+ *  TLVs) plus IRQ slack. Counted from the POLL command, so it leaves
+ *  margin - preamble - tail (~220 us at the defaults) to schedule the FINAL
+ *  when the last RESP never comes. */
+#define TAG_BURST_RX_TAIL_US        100U
+/** Burst records buffered for telemetry. */
+#define TAG_BURST_QUEUE_LEN         4U
+
+typedef struct {
+    uint16_t base_uus;          /* POLL RMARKER -> first RESP RMARKER */
+    uint16_t slot_uus;          /* RESP RMARKER spacing */
+    uint16_t final_margin_uus;  /* last RESP RMARKER -> FINAL RMARKER */
+    uint16_t gap_us;            /* FINAL sent -> next POLL */
+    uint16_t period_us;         /* minimum POLL-to-POLL period, 0 = none */
+} TagBurstTiming_t;
+
+/** Validate and queue new timing for the next cycle. @retval 0 ok, -1 invalid. */
+int  Tag_SetBurstTiming(const TagBurstTiming_t *timing);
+void Tag_GetBurstTiming(TagBurstTiming_t *timing);
+/** Select the scheme; it changes at the next cycle boundary.
+ *  @retval 0 ok, -1 burst not built (UWB_USE_DS_TWR = 0). */
+int  Tag_SetBurstMode(uint8_t enable);
+/** 1 while the burst scheme is active. */
+uint8_t Tag_BurstMode(void);
+/** Frame version used on air: 3 in burst mode, else UWB_TAG_FRAME_VERSION. */
+uint8_t Tag_FrameVersion(void);
+
+/**
+ * 1 when the radio is not inside a time-critical phase. In burst mode the
+ * RESPs arrive one slot apart and must be read at once, so the main loop
+ * packs telemetry, runs commands and register checks only in this window.
+ * Always 1 in the sequential scheme.
+ */
+uint8_t Tag_TelemetryWindow(void);
+
+/** 1 when the anchor is currently backed off (offline, probed periodically). */
+uint8_t Tag_AnchorBackedOff(uint8_t anchor_index);
+
+/* TagBurstAnchor_t.flags */
+#define TAG_BURST_REC_MODE_MASK     0x03U  /* TAG_MEAS_MODE_*, 3 = no range */
+#define TAG_BURST_REC_MODE_NONE     0x03U
+#define TAG_BURST_REC_CAL_OK        0x04U  /* range_mm is calibrated */
+#define TAG_BURST_REC_VALID         0x08U  /* accepted by the TAG conditioner */
+#define TAG_BURST_REC_ANCHOR_LATE   0x10U  /* anchor reported a missed slot */
+#define TAG_BURST_REC_RADIO_OK      0x20U  /* exchange complete, range computed */
+
+/** One anchor of one burst cycle. */
+typedef struct {
+    uint8_t  anchor_id;
+    uint8_t  status;       /* TAG_ST_* */
+    uint8_t  flags;        /* TAG_BURST_REC_* */
+    uint16_t range_mm;     /* calibrated with CAL_OK, raw otherwise; 0xFFFF = none */
+    int16_t  fp_cdbm;      /* RESP first-path power at the TAG, INT16_MIN = unknown */
+    int16_t  rx_cdbm;      /* RESP receive power at the TAG */
+    int16_t  ci_ppm_x100;  /* anchor clock vs TAG, 0.01 ppm, INT16_MIN = unknown */
+} TagBurstAnchor_t;
+
+/** Every anchor of one burst cycle, published one cycle later. */
+typedef struct {
+    uint32_t cycle_seq;
+    uint32_t meas_seq_first;   /* meas_seq of the first RADIO_OK entry */
+    uint64_t t_us;             /* TAG clock when the cycle's POLL started */
+    uint32_t period_us;        /* POLL of this cycle -> POLL of the next */
+    uint8_t  count;
+    TagBurstAnchor_t anchor[TAG_NUM_ANCHORS];
+} TagBurstRecord_t;
+
+/** Pop the oldest burst record. @retval 1 if one was returned. */
+uint8_t Tag_PopBurst(TagBurstRecord_t *out);
+
+extern volatile uint32_t tag_burst_final_late_count;   /* FINAL could not keep its time */
+extern volatile uint32_t tag_burst_record_drops;       /* telemetry queue full */
+/** RESPs whose anchor reported it missed its previous slot (base/slot too tight). */
+extern volatile uint32_t anchor_burst_late_count[TAG_NUM_ANCHORS];
+
+/* ========================================================================== */
 /*                     API                                                     */
 /* ========================================================================== */
 

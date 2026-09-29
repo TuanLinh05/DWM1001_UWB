@@ -136,8 +136,10 @@ class _MeasStats:
         nlos = message.nlos_indicator_db
         if nlos is not None:
             self.nlos_db.add(nlos)
-        self.ci_ppm.add(message.ci_ppm_x100 / 100.0)
-        self.slot_us.add(float(message.slot_us))
+        if message.ci_ppm_x100 != INT16_MIN:
+            self.ci_ppm.add(message.ci_ppm_x100 / 100.0)
+        if message.slot_us:                  # burst records carry no slot time
+            self.slot_us.add(float(message.slot_us))
 
     def add_snapshot(self, valid: bool, status: int) -> None:
         self.snap_frames += 1

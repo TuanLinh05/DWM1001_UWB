@@ -163,6 +163,9 @@ typedef enum {
 #if UWB_USE_DS_TWR
     TAG_STATE_TX_FINAL    = 4, /* FINAL sent, waiting for TXFRS to read T5 */
     TAG_STATE_WAIT_REPORT = 5, /* RX active, waiting for REPORT from anchor */
+    TAG_STATE_BURST_TX_POLL  = 6, /* v3: broadcast POLL on air */
+    TAG_STATE_BURST_RX       = 7, /* v3: collecting the slotted RESPs */
+    TAG_STATE_BURST_TX_FINAL = 8, /* v3: delayed broadcast FINAL scheduled */
 #endif
 } TagState_t;
 
@@ -186,6 +189,14 @@ static uint8_t             s_info_rr        = 0;
 static uint8_t             s_active_anchor_mask = (uint8_t)(UWB_TAG_ACTIVE_ANCHOR_MASK & 0xFFU);
 static volatile uint8_t    s_pause_requested = 0;
 static uint8_t             s_paused         = 0;
+
+/* Ranging scheme: 0 = sequential v2, 1 = burst v3 (see tag_ranging.h). */
+#if UWB_USE_DS_TWR
+static uint8_t             s_burst_enabled   = (uint8_t)(UWB_TAG_BURST_DEFAULT ? 1U : 0U);
+static uint8_t             s_burst_requested = (uint8_t)(UWB_TAG_BURST_DEFAULT ? 1U : 0U);
+#else
+static const uint8_t       s_burst_enabled   = 0U;
+#endif
 
 /* Poll TX timestamp for current POLL (used in SS-TWR calc) */
 static uint8_t             s_poll_tx_ts[5]  = {0};
@@ -1431,11 +1442,10 @@ static int32_t compute_distance_ss_terms_mm(const uint8_t *resp_rx_ts_raw,
                                  + (double)carrier_integrator * 0.05;
     }
 
-#if UWB_USE_CLOCK_CORRECTION
-    double clock_offset_ratio = ci_ema[s_current_anchor] * UWB_CLOCK_OFFSET_MULT;
-#else
-    double clock_offset_ratio = 0.0;
-#endif
+    /* A burst reply can last a whole cycle (~4 ms): uncorrected, a 20 ppm
+     * anchor crystal would add metres. Always correct in that scheme. */
+    const double clock_offset_ratio = (UWB_USE_CLOCK_CORRECTION || s_burst_enabled)
+        ? ci_ema[s_current_anchor] * UWB_CLOCK_OFFSET_MULT : 0.0;
 
     double t_reply_corrected = (double)t_reply * (1.0 - clock_offset_ratio);
     double diff = (double)t_round - t_reply_corrected;
@@ -2274,6 +2284,775 @@ static FrameOutcome_t handle_report_frame(void)
 #endif
 
 /* ========================================================================== */
+/*                     ONE-TO-MANY (BURST) DS-TWR, protocol v3                 */
+/* ========================================================================== */
+
+volatile uint32_t tag_burst_final_late_count = 0;
+volatile uint32_t tag_burst_record_drops = 0;
+volatile uint32_t anchor_burst_late_count[TAG_NUM_ANCHORS] = {0};
+
+static TagBurstTiming_t s_burst_timing = {
+    .base_uus = UWB_BURST_BASE_UUS,
+    .slot_uus = UWB_BURST_SLOT_UUS,
+    .final_margin_uus = UWB_BURST_FINAL_MARGIN_UUS,
+    .gap_us = UWB_BURST_GAP_US,
+    .period_us = UWB_BURST_PERIOD_US,
+};
+
+#if UWB_USE_DS_TWR
+/* What the TAG keeps from one anchor's RESP until the next cycle brings Rb.
+ * The diagnostics are raw registers: converted later, outside the slots. */
+typedef struct {
+    uint8_t  present;
+    uint8_t  anchor_status;
+    uint8_t  prev_txn;
+    uint32_t da;
+    uint32_t prev_rb;
+    int16_t  prev_final_fp_cdbm;
+    int16_t  prev_final_rx_cdbm;
+    uint8_t  rx_ts[5];          /* T4 */
+    DW1000_SignalDiag_t diag;
+    int32_t  ci;
+} TagBurstResp_t;
+
+typedef struct {
+    uint32_t seq;               /* 0 = empty */
+    uint8_t  txn;
+    uint8_t  mask;
+    uint8_t  final_sent;        /* T5 valid */
+    uint64_t t_us;
+    uint32_t period_us;
+    uint8_t  poll_tx_ts[5];     /* T1 */
+    uint8_t  final_tx_ts[5];    /* T5 */
+    TagBurstResp_t resp[TAG_NUM_ANCHORS];
+} TagBurstCycle_t;
+
+/* The open cycle and the one before it, which waits for its Rb. */
+static TagBurstCycle_t s_bc[2];
+static uint8_t  s_bc_cur = 0U;
+
+static TagBurstTiming_t s_burst_timing_pending;
+static uint8_t  s_burst_timing_pending_valid = 0U;
+static uint32_t s_burst_seq = 0U;
+static uint8_t  s_burst_expected = 0U;
+static uint8_t  s_burst_received = 0U;
+static uint16_t s_burst_final_uus = 0U;
+static uint32_t s_burst_rx_limit_us = 0U;
+static uint32_t s_burst_final_timeout_us = 0U;
+static uint64_t s_burst_last_poll_us = 0U;
+static uint64_t s_burst_final_done_us = 0U;
+static uint32_t s_burst_last_snapshot_ms = 0U;
+static uint32_t s_burst_last_info_ms = 0U;
+static uint8_t  s_burst_info_rr = 0U;
+
+static TagBurstRecord_t s_brec_queue[TAG_BURST_QUEUE_LEN];
+static uint8_t  s_brec_head = 0U;
+static uint8_t  s_brec_tail = 0U;
+static uint8_t  s_brec_count = 0U;
+
+static uint32_t uus_to_us(uint32_t uus)
+{
+    /* 1 UUS = 512 / 499.2 us. */
+    return (uint32_t)(((uint64_t)uus * 512U + 499U) / 499U);
+}
+
+static uint8_t mask_count(uint8_t mask)
+{
+    uint8_t n = 0U;
+    for (; mask != 0U; mask = (uint8_t)(mask & (uint8_t)(mask - 1U)))
+        n++;
+    return n;
+}
+
+static uint8_t burst_offline(uint8_t idx)
+{
+    return anchor_response_timeout_streak[idx] >= UWB_BURST_OFFLINE_AFTER ? 1U : 0U;
+}
+
+static void burst_reset(void)
+{
+    memset(s_bc, 0, sizeof(s_bc));
+    s_bc_cur = 0U;
+    s_burst_expected = 0U;
+    s_burst_received = 0U;
+    s_burst_last_poll_us = 0U;
+    s_burst_final_done_us = 0U;
+    s_brec_head = 0U;
+    s_brec_tail = 0U;
+    s_brec_count = 0U;
+}
+
+static void burst_push_record(const TagBurstRecord_t *rec)
+{
+    if (!s_meas_queue_enabled)
+        return;
+    if (s_brec_count >= TAG_BURST_QUEUE_LEN)
+    {
+        tag_burst_record_drops++;
+        return;
+    }
+    s_brec_queue[s_brec_head] = *rec;
+    s_brec_head = (uint8_t)((s_brec_head + 1U) % TAG_BURST_QUEUE_LEN);
+    s_brec_count++;
+}
+
+/** Anchors polled this cycle: every healthy active anchor plus at most one
+ *  due probe of an offline anchor (round-robin). */
+static uint8_t burst_choose_mask(void)
+{
+    uint8_t mask = 0U;
+    int8_t probe = -1;
+
+    for (uint8_t k = 0U; k < TAG_NUM_ANCHORS && probe < 0; k++)
+    {
+        const uint8_t idx = (uint8_t)((s_probe_rr + k) % TAG_NUM_ANCHORS);
+        if (anchor_active(idx) && burst_offline(idx)
+            && cycle_deadline_reached(tag_cycle_count, s_anchor_next_probe_cycle[idx]))
+        {
+            probe = (int8_t)idx;
+            s_probe_rr = (uint8_t)((idx + 1U) % TAG_NUM_ANCHORS);
+            s_anchor_next_probe_cycle[idx] = tag_cycle_count + UWB_BURST_PROBE_CYCLES;
+            anchor_probe_count[idx]++;
+        }
+    }
+
+    for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
+    {
+        if (!anchor_active(idx))
+            continue;
+        if (burst_offline(idx) && (int8_t)idx != probe)
+        {
+            anchor_poll_skipped_count[idx]++;
+            mark_anchor_result(idx, 0U, TAG_ST_TIMEOUT, 0, 0, 0.0f);
+            continue;
+        }
+        mask |= (uint8_t)(1U << idx);
+    }
+    return mask;
+}
+
+/** One anchor per second attaches its info TLVs (round-robin). */
+static uint8_t burst_choose_info(uint8_t mask)
+{
+    const uint32_t now_ms = uwb_platform_time_ms();
+
+    if ((uint32_t)(now_ms - s_burst_last_info_ms) < UWB_BURST_INFO_PERIOD_MS)
+        return 0U;
+    for (uint8_t k = 0U; k < TAG_NUM_ANCHORS; k++)
+    {
+        const uint8_t idx = (uint8_t)((s_burst_info_rr + k) % TAG_NUM_ANCHORS);
+        if ((mask >> idx) & 1U)
+        {
+            s_burst_info_rr = (uint8_t)((idx + 1U) % TAG_NUM_ANCHORS);
+            s_burst_last_info_ms = now_ms;
+            return (uint8_t)anchor_id_at(idx);
+        }
+    }
+    return 0U;
+}
+
+static void burst_start_cycle(uint64_t now_us)
+{
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+    TagBurstCycle_t *prev = &s_bc[s_bc_cur ^ 1U];
+
+    tag_cycle_count++;
+    if (s_burst_last_poll_us != 0U)
+    {
+        const uint64_t period = now_us - s_burst_last_poll_us;
+        tag_cycle_duration_us = (uint32_t)(period > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : period);
+        if (tag_cycle_duration_us > tag_cycle_duration_max_us)
+            tag_cycle_duration_max_us = tag_cycle_duration_us;
+        if (prev->seq != 0U)
+            prev->period_us = tag_cycle_duration_us;
+    }
+    s_burst_last_poll_us = now_us;
+
+    const uint8_t mask = burst_choose_mask();
+    memset(c, 0, sizeof(*c));
+    if (mask == 0U)
+    {
+        /* Nothing to poll: keep the snapshot truthful, try again later. */
+        s_burst_final_done_us = now_us;
+        return;
+    }
+
+    const uint8_t info_id = burst_choose_info(mask);
+    const uint16_t slot = (uint16_t)(s_burst_timing.slot_uus
+                                     + (info_id != 0U ? UWB_BURST_INFO_EXTRA_UUS : 0U));
+    const uint8_t n = mask_count(mask);
+    uint32_t final_uus = (uint32_t)s_burst_timing.base_uus
+                       + (uint32_t)(n - 1U) * slot
+                       + s_burst_timing.final_margin_uus;
+    if (final_uus > 0xFFFFU)
+        final_uus = 0xFFFFU;
+
+    s_txn++;
+    c->seq = ++s_burst_seq;
+    c->txn = s_txn;
+    c->mask = mask;
+    c->t_us = now_us;
+
+    uint8_t frame[UWB_POLL_V3_RX_LEN];
+    const UwbPoll_t poll = {
+        .version = UWB_FRAME_V3,
+        .txn = s_txn,
+        .flags = 0U,
+        .anchor_mask = mask,
+        .base_uus = s_burst_timing.base_uus,
+        .slot_uus = slot,
+        .final_uus = (uint16_t)final_uus,
+        .info_id = info_id,
+    };
+    const uint16_t len = uwb_frame_build_poll(frame, s_seq_num++, DW_PAN_ID,
+                                              UWB_FRAME_BROADCAST, TAG_ADDR, &poll);
+
+    DW1000_ClearAllStatus();
+    DW1000_WriteTxData(frame, len);
+    DW1000_SetTxFrameCtrl((uint16_t)(len + UWB_FRAME_FCS_LEN));
+    DW1000_StartTxWait4Resp();            /* RX on right after the POLL */
+    poll_sent_count++;
+
+    s_burst_expected = n;
+    s_burst_received = 0U;
+    s_burst_final_uus = (uint16_t)final_uus;
+    /* From the POLL command: its preamble, the last slot, then the RESP
+     * tail (longer when it carries the info TLVs). */
+    s_burst_rx_limit_us = uus_to_us(DW_PHY_PREAMBLE_UUS + (uint32_t)s_burst_timing.base_uus
+                                    + (uint32_t)(n - 1U) * slot
+                                    + (info_id != 0U ? UWB_BURST_INFO_EXTRA_UUS : 0U))
+                        + TAG_BURST_RX_TAIL_US;
+    s_burst_final_timeout_us = TAG_FINAL_TX_TIMEOUT_US + uus_to_us(final_uus);
+    s_full_cycle_start = MCU_CycleNow();
+    s_state = TAG_STATE_BURST_TX_POLL;
+    s_state_cycle = s_full_cycle_start;
+}
+
+/**
+ * A good frame in the RESP window. With `rearm` the receiver goes back on
+ * first: the next RESP is one slot away, and its registers are overwritten
+ * only once its own preamble has been received, long after this read. The
+ * last RESP is read after the FINAL has been scheduled (rearm = 0): the RX
+ * buffer, RX_TIME, diagnostics and carrier integrator keep the frame until
+ * the next reception.
+ */
+static void burst_read_resp(uint8_t rearm)
+{
+    const McuCycleStamp_t start = MCU_CycleNow();
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+    uint8_t rx_ts[5];
+    uint8_t rx_buf[MAX_RX_FRAME_LEN];
+    DW1000_SignalDiag_t diag;
+
+    if (rearm)
+    {
+        DW1000_ClearAllStatus();
+        DW1000_StartRx();
+    }
+    DW1000_ReadRxTimestamp(rx_ts);
+    const uint16_t rx_len = DW1000_ReadRxData(rx_buf, MAX_RX_FRAME_LEN);
+    DW1000_ReadSignalDiag(&diag);
+    const int32_t ci = DW1000_ReadCarrierIntegrator();
+
+    UwbFrameHeader_t hdr;
+    UwbResp_t resp;
+    if (!uwb_frame_parse_header(rx_buf, rx_len, DW_PAN_ID, &hdr)
+        || hdr.func != FRAME_RESP_FUNC || hdr.dst != TAG_ADDR)
+    {
+        tag_rx_error_stats.filtered++;      /* foreign traffic */
+        return;
+    }
+    const int idx = anchor_index_of(hdr.src);
+    if (idx < 0 || ((c->mask >> idx) & 1U) == 0U || c->resp[idx].present)
+        return;
+    if (!uwb_frame_parse_resp(rx_buf, rx_len, &resp) || resp.version != UWB_FRAME_V3)
+    {
+        anchor_rx_error_count[idx]++;
+        return;
+    }
+    if (resp.txn != c->txn)
+    {
+        anchor_txn_mismatch_count[idx]++;
+        return;
+    }
+
+    TagBurstResp_t *r = &c->resp[idx];
+    r->present = 1U;
+    r->anchor_status = resp.anchor_status;
+    r->prev_txn = resp.prev_txn;
+    r->da = resp.reply_ticks;
+    r->prev_rb = resp.prev_rb_ticks;
+    r->prev_final_fp_cdbm = resp.prev_final_fp_cdbm;
+    r->prev_final_rx_cdbm = resp.prev_final_rx_cdbm;
+    memcpy(r->rx_ts, rx_ts, sizeof(r->rx_ts));
+    r->diag = diag;
+    r->ci = ci;
+    s_burst_received++;
+
+    if ((resp.anchor_status & UWB_ANCHOR_ST_LATE) != 0U)
+        anchor_burst_late_count[idx]++;
+    if (resp.tlv_len != 0U)
+        capture_anchor_info((uint8_t)idx, &resp);
+
+    /* Arrival time and read cost per anchor: the evidence for tuning. */
+    anchor_slot_duration_us[idx] = MCU_ElapsedUs(s_state_cycle);
+    if (anchor_slot_duration_us[idx] > anchor_slot_duration_max_us[idx])
+        anchor_slot_duration_max_us[idx] = anchor_slot_duration_us[idx];
+    const uint32_t cost = MCU_ElapsedUs(start);
+    if (cost > anchor_processing_max_us[idx])
+        anchor_processing_max_us[idx] = cost;
+}
+
+/** Schedule the broadcast FINAL at POLL + final_uus (delayed TX). */
+static void burst_send_final(void)
+{
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+    uint8_t frame[UWB_FINAL_V3_RX_LEN];
+    const UwbFinal_t fin = { .version = UWB_FRAME_V3, .txn = c->txn };
+    const uint16_t len = uwb_frame_build_final(frame, s_seq_num++, DW_PAN_ID,
+                                               UWB_FRAME_BROADCAST, TAG_ADDR, &fin);
+    const uint64_t final_tx = (ts_to_u64(c->poll_tx_ts)
+                               + (uint64_t)s_burst_final_uus * UWB_UUS_TO_DWT)
+                              & 0xFFFFFFFE00ULL;
+    uint8_t dx[5];
+    for (uint8_t i = 0U; i < 5U; i++)
+        dx[i] = (uint8_t)(final_tx >> (8U * i));
+
+    DW1000_ForceRxOff();
+    DW1000_ClearAllStatus();
+    DW1000_SetDelayedTxTime(dx);
+    DW1000_WriteTxData(frame, len);
+    DW1000_SetTxFrameCtrl((uint16_t)(len + UWB_FRAME_FCS_LEN));
+    if (DW1000_StartTxDelayedEx(0U) != 0)
+    {
+        /* Too late for the time the anchors listen at: no Rb this cycle. */
+        tag_burst_final_late_count++;
+        DW1000_ForceRxOff();
+        DW1000_ClearAllStatus();
+        c->final_sent = 0U;
+        s_state = TAG_STATE_IDLE;
+        return;
+    }
+    s_state = TAG_STATE_BURST_TX_FINAL;
+    s_state_cycle = MCU_CycleNow();
+}
+
+/** Turn the previous cycle into ranges, now that this cycle brought Rb. */
+static void burst_publish(const TagBurstCycle_t *prev, const TagBurstCycle_t *cur)
+{
+    TagBurstRecord_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.cycle_seq = prev->seq;
+    rec.meas_seq_first = s_meas_seq;
+    rec.t_us = prev->t_us;
+    rec.period_us = prev->period_us;
+
+    for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
+    {
+        if (((prev->mask >> idx) & 1U) == 0U)
+            continue;
+
+        const TagBurstResp_t *rp = &prev->resp[idx];
+        const TagBurstResp_t *rc = &cur->resp[idx];
+        TagBurstAnchor_t *e = &rec.anchor[rec.count++];
+
+        s_current_anchor = idx;
+        memset(&s_meas, 0, sizeof(s_meas));
+        s_meas.anchor_id = anchor_id_at(idx);
+        s_meas.txn = prev->txn;
+        s_meas.fp_cdbm = INT16_MIN;
+        s_meas.rx_cdbm = INT16_MIN;
+        s_meas.anchor_fp_cdbm = INT16_MIN;
+        s_meas.anchor_rx_cdbm = INT16_MIN;
+        s_meas.ci_ppm_x100 = INT16_MIN;
+
+        e->anchor_id = (uint8_t)anchor_id_at(idx);
+        e->range_mm = 0xFFFFU;
+        e->flags = TAG_BURST_REC_MODE_NONE;
+
+        if (!rp->present)
+        {
+            mark_anchor_result(idx, 0U, TAG_ST_TIMEOUT, 0, 0, 0.0f);
+            e->status = TAG_ST_TIMEOUT;
+            e->fp_cdbm = INT16_MIN;
+            e->rx_cdbm = INT16_MIN;
+            e->ci_ppm_x100 = INT16_MIN;
+            continue;
+        }
+
+        const float fpp = DW1000_GetFirstPathPower(&rp->diag);
+        capture_resp_diagnostics(&rp->diag, fpp, rp->ci);
+        memcpy(s_poll_tx_ts, prev->poll_tx_ts, sizeof(s_poll_tx_ts));
+        memcpy(s_resp_rx_ts, rp->rx_ts, sizeof(s_resp_rx_ts));
+        memcpy(s_final_tx_ts, prev->final_tx_ts, sizeof(s_final_tx_ts));
+        s_da_from_resp = rp->da;
+
+        const uint8_t rb_ok = prev->final_sent && rc->present
+            && (rc->anchor_status & UWB_ANCHOR_ST_PREV_RB) != 0U
+            && rc->prev_txn == prev->txn;
+        int32_t raw_mm = 0;
+
+        if (rb_ok)
+        {
+            s_meas.anchor_fp_cdbm = rc->prev_final_fp_cdbm;
+            s_meas.anchor_rx_cdbm = rc->prev_final_rx_cdbm;
+            if (rc->prev_final_fp_cdbm != INT16_MIN)
+                s_meas.flags |= TAG_MEAS_FLAG_ANCHOR_DIAG;
+            ds_report_ok_count++;
+            note_anchor_ds_complete(idx);
+
+            const int32_t dist_mm = compute_distance_ds_mm(rc->prev_rb, &raw_mm);
+            if (dist_mm >= 0)
+            {
+                ds_ok_count++;
+                publish_distance(dist_mm, &rp->diag, fpp, TAG_ST_OK);
+            }
+            else if (dist_mm == RANGE_CALIBRATION_MISSING)
+            {
+                ds_cal_missing_count++;
+                mark_anchor_rejected_measurement(idx, TAG_ST_CAL_MISSING_DS, raw_mm, fpp);
+            }
+            else
+            {
+                mark_anchor_result(idx, 0U, TAG_ST_COMPUTE, 0, 0, 0.0f);
+            }
+        }
+        else
+        {
+            /* The anchor missed our FINAL (or we could not send it): SS with
+             * the carrier-integrator correction, flagged as a fallback. */
+            anchor_report_timeout_count[idx]++;
+            ds_report_timeout_count++;
+            ds_fallback_count++;
+            anchor_ds_fallback_count[idx]++;
+
+            const int32_t dist_mm = compute_distance_ss_terms_mm(
+                rp->rx_ts, rp->da, rp->ci, UWB_MODE_SS_FALLBACK, &raw_mm);
+            if (dist_mm >= 0)
+            {
+                publish_distance(dist_mm, &rp->diag, fpp, TAG_ST_DS_FALLBACK);
+            }
+            else if (dist_mm == RANGE_CALIBRATION_MISSING)
+            {
+                mark_anchor_rejected_measurement(
+                    idx, (uint8_t)(TAG_ST_DS_FALLBACK | TAG_ST_CALIBRATION_MISSING),
+                    raw_mm, fpp);
+            }
+            else
+            {
+                mark_anchor_result(idx, 0U, TAG_ST_COMPUTE, 0, 0, 0.0f);
+            }
+        }
+
+        e->status = s_meas.status;
+        e->fp_cdbm = s_meas.fp_cdbm;
+        e->rx_cdbm = s_meas.rx_cdbm;
+        e->ci_ppm_x100 = s_meas.ci_ppm_x100;
+        if ((rp->anchor_status & UWB_ANCHOR_ST_LATE) != 0U)
+            e->flags |= TAG_BURST_REC_ANCHOR_LATE;
+        if ((s_meas.flags & TAG_MEAS_FLAG_RADIO_OK) != 0U)
+        {
+            const int32_t range = (s_meas.flags & TAG_MEAS_FLAG_CAL_OK) != 0U
+                ? s_meas.corrected_mm : s_meas.raw_mm;
+            e->flags = (uint8_t)((e->flags & (uint8_t)~TAG_BURST_REC_MODE_MASK)
+                                 | (s_meas.mode & TAG_BURST_REC_MODE_MASK)
+                                 | TAG_BURST_REC_RADIO_OK);
+            if ((s_meas.flags & TAG_MEAS_FLAG_CAL_OK) != 0U)
+                e->flags |= TAG_BURST_REC_CAL_OK;
+            if ((s_meas.flags & TAG_MEAS_FLAG_FILTER_OK) != 0U)
+                e->flags |= TAG_BURST_REC_VALID;
+            e->range_mm = (range < 0 || range >= 0xFFFF) ? 0xFFFEU : (uint16_t)range;
+            s_meas_seq++;
+        }
+    }
+    burst_push_record(&rec);
+}
+
+/** FINAL done (or given up): bookkeeping, publish the previous cycle. */
+static void burst_finish_cycle(void)
+{
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+    TagBurstCycle_t *prev = &s_bc[s_bc_cur ^ 1U];
+
+    s_burst_final_done_us = uwb_platform_time_us64();
+    for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
+    {
+        if (((c->mask >> idx) & 1U) == 0U)
+            continue;
+        if (c->resp[idx].present)
+        {
+            note_anchor_response_received(idx);
+        }
+        else
+        {
+            rx_timeout_count++;
+            anchor_timeout_count[idx]++;
+            anchor_response_timeout_count[idx]++;
+            if (anchor_response_timeout_streak[idx] < 0xFFFFU)
+                anchor_response_timeout_streak[idx]++;
+            if (anchor_response_timeout_streak[idx] == UWB_BURST_OFFLINE_AFTER)
+                s_anchor_next_probe_cycle[idx] = tag_cycle_count + UWB_BURST_PROBE_CYCLES;
+        }
+    }
+
+    if (prev->seq != 0U)
+        burst_publish(prev, c);
+    s_bc_cur ^= 1U;
+
+    const uint32_t now_ms = uwb_platform_time_ms();
+    if ((uint32_t)(now_ms - s_burst_last_snapshot_ms) >= UWB_BURST_SNAPSHOT_PERIOD_MS)
+    {
+        s_burst_last_snapshot_ms = now_ms;
+        tag_sample_seq++;
+        tag_cycle_ready = 1U;
+    }
+    s_cycle_end_cycle = MCU_CycleNow();
+    s_state = TAG_STATE_IDLE;
+}
+
+static void burst_task(void)
+{
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+
+    switch (s_state)
+    {
+        case TAG_STATE_IDLE:
+        {
+            if (s_pause_requested)
+            {
+                s_paused = 1U;
+                break;
+            }
+            s_paused = 0U;
+
+            const uint64_t now = uwb_platform_time_us64();
+            if (s_burst_final_done_us != 0U
+                && (now - s_burst_final_done_us) < s_burst_timing.gap_us)
+                break;
+            if (s_burst_timing.period_us != 0U && s_burst_last_poll_us != 0U
+                && (now - s_burst_last_poll_us) < s_burst_timing.period_us)
+                break;
+            if (s_burst_timing_pending_valid)
+            {
+                s_burst_timing = s_burst_timing_pending;
+                s_burst_timing_pending_valid = 0U;
+            }
+            burst_start_cycle(now);
+            break;
+        }
+
+        case TAG_STATE_BURST_TX_POLL:
+        {
+            if (!dw1000_irq_flag)
+            {
+                if (MCU_ElapsedUs(s_state_cycle) > TAG_TX_TIMEOUT_US)
+                {
+                    for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
+                        if ((c->mask >> idx) & 1U)
+                            anchor_poll_tx_timeout_count[idx]++;
+                    DW1000_ForceRxOff();
+                    DW1000_ClearAllStatus();
+                    c->final_sent = 0U;
+                    burst_finish_cycle();
+                }
+                break;
+            }
+            dw1000_irq_flag = 0U;
+            const uint64_t status = DW1000_ReadStatus();
+            if (status & DW_TXFRS_BIT)
+            {
+                DW1000_ReadTxTimestamp(c->poll_tx_ts);          /* T1 */
+                DW1000_ClearTxStatus();                         /* RX is on */
+                s_state = TAG_STATE_BURST_RX;
+                s_state_cycle = MCU_CycleNow();
+            }
+            else
+            {
+                DW1000_ClearAllStatus();
+            }
+            break;
+        }
+
+        case TAG_STATE_BURST_RX:
+        {
+            if (dw1000_irq_flag)
+            {
+                dw1000_irq_flag = 0U;
+                const uint64_t status = DW1000_ReadStatus();
+                const DW1000_RxEvent_t event = DW1000_ClassifyRx(status);
+                if (event == DW_RX_EVENT_GOOD
+                    && (uint8_t)(s_burst_received + 1U) >= s_burst_expected)
+                {
+                    /* Presumably the last RESP. The FINAL's air time is
+                     * fixed, so it is scheduled before the ~9 register reads
+                     * of the RESP; margin 450 UUS would not fit both. */
+                    burst_send_final();
+                    burst_read_resp(0U);
+                    if (s_state == TAG_STATE_IDLE)
+                        burst_finish_cycle();   /* FINAL was too late */
+                    break;
+                }
+                if (event == DW_RX_EVENT_GOOD)
+                {
+                    burst_read_resp(1U);
+                }
+                else if (event == DW_RX_EVENT_ERROR)
+                {
+                    rx_error_count++;
+                    recover_rx_after_error(status);
+                }
+                else
+                {
+                    DW1000_ClearTxStatus();
+                }
+            }
+            if (s_burst_received >= s_burst_expected
+                || MCU_ElapsedUs(s_full_cycle_start) > s_burst_rx_limit_us)
+            {
+                burst_send_final();
+                if (s_state == TAG_STATE_IDLE)
+                    burst_finish_cycle();       /* FINAL was too late */
+            }
+            break;
+        }
+
+        case TAG_STATE_BURST_TX_FINAL:
+        {
+            if (!dw1000_irq_flag)
+            {
+                if (MCU_ElapsedUs(s_state_cycle) > s_burst_final_timeout_us)
+                {
+                    ds_final_tx_timeout_count++;
+                    DW1000_ForceRxOff();
+                    DW1000_ClearAllStatus();
+                    c->final_sent = 0U;
+                    burst_finish_cycle();
+                }
+                break;
+            }
+            dw1000_irq_flag = 0U;
+            const uint64_t status = DW1000_ReadStatus();
+            if (status & DW_TXFRS_BIT)
+            {
+                DW1000_ReadTxTimestamp(c->final_tx_ts);         /* T5 */
+                c->final_sent = 1U;
+                DW1000_ClearAllStatus();
+                burst_finish_cycle();
+            }
+            else
+            {
+                DW1000_ClearAllStatus();
+            }
+            break;
+        }
+
+        default:
+            DW1000_ForceRxOff();
+            DW1000_ClearAllStatus();
+            s_state = TAG_STATE_IDLE;
+            break;
+    }
+}
+#endif /* UWB_USE_DS_TWR */
+
+int Tag_SetBurstTiming(const TagBurstTiming_t *timing)
+{
+    if (timing == NULL
+        || timing->base_uus < 200U || timing->base_uus > 10000U
+        || timing->slot_uus < 150U || timing->slot_uus > 5000U
+        || timing->final_margin_uus < 150U || timing->final_margin_uus > 10000U
+        || timing->gap_us < 50U || timing->gap_us > 20000U)
+    {
+        return -1;
+    }
+    /* The FINAL time of a full eight-anchor cycle must fit in 16 bits. */
+    const uint32_t final_uus = (uint32_t)timing->base_uus
+        + (uint32_t)(TAG_NUM_ANCHORS - 1U) * (timing->slot_uus + UWB_BURST_INFO_EXTRA_UUS)
+        + timing->final_margin_uus;
+    if (final_uus > 0xFFFFU)
+        return -1;
+#if UWB_USE_DS_TWR
+    s_burst_timing_pending = *timing;
+    s_burst_timing_pending_valid = 1U;
+    if (!s_burst_enabled)
+        s_burst_timing = *timing;
+#else
+    s_burst_timing = *timing;
+#endif
+    return 0;
+}
+
+void Tag_GetBurstTiming(TagBurstTiming_t *timing)
+{
+    if (timing == NULL)
+        return;
+#if UWB_USE_DS_TWR
+    *timing = s_burst_timing_pending_valid ? s_burst_timing_pending : s_burst_timing;
+#else
+    *timing = s_burst_timing;
+#endif
+}
+
+int Tag_SetBurstMode(uint8_t enable)
+{
+#if UWB_USE_DS_TWR
+    s_burst_requested = enable ? 1U : 0U;
+    return 0;
+#else
+    return enable ? -1 : 0;
+#endif
+}
+
+uint8_t Tag_BurstMode(void)
+{
+    return s_burst_enabled;
+}
+
+uint8_t Tag_FrameVersion(void)
+{
+    return s_burst_enabled ? (uint8_t)UWB_FRAME_V3 : (uint8_t)UWB_TAG_FRAME_VERSION;
+}
+
+uint8_t Tag_TelemetryWindow(void)
+{
+#if UWB_USE_DS_TWR
+    if (s_burst_enabled
+        && (s_state == TAG_STATE_BURST_TX_POLL || s_state == TAG_STATE_BURST_RX
+            || s_state == TAG_STATE_BURST_TX_FINAL))
+    {
+        return 0U;
+    }
+#endif
+    return 1U;
+}
+
+uint8_t Tag_AnchorBackedOff(uint8_t anchor_index)
+{
+    if (anchor_index >= TAG_NUM_ANCHORS)
+        return 0U;
+#if UWB_USE_DS_TWR
+    if (s_burst_enabled)
+        return burst_offline(anchor_index);
+#endif
+    return anchor_is_unhealthy(anchor_index);
+}
+
+uint8_t Tag_PopBurst(TagBurstRecord_t *out)
+{
+#if UWB_USE_DS_TWR
+    if (out == NULL || s_brec_count == 0U)
+        return 0U;
+    *out = s_brec_queue[s_brec_tail];
+    s_brec_tail = (uint8_t)((s_brec_tail + 1U) % TAG_BURST_QUEUE_LEN);
+    s_brec_count--;
+    return 1U;
+#else
+    (void)out;
+    return 0U;
+#endif
+}
+
+/* ========================================================================== */
 /*                     PUBLIC API                                              */
 /* ========================================================================== */
 
@@ -2377,6 +3156,9 @@ int Tag_Init(void)
         MotionAdaptiveRange_Init(&s_c9_2_motion[i]);
 #endif
 
+#if UWB_USE_DS_TWR
+    burst_reset();
+#endif
     s_state           = TAG_STATE_IDLE;
     s_cycle_tick      = uwb_platform_time_ms();
     s_cycle_end_cycle = MCU_CycleNow();
@@ -2401,6 +3183,9 @@ int Tag_RecoverRadio(void)
         s_track[i].fpp_cdbm = 0;
     }
     dw1000_irq_flag   = 0U;
+#if UWB_USE_DS_TWR
+    burst_reset();
+#endif
     s_state           = TAG_STATE_IDLE;
     s_cycle_tick      = uwb_platform_time_ms();
     s_cycle_end_cycle = MCU_CycleNow();
@@ -2561,6 +3346,21 @@ uint8_t Tag_TakeAnchorInfo(TagAnchorInfo_t *out)
 
 void Tag_Task(void)
 {
+#if UWB_USE_DS_TWR
+    /* The scheme changes only between cycles, with the radio idle. */
+    if (s_state == TAG_STATE_IDLE && s_burst_requested != s_burst_enabled)
+    {
+        s_burst_enabled = s_burst_requested;
+        burst_reset();
+        discard_pending_measurements();
+    }
+    if (s_burst_enabled)
+    {
+        burst_task();
+        return;
+    }
+#endif
+
     uint32_t now = uwb_platform_time_ms();
 
     switch (s_state)

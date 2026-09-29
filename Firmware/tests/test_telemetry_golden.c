@@ -100,6 +100,7 @@ int main(int argc, char **argv)
     anchor_response_wait_max_us[1] = 1500U;
     anchor_processing_max_us[1] = 420U;
     anchor_poll_tx_duration_max_us[1] = 330U;
+    anchor_burst_late_count[1] = 22U;
     Telem_SendDiagAnchor(1U);
 
     /* ANCHOR_INFO */
@@ -133,6 +134,14 @@ int main(int argc, char **argv)
     dw1000_otp.vtemp_cal = 0x80U;
     dw1000_otp.vbat_cal = 0xA0U;
     Telem_SetEnvironment(0x8AU, 0xA0U);     /* 34.4 degC, 3.300 V */
+    const TagBurstTiming_t timing = {
+        .base_uus = 700U, .slot_uus = 300U, .final_margin_uus = 400U,
+        .gap_us = 250U, .period_us = 5000U,
+    };
+    if (Tag_SetBurstTiming(&timing) != 0)
+        return 5;
+    tag_burst_final_late_count = 23U;
+    tag_burst_record_drops = 24U;
     Telem_SendDiagSystem();
 
     /* DEVICE_INFO */
@@ -140,6 +149,35 @@ int main(int argc, char **argv)
     dw1000_otp.xtal_trim = 0x15U;
     uwb_health.device_id = 0x12345678U;
     Telem_SendDeviceInfo();
+
+    /* RANGE_BURST: calibrated DS, late anchor on SS fallback, timeout. */
+    TagBurstRecord_t burst;
+    memset(&burst, 0, sizeof(burst));
+    burst.cycle_seq = 5000U;
+    burst.meas_seq_first = 900U;
+    burst.t_us = 987654321012ULL;
+    burst.period_us = 4480U;
+    burst.count = 3U;
+    burst.anchor[0] = (TagBurstAnchor_t){
+        .anchor_id = 1U, .status = TAG_ST_OK, .range_mm = 4321U,
+        .flags = TAG_BURST_REC_RADIO_OK | TAG_BURST_REC_CAL_OK | TAG_BURST_REC_VALID,
+        .fp_cdbm = -8212, .rx_cdbm = -7650, .ci_ppm_x100 = -1837,
+    };
+    burst.anchor[1] = (TagBurstAnchor_t){
+        .anchor_id = 5U, .status = TAG_ST_DS_FALLBACK, .range_mm = 12345U,
+        .flags = 2U | TAG_BURST_REC_RADIO_OK | TAG_BURST_REC_ANCHOR_LATE,
+        .fp_cdbm = INT16_MIN, .rx_cdbm = -7000, .ci_ppm_x100 = INT16_MIN,
+    };
+    burst.anchor[2] = (TagBurstAnchor_t){
+        .anchor_id = 8U, .status = TAG_ST_TIMEOUT, .range_mm = 0xFFFFU,
+        .flags = TAG_BURST_REC_MODE_NONE,
+        .fp_cdbm = INT16_MIN, .rx_cdbm = INT16_MIN, .ci_ppm_x100 = INT16_MIN,
+    };
+    Telem_SendRangeBurst(&burst);
+    burst.period_us = 70000U;                /* saturates at 65535 */
+    burst.count = 0U;
+    burst.cycle_seq = 5001U;
+    Telem_SendRangeBurst(&burst);
 
     FILE *f = fopen(argv[1], "wb");
     if (f == NULL)

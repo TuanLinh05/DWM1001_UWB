@@ -22,6 +22,8 @@
  *   0x14 SNIFFER_FRAME (sniffer role only)
  *   0x15 DIAG_SYSTEM (1 Hz)  health, recovery, RX error causes, UART, env
  *   0x16 DEVICE_INFO (boot + every 10 s) — build, OTP, radio config
+ *   0x18 RANGE_BURST (each burst cycle, with RANGE_MEAS enabled) — every
+ *        anchor of one v3 cycle in one compact frame
  *   0x20 CMD         host → TAG command (uwb_cmd.h)
  *
  * The payload layouts are documented next to each encoder in telemetry.c
@@ -56,8 +58,12 @@ extern "C" {
 #define TELEM_INFO_FLAG_LEGACY_ADAPTIVE_MASK   0x18U
 /** FPP/RX power use the corrected RXPACC (≈ +12 dB vs older firmware). */
 #define TELEM_INFO_FLAG_FPP_CORRECTED          0x20U
+/** The one-to-many burst scheme (v3) is running: ranges come in RANGE_BURST. */
+#define TELEM_INFO_FLAG_BURST                  0x40U
 
-/* Runtime telemetry features (SET_TELEMETRY command). */
+/* Runtime telemetry features (SET_TELEMETRY command). RANGE_MEAS means
+ * "every measurement": RANGE_MEAS frames in the sequential scheme, one
+ * RANGE_BURST frame per cycle in the burst scheme. */
 #define TELEM_FEATURE_RANGE_SNAPSHOT  0x01U
 #define TELEM_FEATURE_RANGE_MEAS      0x02U
 #define TELEM_FEATURE_DIAG            0x04U
@@ -91,6 +97,7 @@ void Telem_SendStats(uint16_t cyc_hz, uint16_t ops_hz);
 
 /** Telemetry v2 messages (binary only; no-ops in ASCII mode). */
 void Telem_SendRangeMeas(const TagMeasurement_t *m);
+void Telem_SendRangeBurst(const TagBurstRecord_t *rec);
 void Telem_SendDiagAnchor(uint8_t anchor_index);
 void Telem_SendDiagSystem(void);
 void Telem_SendDeviceInfo(void);

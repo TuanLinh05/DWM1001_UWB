@@ -38,6 +38,10 @@ from telemetry_protocol import (
     GatewayHealthMessage,
     InfoMessage,
     ParserCounters,
+    BURST_FLAG_ANCHOR_LATE,
+    BURST_FLAG_CAL_OK,
+    BURST_FLAG_VALID,
+    RangeBurstMessage,
     RangeMeasMessage,
     RangeMessage,
     SnifferFrameMessage,
@@ -70,6 +74,18 @@ _HEX_FIELDS = frozenset({
     "reset_cause", "anchor_status", "boot_id", "status",
 })
 _TUPLE_COLUMNS = {"position_mm": ("position_x_mm", "position_y_mm", "position_z_mm")}
+
+# burst.csv: one row per RANGE_BURST cycle with every anchor side by side,
+# the layout a position solver reads directly (all ranges share t_us).
+BURST_ANCHORS = 8
+BURST_ANCHOR_COLUMNS = ("mode", "range_mm", "cal", "valid", "late", "status_hex",
+                        "fp_dbm", "nlos_db", "ci_ppm")
+BURST_COLUMNS = (
+    "host_time_iso", "host_elapsed_s", "tag_time_ms", "boot_id", "cycle_seq", "t_us",
+    "period_us", "polled", "ranged",
+    *(f"a{anchor}_{name}" for anchor in range(1, BURST_ANCHORS + 1)
+      for name in BURST_ANCHOR_COLUMNS),
+)
 
 
 def _now_iso() -> str:
@@ -120,6 +136,17 @@ def _flatten(message: object) -> dict[str, object]:
     return row
 
 
+def _extend_span(spans: dict[int, list[int]], boot_id: int, sequence: int) -> None:
+    """Track [first, last, received] of a per-boot sequence counter."""
+    span = spans.get(boot_id)
+    if span is None:
+        spans[boot_id] = [sequence, sequence, 1]
+    else:
+        span[0] = min(span[0], sequence)
+        span[1] = max(span[1], sequence)
+        span[2] += 1
+
+
 def _file_name_for(message: object) -> str:
     name = MESSAGE_FILES.get(type(message))
     if name is None:
@@ -142,6 +169,7 @@ class SessionRecorder:
         self.range_frames = 0
         self.range_samples = 0
         self.meas_records = 0
+        self.burst_cycles = 0
         self.info_frames = 0
         self.stats_frames = 0
         self.uart_snapshots = 0
@@ -158,6 +186,10 @@ class SessionRecorder:
         self.uart_crc_errors = 0
         # RANGE_MEAS meas_seq per TAG boot: [first, last, received].
         self._meas_spans: dict[int, list[int]] = {}
+        # RANGE_BURST cycle_seq per TAG boot: [first, last, received].
+        self._burst_spans: dict[int, list[int]] = {}
+        self._burst_file: TextIO | None = None
+        self._burst_writer: csv.writer | None = None
         self._generic_files: dict[str, TextIO] = {}
         self._generic_writers: dict[str, csv.DictWriter] = {}
         self._accepting = True
@@ -253,6 +285,18 @@ class SessionRecorder:
             dict(host_filtered_mm or {}),
         ))
 
+    def record_burst(self, message: RangeBurstMessage,
+                     records: tuple[RangeMeasMessage, ...]) -> None:
+        """One burst cycle: burst.csv plus its RANGE_MEAS records (meas.csv,
+        anchor timeline), converted by the caller with the INFO offsets."""
+        self._enqueue((
+            "burst",
+            _now_iso(),
+            time.monotonic() - self.started_monotonic,
+            message,
+            tuple(records),
+        ))
+
     def record_event(self, line: str) -> None:
         self._enqueue(("event", _now_iso(), line))
 
@@ -306,6 +350,8 @@ class SessionRecorder:
                     self.event_lines += 1
                 elif kind == "uart":
                     self._write_uart_stats(item[1], item[2], item[3], item[4])
+                elif kind == "burst":
+                    self._write_burst(item[1], item[2], item[3], item[4])
                 else:
                     self._write_message(item[1], item[2], item[3], item[4])
 
@@ -338,28 +384,7 @@ class SessionRecorder:
     ) -> None:
         self._timeline.add_message(message, host_elapsed)
         if isinstance(message, RangeMeasMessage):
-            nlos_db = message.nlos_indicator_db
-            self._meas_writer.writerow(
-                (
-                    host_time, f"{host_elapsed:.6f}", message.time_ms, message.boot_id,
-                    message.meas_seq, message.meas_time_us, message.anchor_id, message.txn,
-                    message.mode, message.mode_name, f"0x{message.flags:04X}",
-                    f"0x{message.status:02X}", "|".join(status_names(message.status)),
-                    message.raw_mm, message.corrected_mm, message.filtered_mm,
-                    _power(message.fp_cdbm), _power(message.rx_cdbm),
-                    "" if nlos_db is None else f"{nlos_db:.2f}",
-                    _power(message.anchor_fp_cdbm), _power(message.anchor_rx_cdbm),
-                    message.std_noise, message.fp_index, message.ci_ppm_x100, message.slot_us,
-                )
-            )
-            self.meas_records += 1
-            span = self._meas_spans.get(message.boot_id)
-            if span is None:
-                self._meas_spans[message.boot_id] = [message.meas_seq, message.meas_seq, 1]
-            else:
-                span[0] = min(span[0], message.meas_seq)
-                span[1] = max(span[1], message.meas_seq)
-                span[2] += 1
+            self._write_meas(host_time, host_elapsed, message)
         elif isinstance(message, RangeMessage):
             for sample in message.samples:
                 self._range_writer.writerow(
@@ -399,6 +424,66 @@ class SessionRecorder:
             self.info_frames += 1
         else:
             self._write_generic(host_time, host_elapsed, message)
+
+    def _write_meas(self, host_time: str, host_elapsed: float,
+                    message: RangeMeasMessage) -> None:
+        nlos_db = message.nlos_indicator_db
+        self._meas_writer.writerow(
+            (
+                host_time, f"{host_elapsed:.6f}", message.time_ms, message.boot_id,
+                message.meas_seq, message.meas_time_us, message.anchor_id, message.txn,
+                message.mode, message.mode_name, f"0x{message.flags:04X}",
+                f"0x{message.status:02X}", "|".join(status_names(message.status)),
+                message.raw_mm, message.corrected_mm, message.filtered_mm,
+                _power(message.fp_cdbm), _power(message.rx_cdbm),
+                "" if nlos_db is None else f"{nlos_db:.2f}",
+                _power(message.anchor_fp_cdbm), _power(message.anchor_rx_cdbm),
+                message.std_noise, message.fp_index,
+                "" if message.ci_ppm_x100 == INT16_MIN else message.ci_ppm_x100,
+                message.slot_us,
+            )
+        )
+        self.meas_records += 1
+        _extend_span(self._meas_spans, message.boot_id, message.meas_seq)
+
+    def _write_burst(self, host_time: str, host_elapsed: float,
+                     message: RangeBurstMessage,
+                     records: tuple[RangeMeasMessage, ...]) -> None:
+        if self._burst_writer is None:
+            self._burst_file = self._open_text("burst.csv")
+            self._burst_writer = csv.writer(self._burst_file)
+            self._burst_writer.writerow(BURST_COLUMNS)
+        by_anchor = {anchor.anchor_id: anchor for anchor in message.anchors}
+        row: list[object] = [
+            host_time, f"{host_elapsed:.6f}", message.time_ms, f"0x{message.boot_id:X}",
+            message.cycle_seq, message.t_us, message.period_us, len(message.anchors),
+            sum(1 for anchor in message.anchors if anchor.radio_ok),
+        ]
+        for anchor_id in range(1, BURST_ANCHORS + 1):
+            anchor = by_anchor.get(anchor_id)
+            if anchor is None:
+                row.extend([""] * len(BURST_ANCHOR_COLUMNS))
+                continue
+            fp = None if anchor.fp_cdbm == INT16_MIN else anchor.fp_cdbm / 100.0
+            nlos = (None if INT16_MIN in (anchor.fp_cdbm, anchor.rx_cdbm)
+                    else (anchor.rx_cdbm - anchor.fp_cdbm) / 100.0)
+            row.extend((
+                anchor.mode_name,
+                "" if anchor.range_mm is None else anchor.range_mm,
+                int(bool(anchor.flags & BURST_FLAG_CAL_OK)),
+                int(bool(anchor.flags & BURST_FLAG_VALID)),
+                int(bool(anchor.flags & BURST_FLAG_ANCHOR_LATE)),
+                f"0x{anchor.status:02X}",
+                "" if fp is None else f"{fp:.1f}",
+                "" if nlos is None else f"{nlos:.1f}",
+                "" if anchor.ci_ppm_x100 == INT16_MIN else f"{anchor.ci_ppm_x100 / 100.0:.2f}",
+            ))
+        self._burst_writer.writerow(row)
+        self.burst_cycles += 1
+        _extend_span(self._burst_spans, message.boot_id, message.cycle_seq)
+        for record in records:
+            self._timeline.add_message(record, host_elapsed)
+            self._write_meas(host_time, host_elapsed, record)
 
     def _write_generic(self, host_time: str, host_elapsed: float, message: object) -> None:
         name = _file_name_for(message)
@@ -464,6 +549,7 @@ class SessionRecorder:
         return (
             self._range_file, self._meas_file, self._stats_file, self._uart_file,
             self._info_file, self._event_file, self._raw_file, self._timeline_file,
+            *((self._burst_file,) if self._burst_file is not None else ()),
             *self._generic_files.values(),
         )
 
@@ -483,6 +569,8 @@ class SessionRecorder:
         """How much the UART lost: parser discards and RANGE_MEAS gaps."""
         expected = sum(last - first + 1 for first, last, _ in self._meas_spans.values())
         received = sum(count for _, _, count in self._meas_spans.values())
+        cycles = sum(last - first + 1 for first, last, _ in self._burst_spans.values())
+        cycles_received = sum(count for _, _, count in self._burst_spans.values())
         return {
             "uart_bytes_received": self.uart_bytes,
             "uart_discarded_bytes": self.uart_discarded,
@@ -491,6 +579,9 @@ class SessionRecorder:
                                    if self.uart_bytes else None),
             "meas_seq_expected": expected,
             "meas_delivered_pct": round(100.0 * received / expected, 2) if expected else None,
+            "burst_cycles_expected": cycles,
+            "burst_delivered_pct": (round(100.0 * cycles_received / cycles, 2)
+                                    if cycles else None),
         }
 
     def _write_metadata(self, completed: bool) -> None:
@@ -506,6 +597,7 @@ class SessionRecorder:
             "range_frames": self.range_frames,
             "range_samples": self.range_samples,
             "meas_records": self.meas_records,
+            "burst_cycles": self.burst_cycles,
             "info_frames": self.info_frames,
             "stats_frames": self.stats_frames,
             "uart_snapshots": self.uart_snapshots,

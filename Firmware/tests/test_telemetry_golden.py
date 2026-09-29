@@ -26,7 +26,7 @@ def main(path: str) -> int:
     check(parser.counters.crc_errors == 0, "CRC errors in golden stream")
     messages = [tp.decode_frame(frame) for frame in frames]
     by_type = {type(message).__name__: message for message in messages}
-    check(len(messages) == 9, f"expected 9 frames, got {len(messages)}")
+    check(len(messages) == 11, f"expected 11 frames, got {len(messages)}")
 
     info = by_type["InfoMessage"]
     check(info.flags & tp.INFO_FLAG_FPP_CORRECTED, "INFO must flag corrected FPP")
@@ -57,6 +57,7 @@ def main(path: str) -> int:
     check((diag.success, diag.probes, diag.resp_streak, diag.ds_streak) == (11, 21, 3, 1),
           "DIAG_ANCHOR counters")
     check((diag.slot_max_us, diag.poll_tx_max_us) == (4100, 330), "DIAG_ANCHOR timing")
+    check(diag.burst_late == 22, "DIAG_ANCHOR burst_late")
 
     anchor = by_type["AnchorInfoMessage"]
     check(anchor.anchor_id == 4 and anchor.position_mm == (1000, -2000, 2500), "ANCHOR_INFO")
@@ -76,6 +77,12 @@ def main(path: str) -> int:
     check(system.temperature_c is not None and abs(system.temperature_c - 34.4) < 0.01,
           "temperature")
     check(system.vbat_v is not None and abs(system.vbat_v - 3.3) < 0.001, "vbat")
+    check(system.burst_mode == 0, "DIAG_SYSTEM burst mode (Tag PCB boots sequential)")
+    check((system.burst_base_uus, system.burst_slot_uus, system.burst_final_margin_uus,
+           system.burst_gap_us, system.burst_period_us) == (700, 300, 400, 250, 5000),
+          "DIAG_SYSTEM burst timing")
+    check((system.burst_final_late, system.burst_record_drops) == (23, 24),
+          "DIAG_SYSTEM burst counters")
 
     device = by_type["DeviceInfoMessage"]
     check(device.role == 1 and device.frame_version == 2, "DEVICE_INFO role/protocol")
@@ -85,7 +92,35 @@ def main(path: str) -> int:
     check(device.calibrated_mask == 0x01 and device.active_mask == 0x0F, "DEVICE_INFO masks")
     check(device.calibration_profile_id != 0, "DEVICE_INFO calibration profile")
 
-    print("telemetry golden decode passed (9 frame types, C encoder == Python decoder)")
+    bursts = [m for m in messages if isinstance(m, tp.RangeBurstMessage)]
+    check(len(bursts) == 2, "two RANGE_BURST frames")
+    burst, empty = bursts
+    check(burst.sequence == 5000 and burst.cycle_seq == 5000, "RANGE_BURST seq")
+    check((burst.boot_id, burst.meas_seq_first, burst.t_us, burst.period_us)
+          == (0xBEEF, 900, 987654321012, 4480), "RANGE_BURST header")
+    check([a.anchor_id for a in burst.anchors] == [1, 5, 8], "RANGE_BURST anchors")
+    a1, a5, a8 = burst.anchors
+    check((a1.status, a1.range_mm, a1.mode_name) == (0, 4321, "DS"), "A1 range")
+    check((a1.fp_cdbm, a1.rx_cdbm, a1.ci_ppm_x100) == (-8200, -7640, -1825),
+          "A1 quality codes (0.5 dB, 0.1 dB, 0.25 ppm)")
+    check(a5.flags & tp.BURST_FLAG_ANCHOR_LATE and a5.mode_name == "SS_FALLBACK",
+          "A5 late + fallback")
+    check((a5.range_mm, a5.fp_cdbm, a5.rx_cdbm, a5.ci_ppm_x100)
+          == (12345, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN), "A5 unknown quality")
+    check(not a8.radio_ok and a8.range_mm is None and a8.mode_name == "NONE", "A8 timeout")
+    check(tp.encode_range_burst_payload(burst) == frames[-2].payload, "RANGE_BURST re-encode")
+    meas = burst.to_range_meas({1: 123456})
+    check([(m.anchor_id, m.meas_seq) for m in meas] == [(1, 900), (5, 901)],
+          "RANGE_BURST -> RANGE_MEAS numbering")
+    check((meas[0].raw_mm, meas[0].corrected_mm, meas[0].filtered_mm) == (4444, 4321, 4321),
+          "raw rebuilt from the INFO offset")
+    check(meas[0].flags == (tp.MEAS_FLAG_RADIO_OK | tp.MEAS_FLAG_CAL_OK
+                            | tp.MEAS_FLAG_FILTER_OK), "RANGE_MEAS flags")
+    check((meas[1].raw_mm, meas[1].flags, meas[1].mode) == (12345, tp.MEAS_FLAG_RADIO_OK, 2),
+          "uncalibrated fallback")
+    check(empty.period_us == 0xFFFF and empty.anchors == (), "empty RANGE_BURST")
+
+    print("telemetry golden decode passed (10 frame types, C encoder == Python decoder)")
     return 0
 
 

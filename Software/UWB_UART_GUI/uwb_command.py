@@ -9,6 +9,9 @@ Examples (PowerShell):
     py -3.12 uwb_command.py --port COM7 set-txpower reference --save
     py -3.12 uwb_command.py --port COM7 set-telemetry --snapshot --meas --diag --save
     py -3.12 uwb_command.py --port COM7 time-sync --count 20
+    py -3.12 uwb_command.py --port COM14 set-burst                 # show burst settings
+    py -3.12 uwb_command.py --port COM14 set-burst --slot 300 --gap 300
+    py -3.12 uwb_command.py --port COM14 set-burst --mode sequential   # old 30 Hz scheme
 
 The default baud is 460800 (Tag_DevKit; firmware built before 2026-09-26 ran
 1000000). A Tag PCB on a plain USB-UART adapter needs --baud 115200; the
@@ -22,6 +25,7 @@ the flight computer sets LOCK and the TAG rejects configuration commands.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import struct
 import sys
 import time
@@ -107,6 +111,20 @@ def with_pause(link: TagLink, action) -> tp.CmdAckMessage:
         link.resume()
 
 
+def print_burst_settings(settings: tp.BurstSettings) -> None:
+    mode = "burst (one POLL, all anchors)" if settings.mode else "sequential (one anchor at a time)"
+    print(f"mode           {mode}")
+    print(f"base           {settings.base_uus} UUS")
+    print(f"slot           {settings.slot_uus} UUS")
+    print(f"final margin   {settings.final_margin_uus} UUS")
+    print(f"gap            {settings.gap_us} us")
+    print(f"min period     {settings.period_us} us")
+    if settings.mode:
+        cycle = max(settings.cycle_estimate_us(), float(settings.period_us))
+        print(f"8 anchors      ~{cycle:.0f} us/cycle, ~{1e6 / cycle:.0f} Hz "
+              "(estimate; RANGE_BURST period_us is the measured value)")
+
+
 def print_device_info(message: tp.DeviceInfoMessage) -> None:
     for name, value in vars(message).items():
         if isinstance(value, int) and name in {"git_hash", "device_id", "otp_part_id",
@@ -153,6 +171,15 @@ def main(argv: list[str]) -> int:
     telem.add_argument("--snapshot", action="store_true")
     telem.add_argument("--meas", action="store_true")
     telem.add_argument("--diag", action="store_true")
+    burst = sub.add_parser(
+        "set-burst", help="show (no options) or change the burst DS-TWR scheme; "
+                          "RAM only, the TAG boots with its firmware defaults")
+    burst.add_argument("--mode", choices=("burst", "sequential"))
+    burst.add_argument("--base", type=int, help="POLL -> first RESP, UUS (200-10000)")
+    burst.add_argument("--slot", type=int, help="RESP spacing, UUS (150-5000)")
+    burst.add_argument("--margin", type=int, help="last RESP -> FINAL, UUS (150-10000)")
+    burst.add_argument("--gap", type=int, help="FINAL -> next POLL, us (50-20000)")
+    burst.add_argument("--period", type=int, help="minimum POLL period, us (0 = none)")
     for name in ("set-ant", "set-txpower", "set-cal", "set-mask", "set-telemetry"):
         sub.choices[name].add_argument("--save", action="store_true",
                                        help="also store the settings in flash")
@@ -230,6 +257,18 @@ def main(argv: list[str]) -> int:
                         | (tp.TELEM_FEATURE_DIAG if args.diag else 0))
             ack = require_ok(link.command(tp.CMD_SET_TELEMETRY, bytes((features,))))
             print(f"telemetry features = 0x{ack.data[0]:02X}")
+        elif args.command == "set-burst":
+            current = tp.BurstSettings.decode(require_ok(link.command(tp.CMD_SET_BURST)).data)
+            changes = {name: getattr(args, option) for name, option in (
+                ("base_uus", "base"), ("slot_uus", "slot"), ("final_margin_uus", "margin"),
+                ("gap_us", "gap"), ("period_us", "period")) if getattr(args, option) is not None}
+            if args.mode is not None or changes:
+                wanted = replace(current, mode=0xFF, **changes)
+                if args.mode is not None:
+                    wanted = replace(wanted, mode=1 if args.mode == "burst" else 0)
+                current = tp.BurstSettings.decode(
+                    require_ok(link.command(tp.CMD_SET_BURST, wanted.encode())).data)
+            print_burst_settings(current)
 
         if getattr(args, "save", False):
             with_pause(link, lambda: require_ok(link.command(tp.CMD_SAVE_SETTINGS, timeout_s=2.0)))

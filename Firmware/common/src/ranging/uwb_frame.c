@@ -53,9 +53,18 @@ uint16_t uwb_frame_build_poll(uint8_t *buf, uint8_t seq, uint16_t pan,
 
     if (poll->version >= UWB_FRAME_V2)
     {
-        buf[len++] = UWB_FRAME_V2;
+        buf[len++] = poll->version >= UWB_FRAME_V3 ? UWB_FRAME_V3 : UWB_FRAME_V2;
         buf[len++] = poll->txn;
         buf[len++] = poll->flags;
+    }
+    if (poll->version >= UWB_FRAME_V3)
+    {
+        buf[len++] = poll->anchor_mask;
+        uwb_put_u16(&buf[len], poll->base_uus);
+        uwb_put_u16(&buf[len + 2U], poll->slot_uus);
+        uwb_put_u16(&buf[len + 4U], poll->final_uus);
+        len = (uint16_t)(len + 6U);
+        buf[len++] = poll->info_id;
     }
     return len;
 }
@@ -69,6 +78,31 @@ uint16_t uwb_frame_build_resp(uint8_t *buf, uint8_t seq, uint16_t pan,
     {
         uwb_put_u32(&buf[len], resp->reply_ticks);
         return (uint16_t)(len + 4U);
+    }
+
+    if (resp->version >= UWB_FRAME_V3)
+    {
+        uint8_t tlv3 = resp->tlv_len;
+        if (resp->tlv == NULL || tlv3 > UWB_RESP_V3_TLV_MAX)
+            tlv3 = 0U;
+
+        buf[len++] = UWB_FRAME_V3;
+        buf[len++] = resp->txn;
+        uwb_put_u32(&buf[len], resp->reply_ticks);
+        len = (uint16_t)(len + 4U);
+        buf[len++] = resp->anchor_status;
+        buf[len++] = resp->prev_txn;
+        uwb_put_u32(&buf[len], resp->prev_rb_ticks);
+        uwb_put_u16(&buf[len + 4U], (uint16_t)resp->prev_final_fp_cdbm);
+        uwb_put_u16(&buf[len + 6U], (uint16_t)resp->prev_final_rx_cdbm);
+        len = (uint16_t)(len + 8U);
+        buf[len++] = tlv3;
+        if (tlv3 != 0U)
+        {
+            memcpy(&buf[len], resp->tlv, tlv3);
+            len = (uint16_t)(len + tlv3);
+        }
+        return len;
     }
 
     uint8_t tlv_len = resp->tlv_len;
@@ -96,7 +130,7 @@ uint16_t uwb_frame_build_final(uint8_t *buf, uint8_t seq, uint16_t pan,
 
     if (fin->version >= UWB_FRAME_V2)
     {
-        buf[len++] = UWB_FRAME_V2;
+        buf[len++] = fin->version >= UWB_FRAME_V3 ? UWB_FRAME_V3 : UWB_FRAME_V2;
         buf[len++] = fin->txn;
     }
     return len;
@@ -126,6 +160,11 @@ uint16_t uwb_frame_build_report(uint8_t *buf, uint8_t seq, uint16_t pan,
 
 int uwb_frame_parse_poll(const uint8_t *frame, uint16_t rx_len, UwbPoll_t *out)
 {
+    out->anchor_mask = 0U;
+    out->base_uus = 0U;
+    out->slot_uus = 0U;
+    out->final_uus = 0U;
+    out->info_id = 0U;
     if (rx_len == UWB_POLL_V1_RX_LEN)
     {
         out->version = UWB_FRAME_V1;
@@ -140,11 +179,27 @@ int uwb_frame_parse_poll(const uint8_t *frame, uint16_t rx_len, UwbPoll_t *out)
         out->flags = frame[12];
         return 1;
     }
+    if (rx_len == UWB_POLL_V3_RX_LEN && frame[10] == UWB_FRAME_V3)
+    {
+        out->version = UWB_FRAME_V3;
+        out->txn = frame[11];
+        out->flags = frame[12];
+        out->anchor_mask = frame[13];
+        out->base_uus = uwb_get_u16(&frame[14]);
+        out->slot_uus = uwb_get_u16(&frame[16]);
+        out->final_uus = uwb_get_u16(&frame[18]);
+        out->info_id = frame[20];
+        return 1;
+    }
     return 0;
 }
 
 int uwb_frame_parse_resp(const uint8_t *frame, uint16_t rx_len, UwbResp_t *out)
 {
+    out->prev_txn = 0U;
+    out->prev_rb_ticks = 0U;
+    out->prev_final_fp_cdbm = INT16_MIN;
+    out->prev_final_rx_cdbm = INT16_MIN;
     if (rx_len == UWB_RESP_V1_RX_LEN)
     {
         out->version = UWB_FRAME_V1;
@@ -168,6 +223,23 @@ int uwb_frame_parse_resp(const uint8_t *frame, uint16_t rx_len, UwbResp_t *out)
         out->tlv = tlv_len != 0U ? &frame[18] : NULL;
         return 1;
     }
+    if (rx_len >= UWB_RESP_V3_MIN_RX_LEN && frame[10] == UWB_FRAME_V3)
+    {
+        const uint8_t tlv_len = frame[26];
+        if ((uint16_t)(UWB_RESP_V3_MIN_RX_LEN + tlv_len) != rx_len)
+            return 0;
+        out->version = UWB_FRAME_V3;
+        out->txn = frame[11];
+        out->reply_ticks = uwb_get_u32(&frame[12]);
+        out->anchor_status = frame[16];
+        out->prev_txn = frame[17];
+        out->prev_rb_ticks = uwb_get_u32(&frame[18]);
+        out->prev_final_fp_cdbm = (int16_t)uwb_get_u16(&frame[22]);
+        out->prev_final_rx_cdbm = (int16_t)uwb_get_u16(&frame[24]);
+        out->tlv_len = tlv_len;
+        out->tlv = tlv_len != 0U ? &frame[27] : NULL;
+        return 1;
+    }
     return 0;
 }
 
@@ -179,9 +251,10 @@ int uwb_frame_parse_final(const uint8_t *frame, uint16_t rx_len, UwbFinal_t *out
         out->txn = 0U;
         return 1;
     }
-    if (rx_len == UWB_FINAL_V2_RX_LEN && frame[10] == UWB_FRAME_V2)
+    if (rx_len == UWB_FINAL_V2_RX_LEN
+        && (frame[10] == UWB_FRAME_V2 || frame[10] == UWB_FRAME_V3))
     {
-        out->version = UWB_FRAME_V2;
+        out->version = frame[10];
         out->txn = frame[11];
         return 1;
     }
@@ -209,6 +282,21 @@ int uwb_frame_parse_report(const uint8_t *frame, uint16_t rx_len, UwbReport_t *o
         return 1;
     }
     return 0;
+}
+
+int uwb_frame_burst_slot(uint8_t anchor_mask, uint16_t anchor_id)
+{
+    if (anchor_id < 1U || anchor_id > 8U)
+        return -1;
+    const uint8_t bit = (uint8_t)(1U << (anchor_id - 1U));
+    if ((anchor_mask & bit) == 0U)
+        return -1;
+
+    int rank = 0;
+    for (uint8_t below = (uint8_t)(anchor_mask & (uint8_t)(bit - 1U)); below != 0U;
+         below = (uint8_t)(below & (uint8_t)(below - 1U)))
+        rank++;
+    return rank;
 }
 
 const uint8_t *uwb_frame_find_tlv(const uint8_t *tlv, uint8_t tlv_len,

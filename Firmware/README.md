@@ -1,8 +1,13 @@
 # Firmware DWM1001C Ranging System
 
-Hệ định vị UWB cho drone: một TAG DWM1001C đo DS-TWR lần lượt với tám anchor,
-đẩy telemetry nhị phân qua UART → gateway ESP32-C3 → PC/UP 7000. Firmware chỉ
+Hệ định vị UWB cho drone: một TAG DWM1001C đo DS-TWR với tám anchor, đẩy
+telemetry nhị phân qua UART → gateway ESP32-C3 → PC/UP 7000. Firmware chỉ
 **đo**; bộ ước lượng vị trí chạy trên host (ADR-001 trong `Plan/`).
+
+Từ 0.5 (2026-09-26) Tag_DevKit mặc định chạy **burst DS-TWR một-nhiều**: một
+POLL broadcast, tám RESP theo slot, một FINAL broadcast, ~4,5 ms/chu kỳ (~220 Hz
+cho mỗi anchor). PHY chuyển sang preamble 128 / PAC 8. Chi tiết:
+`CHANGELOG.md` §0.5.
 
 > **Phần cứng hiện có (xác nhận 2026-09-23):** A1–A4 là DWM1001C; A5–A8 là
 > STM32F103 + DW1000. A5–A8 nay có project Zephyr `STM32_Anchor_5..8` dùng
@@ -58,9 +63,10 @@ Firmware mang theo git hash, cờ dirty (kể cả file untracked) và hash cấ
 riêng của node trong `DEVICE_INFO`, nên có thể đối chiếu source lẫn cấu hình
 đã tạo ra binary.
 
-> **Thứ tự flash bắt buộc: tám anchor trước, TAG sau.** Khung tin trên không
-> trung là v2; anchor v2 hiểu cả v1 lẫn v2, nhưng anchor v1 không hiểu POLL v2.
-> Chi tiết ở `CHANGELOG.md` §1.
+> **Thứ tự flash bắt buộc: tám anchor trước, TAG sau.** Anchor 0.5 trả lời POLL
+> v1, v2 và v3 (burst). Firmware trước 0.5 dùng preamble 256 nên **không nghe
+> được** node 0.5 (preamble 128) và ngược lại: phải nạp lại cả chín node.
+> Chi tiết ở `CHANGELOG.md` §0.5 và §1.
 
 ## 3. Kiểm thử trên PC (bắt buộc trước khi flash)
 
@@ -76,7 +82,8 @@ Cần `gcc` (MinGW-w64) và Python 3. 13 nhóm test, không cần phần cứng:
 | `test_driver` | SPI một giao dịch, phân loại RX, OTP, TX power, chẩn đoán |
 | `test_uwb_frame` | mã hoá/giải mã khung v1 & v2, kiểm tra biên TLV |
 | `test_tag_state` | máy trạng thái TAG thật chạy trên mô phỏng DW1000: DS-TWR, txn, F1, fallback, mask, pause |
-| `test_anchor_state` | responder thật: v1/v2, WAIT4RESP, lỗi RX, timeout |
+| `test_anchor_state` | responder thật: v1/v2/v3, WAIT4RESP, lỗi RX, timeout, slot burst, RX FINAL hẹn giờ |
+| `test_tag_burst` | burst v3 với 8 anchor mô phỏng (crystal offset riêng): Rb trễ một chu kỳ, fallback SS, offline/probe, SET_BURST |
 | `test_cmd_parser` | CRC, tái đồng bộ, gói phân mảnh, giới hạn độ dài |
 | `test_cmd_executor` | ACK, quy tắc LOCK/PAUSE, tác động lên radio |
 | `test_settings` | snapshot NVS nguyên khối, CRC, PARTID/profile binding, lỗi factory reset |
@@ -96,11 +103,31 @@ tại chỉ A1–A4 dùng các project này; A5–A8 dùng `STM32_Anchor_5..8`.
 
 | Project | Short address | Nhịp cập nhật |
 |---|---:|---:|
-| Anchor_1 … Anchor_8 | `0x0001` … `0x0008` | 20 ms / 50 Hz (chu kỳ đủ 8 anchor) |
+| Anchor_1 … Anchor_8 | `0x0001` … `0x0008` | burst: ~4,5 ms / ~220 Hz; tuần tự: ~34 ms / 29 Hz (đo 2026-09-26) |
 
 TAG probe xoay vòng các anchor mất kết nối (F1), nên một module hỏng không chiếm
-hết thời gian chờ của chu kỳ. Ngân sách thời gian thực tế ở 50 Hz **phải đo bằng
-sniffer** trước khi chốt (xem `HARDWARE_AB_CHECKLIST.md` bước 2).
+hết thời gian chờ của chu kỳ. Ở burst, anchor im lặng 8 chu kỳ bị bỏ khỏi mask
+và được thử lại mỗi 25 chu kỳ. `period_us` của RANGE_BURST là chu kỳ đo thật.
+
+### Chỉnh timing burst (`SET_BURST`, chỉ lưu RAM)
+
+| Thông số | Mặc định | Ý nghĩa |
+|---|---:|---|
+| base | 800 UUS | POLL → RESP đầu tiên: thời gian anchor chậm nhất đọc POLL và hẹn RESP |
+| slot | 350 UUS | khoảng cách hai RESP: air time (~205 µs) + TAG đọc RESP |
+| margin | 450 UUS | RESP cuối → FINAL |
+| gap | 500 µs | FINAL → POLL kế tiếp (anchor mở lại receiver, TAG gửi UART) |
+| period | 0 | chu kỳ tối thiểu, 0 = không giới hạn |
+
+```powershell
+py -3.12 uwb_command.py --port COM14 set-burst                   # xem
+py -3.12 uwb_command.py --port COM14 set-burst --slot 300 --gap 300
+py -3.12 uwb_command.py --port COM14 set-burst --mode sequential   # A/B với sơ đồ cũ
+```
+
+Giảm dần từng thông số và theo dõi: `burst_late` của từng anchor (DIAG_ANCHOR,
+anchor lỡ slot), `burst_final_late` (DIAG_SYSTEM), tỷ lệ `SS_FALLBACK` và
+`period_us`. Tăng lại khi các bộ đếm này bắt đầu tăng.
 
 ## 5. Telemetry và lệnh
 
@@ -109,7 +136,8 @@ Khung: `AA 55 | VER=1 | TYPE | LEN | SEQ | TIME | payload | CRC16-CCITT`.
 | Type | Gói | Nhịp |
 |---|---|---|
 | 0x00 / 0x01 / 0x02 | INFO / RANGE / STATS | 1 Hz / mỗi chu kỳ / 1 Hz |
-| 0x10 | RANGE_MEAS (từng phép đo) | cần UART ≥ 460800 baud; Tag_DevKit (460800) bật mặc định, Tag (115200) tắt |
+| 0x10 | RANGE_MEAS (từng phép đo) | cần UART ≥ 460800 baud; Tag_DevKit (460800) bật mặc định, Tag (115200) tắt; chỉ ở chế độ tuần tự |
+| 0x18 | RANGE_BURST (cả chu kỳ burst, 22 + 8·n byte) | mỗi chu kỳ (~220 Hz), cùng cờ feature với RANGE_MEAS; snapshot RANGE giảm còn 5 Hz |
 | 0x11 / 0x12 | DIAG_ANCHOR / ANCHOR_INFO | 2 anchor/s / khi nhận TLV |
 | 0x13 | CMD_ACK | trả lời lệnh |
 | 0x14 | SNIFFER_FRAME | chỉ vai trò sniffer |
@@ -117,7 +145,7 @@ Khung: `AA 55 | VER=1 | TYPE | LEN | SEQ | TIME | payload | CRC16-CCITT`.
 | 0x17 | GATEWAY_HEALTH | ESP32-C3 phát, 1 Hz |
 | 0x20 | CMD (host → TAG) | khi gửi |
 
-Kênh lệnh có 15 lệnh (`uwb_cmd.h`). Lệnh đổi RF chỉ chạy khi TAG đã `PAUSE` và
+Kênh lệnh có 16 lệnh (`uwb_cmd.h`; 0x10 `SET_BURST`). Lệnh đổi RF chỉ chạy khi TAG đã `PAUSE` và
 chưa `LOCK`; đổi sang giá trị RF mới tự xoá cờ calibration. Cấu hình được lưu
 trong một snapshot NVS schema v2 có CRC + generation; calibration chỉ được nạp
 khi PARTID và RF/PHY profile ID khớp.
@@ -152,8 +180,11 @@ Quy trình A/B và tiêu chí nghiệm thu: `HARDWARE_AB_CHECKLIST.md`.
   `uwb_command.py` mặc định 460800. Ở 1 Mbaud J-Link VCOM làm sai CRC ~70 % byte.
 - SPI1 ngoài tắt ở mọi vai trò để không chạm các đường R9–R12 sang ESP32-C3.
 - ESP GPIO10 là đầu vào `ESP_IRQ/RDY`, không dùng làm LED.
-- Sniffer_DevKit dùng UARTE 1 Mbaud (DWM1001-DEV, J-Link VCOM); chưa kiểm trên
-  phần cứng, và TAG DevKit cùng đường này đã hỏng dữ liệu ở 1 Mbaud.
+- Sniffer_DevKit dùng UARTE 460800 (DWM1001-DEV, J-Link VCOM; từ 0.5, trước đó
+  1 Mbaud làm hỏng dữ liệu). Mang được ~750 frame/s, trong khi burst phát
+  ~2200 frame/s: khi sniff, giảm nhịp TAG bằng `set-burst --period 20000`.
+  `tools/uwb_sniffer.py` giải mã khung v3 và báo offset RESP từng anchor.
+  Chưa kiểm trên phần cứng.
 
 Chi tiết chân và quyết định thiết kế: `HARDWARE_COMPATIBILITY.md`.
 

@@ -83,6 +83,10 @@ $cTests = @(
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     @{ Name = 'test_anchor_state'; Role = 'ANCHOR'; Config = 'Anchor_1'
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c') }
+    # One-to-many burst v3 on the TAG DevKit configuration: eight modelled
+    # anchors with their own crystal offsets, Rb one cycle late.
+    @{ Name = 'test_tag_burst'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     # No role: the parser half of uwb_cmd.c must build without the executor.
     @{ Name = 'test_cmd_parser'; Role = ''; Config = 'Tag'
        Sources = @('app\uwb_cmd.c', 'telemetry\telemetry_frame.c') }

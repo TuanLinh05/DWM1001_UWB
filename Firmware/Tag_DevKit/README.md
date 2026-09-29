@@ -19,6 +19,11 @@ hai loại phần cứng.
 | Nạp/debug | J-Link tích hợp trên devkit | Dùng cùng cáp USB cấp nguồn |
 
 SPI1 ngoài trên header Raspberry Pi được tắt vì firmware TAG không sử dụng.
+Mặc định chạy burst DS-TWR một-nhiều (~220 Hz cho mỗi anchor, `CHANGELOG.md`
+§0.5): cả tám anchor phải chạy firmware 0.5 (preamble 128). Build bản tuần tự
+để so sánh: `-DUWB_TAG_BURST_DEFAULT=0U`, hoặc `uwb_command.py set-burst --mode
+sequential` khi đang chạy. DW1000 dùng SPIM (EasyDMA) trên SPI2.
+
 UART0 chạy UARTE (EasyDMA) 460800 baud, 8N1, đủ cho `RANGE_MEAS` từng phép đo
 (tám anchor khoảng 20 kB/s, 44 % dung lượng). Không dùng 1 Mbaud: J-Link VCOM
 của devkit làm sai CRC khoảng 70 % byte ở tốc độ đó, kể cả khi đã tắt MSD.
