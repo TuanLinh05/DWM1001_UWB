@@ -362,8 +362,8 @@ Tài liệu phần cứng chính thức:
 #### 1. Clone và mở project
 
 ```powershell
-git clone <repository-url>
-Set-Location .\<repository-folder>
+git clone https://github.com/TuanLinh05/DWM1001_UWB.git
+Set-Location .\DWM1001_UWB
 ```
 
 Các lệnh dưới đây giả định terminal đã được kích hoạt bằng nRF Connect SDK
@@ -509,24 +509,7 @@ Set-Location .\Firmware
 - [`Plan/KE_HOACH_TRIEN_KHAI_UWB_DRONE_UP7000_PIXHAWK6C.md`](Plan/KE_HOACH_TRIEN_KHAI_UWB_DRONE_UP7000_PIXHAWK6C.md):
   kế hoạch tích hợp định vị vào hệ thống drone.
 
-### Trước khi public repository
-
-Thư mục local chưa có Git metadata. Sau khi tạo một repository rỗng trên GitHub,
-chạy từ thư mục gốc project:
-
-```powershell
-git init
-git add .
-git status --short
-git diff --cached --stat
-git commit -m "Initial public release"
-git branch -M main
-git remote add origin <repository-url>
-git push -u origin main
-```
-
-Đọc lại danh sách staged trước khi commit; `.gitignore` chỉ bảo vệ các file khớp
-quy tắc và không thay thế bước review thủ công.
+### Đóng góp an toàn
 
 - Chạy `git status --short` và kiểm tra `git diff --cached` trước mỗi lần push.
 - Không dùng `git add -f` cho log, build output, toolchain, datasheet hoặc secret.
