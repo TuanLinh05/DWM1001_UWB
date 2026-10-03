@@ -14,12 +14,13 @@ với TAG DevKit và A1–A4. ID ngắn lần lượt là `0x0005` … `0x0008`.
 | A7 | `dist/anchor_7_stm32f103.hex` | ST-LINK Utility |
 | A8 | `dist/anchor_8_stm32f103.hex` | ST-LINK Utility |
 
-Các HEX bắt đầu ở `0x08000000`, không có bootloader offset. Mỗi ảnh có
-26.096 byte dữ liệu flash; linker dùng 26.100/65.536 byte flash và
-7.500/20.480 byte RAM. Chạy `python Firmware/tools/verify_stm32_images.py`
+Các HEX bắt đầu ở `0x08000000`, không có bootloader offset. Bộ ảnh trong
+`anchor_8_dist` hiện có 27.408 byte dữ liệu flash mỗi ảnh. Chạy
+`python Firmware/tools/verify_stm32_images.py`
 để kiểm checksum Intel HEX, vector khởi động, giới hạn flash, ID nguồn và
 việc bốn ảnh khác nhau. **Build và kiểm file không thay thế thử nghiệm trên
-board thật.**
+board thật.** Ngày 2026-09-30, bốn board A5–A8 đã trả lời TAG ở chế độ
+tuần tự với mask `0xFF`; mỗi board cho 128–130 phép đo trong 5 giây.
 
 ## Chân và radio
 
@@ -85,7 +86,7 @@ LED PC13 (active-low) cho biết anchor đi được tới bước nào, không 
 | Nháy nhanh 150 ms | Radio lỗi (không đọc được DW1000, PLL không khóa…), đang thử khởi tạo lại |
 | Tắt hẳn, không có 3 chớp lúc cấp nguồn | Firmware không chạy: kiểm nạp (Program & Verify), BOOT0 = 0, nguồn 3,3 V |
 4. A1–A4 là DWM1001C/nRF52832: dùng ảnh `Firmware/Anchor_1` …
-   `Firmware/Anchor_4` và J-Link/OpenOCD, **không dùng ST-LINK Utility**.
+   `Firmware/Anchor_4` và ST-LINK/OpenOCD theo cấu hình VS Code.
 
 TAG DevKit hiện giữ `UWB_DS_CALIBRATED_MASK=0U`: phép đo chưa hiệu chuẩn
 được giữ làm chẩn đoán, còn cờ `valid` cho định vị là 0. Sau khi đo khoảng

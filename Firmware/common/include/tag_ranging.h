@@ -382,6 +382,7 @@ void Tag_GetSnapshot(TagCycleSnapshot_t *out);
 #define TAG_MEAS_MODE_DS           0U
 #define TAG_MEAS_MODE_SS           1U
 #define TAG_MEAS_MODE_SS_FALLBACK  2U
+#define TAG_MEAS_MODE_NONE         3U
 
 #define TAG_MEAS_FLAG_RADIO_OK     0x0001U  /* exchange + ToF computed */
 #define TAG_MEAS_FLAG_CAL_OK       0x0002U  /* calibration applied, valid range */
@@ -464,6 +465,11 @@ extern volatile uint32_t tag_meas_queue_drops;
 #define UWB_TAG_BURST_DEFAULT       0U
 #endif
 
+/* High-rate builds must never count an SS fallback as a DS measurement. */
+#ifndef UWB_BURST_REQUIRE_DS
+#define UWB_BURST_REQUIRE_DS 0U
+#endif
+
 /* Burst timing defaults (runtime: Tag_SetBurstTiming / SET_BURST command).
  * UUS = UWB microsecond = 65536 DW1000 ticks ~= 1.026 us. */
 #ifndef UWB_BURST_BASE_UUS
@@ -526,6 +532,10 @@ uint8_t Tag_FrameVersion(void);
  * Always 1 in the sequential scheme.
  */
 uint8_t Tag_TelemetryWindow(void);
+/** Time until the next burst deadline; UINT32_MAX when paused/sequential. */
+uint32_t Tag_IdleBudgetUs(void);
+extern volatile uint32_t tag_burst_rx_service_max_us;
+extern volatile uint32_t tag_burst_publish_max_us;
 
 /** 1 when the anchor is currently backed off (offline, probed periodically). */
 uint8_t Tag_AnchorBackedOff(uint8_t anchor_index);

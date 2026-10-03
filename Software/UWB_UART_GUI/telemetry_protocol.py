@@ -422,6 +422,10 @@ class DiagSystemMessage:
     burst_period_us: int = 0
     burst_final_late: int = 0
     burst_record_drops: int = 0
+    spi_backend: int | None = None  # 0 Zephyr SPI, 1 direct nRF SPIM, 2 direct STM32 SPI1
+    strict_ds: bool | None = None
+    burst_rx_service_max_us: int = 0
+    burst_publish_max_us: int = 0
 
 
 @dataclass(frozen=True)
@@ -768,6 +772,11 @@ def decode_diag_system(frame: Frame) -> DiagSystemMessage:
             burst_final_margin_uus=b[3], burst_gap_us=b[4], burst_period_us=b[5],
             burst_final_late=b[6], burst_record_drops=b[7],
         )
+    if len(frame.payload) >= 180 and frame.payload[168] == 1:
+        _, backend, strict, _, rx_us, publish_us = struct.unpack_from(
+            "<4BII", frame.payload, 168)
+        burst.update(spi_backend=backend, strict_ds=bool(strict),
+                     burst_rx_service_max_us=rx_us, burst_publish_max_us=publish_us)
     return DiagSystemMessage(
         frame.sequence, frame.time_ms,
         boot_id=v[1], boot_count=v[2], reset_cause=v[3], uptime_ms=v[4],

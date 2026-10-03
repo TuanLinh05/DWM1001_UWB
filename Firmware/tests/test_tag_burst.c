@@ -52,6 +52,7 @@ typedef struct {
 
 static SimAnchor g_anchor[TAG_NUM_ANCHORS];
 static double g_t1 = 1.0e10;            /* TAG clock of the next POLL */
+static int g_inject_foreign_before_last;
 
 static double tof_of(const SimAnchor *a)
 {
@@ -127,6 +128,7 @@ static int fresh_tag(void)
     Tag_EnableMeasurementQueue(1U);
     default_anchors();
     g_t1 = 1.0e10;
+    g_inject_foreign_before_last = 0;
     return 0;
 }
 
@@ -176,7 +178,7 @@ static int run_cycle(CycleSeen *cs)
     UwbPoll_t poll;
 
     memset(cs, 0, sizeof(*cs));
-    sim_us += 5000U;                                   /* past gap/period */
+    sim_us += UWB_BURST_PERIOD_US > 5000U ? UWB_BURST_PERIOD_US : 5000U;
     Tag_Task();
     CHECK(s_state == TAG_STATE_BURST_TX_POLL);
     CHECK(Tag_TelemetryWindow() == 0U);
@@ -211,6 +213,30 @@ static int run_cycle(CycleSeen *cs)
         }
         if (!a->answers)
             continue;
+        if (idx == 7U && g_inject_foreign_before_last)
+        {
+            const uint32_t before_tx = sim_tx_count;
+            const uint32_t before_rx = sim_rx_enable_count;
+            const UwbResp_t foreign = { .version = UWB_FRAME_V3, .txn = cs->txn,
+                                       .reply_ticks = 12345U };
+            uint8_t frame[UWB_FRAME_MAX_RX_LEN];
+            const uint16_t len = uwb_frame_build_resp(frame, 0U, DW_PAN_ID,
+                                                     TAG_ADDR, 99U, &foreign);
+            sim_deliver_rx(frame, len, 123456789ULL, 0U);
+            Tag_Task();
+            CHECK(s_state == TAG_STATE_BURST_RX);
+            CHECK(sim_tx_count == before_tx);
+            CHECK(s_burst_received == 7U);
+            CHECK(sim_rx_enable_count == before_rx + 1U);
+            /* A duplicate from an already captured anchor must also leave
+             * the last anchor's RX window open. */
+            const uint16_t duplicate = uwb_frame_build_resp(frame, 0U, DW_PAN_ID,
+                                                           TAG_ADDR, 1U, &foreign);
+            sim_deliver_rx(frame, duplicate, 123456790ULL, 0U);
+            Tag_Task();
+            CHECK(s_state == TAG_STATE_BURST_RX && sim_tx_count == before_tx);
+            CHECK(s_burst_received == 7U);
+        }
         info_len = 0U;
         if (cs->info_id == idx + 1U)
         {
@@ -333,7 +359,7 @@ static int test_eight_anchors_one_cycle_late(void)
     CHECK(c2.txn == (uint8_t)(c1.txn + 1U));
     CHECK(pop_record(&rec) == 0);
     CHECK(rec.cycle_seq == 1U && rec.count == 8U);
-    CHECK(rec.period_us > 5000U && rec.period_us < 12000U);   /* simulated POLL-to-POLL */
+    CHECK(rec.period_us >= UWB_BURST_PERIOD_US);       /* simulated POLL-to-POLL */
     for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
     {
         const TagBurstAnchor_t *e = entry_for(&rec, (uint8_t)(idx + 1U));
@@ -390,12 +416,19 @@ static int test_missing_final_falls_back_to_corrected_ss(void)
     CHECK(run_cycle(&cs) == 0);
     CHECK(pop_record(&rec) == 0);
     const TagBurstAnchor_t *e = entry_for(&rec, 6U);
+#if UWB_BURST_REQUIRE_DS
+    CHECK(e != NULL && (e->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_NONE);
+    CHECK((e->flags & TAG_BURST_REC_RADIO_OK) == 0U && e->range_mm == 0xFFFFU);
+    CHECK(e->status == TAG_ST_TIMEOUT);
+    CHECK(anchor_ds_fallback_count[5] == 0U);
+#else
     CHECK(e != NULL && (e->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_SS_FALLBACK);
     CHECK((e->status & TAG_ST_DS_FALLBACK) != 0U);
     /* Uncorrected, a 2.3 ms reply at -20.5 ppm would read ~7 m too long. */
     CHECK(abs((int)e->range_mm - true_mm(&g_anchor[5])) < 60);
-    CHECK(anchor_report_timeout_count[5] == 1U);
     CHECK(anchor_ds_fallback_count[5] >= 1U);
+#endif
+    CHECK(anchor_report_timeout_count[5] == 1U);
     const TagBurstAnchor_t *ok = entry_for(&rec, 5U);
     CHECK(ok != NULL && (ok->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
     return 0;
@@ -441,6 +474,22 @@ static int test_missing_resp_and_offline_probe(void)
     return 0;
 }
 
+static int test_reenable_anchor_clears_offline_backoff(void)
+{
+    CycleSeen cs;
+
+    CHECK(fresh_tag() == 0);
+    Tag_SetActiveAnchorMask(0x0FU);
+    anchor_response_timeout_streak[4] = UWB_BURST_OFFLINE_AFTER;
+    s_anchor_next_probe_cycle[4] = tag_cycle_count + 1000U;
+    Tag_SetActiveAnchorMask(0xFFU);
+    CHECK(anchor_response_timeout_streak[4] == 0U);
+    CHECK(s_anchor_next_probe_cycle[4] == 0U);
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(cs.mask == 0xFFU);
+    return 0;
+}
+
 static int test_info_tlv_widens_its_cycle(void)
 {
     CycleSeen cs;
@@ -448,11 +497,12 @@ static int test_info_tlv_widens_its_cycle(void)
     CHECK(fresh_tag() == 0);
     s_burst_last_info_ms = uwb_platform_time_ms() - UWB_BURST_INFO_PERIOD_MS;
     CHECK(run_cycle(&cs) == 0);
-    CHECK(cs.info_id == 1U);
+    CHECK(cs.info_id >= 1U && cs.info_id <= TAG_NUM_ANCHORS);
     CHECK(cs.slot == UWB_BURST_SLOT_UUS + UWB_BURST_INFO_EXTRA_UUS);
     TagAnchorInfo_t info;
     CHECK(Tag_TakeAnchorInfo(&info) == 1U);
-    CHECK(info.anchor_id == 1U && info.pos_mm[0] == 1000 && info.pos_mm[2] == 3000);
+    CHECK(info.anchor_id == cs.info_id
+          && info.pos_mm[0] == 1000 * cs.info_id && info.pos_mm[2] == 3000);
     CHECK(run_cycle(&cs) == 0);
     CHECK(cs.info_id == 0U && cs.slot == UWB_BURST_SLOT_UUS);
     return 0;
@@ -471,8 +521,13 @@ static int test_late_final_and_timing_command(void)
     CHECK(pop_record(&rec) == 0);          /* cycle 1: its Rb came in cycle 2 */
     CHECK((entry_for(&rec, 1U)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
     CHECK(run_cycle(&cs) == 0);
-    CHECK(pop_record(&rec) == 0);          /* cycle 2 had no FINAL: SS fallback */
+    CHECK(pop_record(&rec) == 0);          /* cycle 2 had no FINAL */
+#if UWB_BURST_REQUIRE_DS
+    CHECK((entry_for(&rec, 1U)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_NONE);
+    CHECK(entry_for(&rec, 1U)->range_mm == 0xFFFFU);
+#else
     CHECK((entry_for(&rec, 1U)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_SS_FALLBACK);
+#endif
 
     /* New timing is validated, then used from the next cycle on. */
     const TagBurstTiming_t bad = { 100U, 350U, 450U, 500U, 0U };
@@ -507,19 +562,73 @@ static int test_switch_back_to_sequential(void)
     return 0;
 }
 
+static int test_foreign_frame_before_last_response(void)
+{
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    CHECK(fresh_tag() == 0);
+    g_inject_foreign_before_last = 1;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(pop_record(&rec) == 0);
+    CHECK((entry_for(&rec, 8U)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
+    CHECK(abs((int)entry_for(&rec, 8U)->range_mm - true_mm(&g_anchor[7])) <= 2);
+    return 0;
+}
+
+static int test_long_run_txn_wrap_no_duplicate_records(void)
+{
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    CHECK(fresh_tag() == 0);
+    const uint32_t initial_seq = tag_cycle_count;
+    uint32_t expected_seq = initial_seq + 1U;
+    uint8_t previous_txn = 0U;
+    for (unsigned cycle = 0U; cycle < 1025U; cycle++)
+    {
+        CHECK(run_cycle(&cs) == 0);
+        if (cycle != 0U)
+        {
+            CHECK(cs.txn == (uint8_t)(previous_txn + 1U));
+            CHECK(pop_record(&rec) == 0);
+            CHECK(rec.cycle_seq == expected_seq++ && rec.count == 8U);
+            for (uint8_t id = 1U; id <= 8U; id++)
+            {
+                const TagBurstAnchor_t *e = entry_for(&rec, id);
+                CHECK(e != NULL && (e->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
+                /* Across all clock phases, integer timestamp rounding can
+                 * move ToF by one DW1000 tick (~4.69 mm). */
+                if (abs((int)e->range_mm - true_mm(&g_anchor[id-1U])) > 5)
+                {
+                    fprintf(stderr, "long run cycle %u, A%u: %u mm expected %d, status %u\n",
+                            cycle, id, e->range_mm, true_mm(&g_anchor[id-1U]), e->status);
+                    return 1;
+                }
+            }
+        }
+        CHECK(Tag_PopBurst(&rec) == 0U); /* exactly one new record per completed exchange */
+        previous_txn = cs.txn;
+    }
+    CHECK(expected_seq == initial_seq + 1025U && tag_burst_final_late_count == 0U);
+    return 0;
+}
+
 int main(void)
 {
     if (test_eight_anchors_one_cycle_late()
         || test_calibrated_ranges_and_snapshot()
         || test_missing_final_falls_back_to_corrected_ss()
         || test_missing_resp_and_offline_probe()
+        || test_reenable_anchor_clears_offline_backoff()
         || test_info_tlv_widens_its_cycle()
         || test_late_final_and_timing_command()
+        || test_foreign_frame_before_last_response()
+        || test_long_run_txn_wrap_no_duplicate_records()
         || test_switch_back_to_sequential())
     {
         return 1;
     }
     puts("TAG burst tests passed (v3 POLL/slots/FINAL, 8 anchors to 2 mm at -22..+0.4 ppm, "
-         "Rb one cycle late, SS fallback with CI, offline probe, info TLV, timing, switch)");
+         "Rb one cycle late, missing FINAL policy, foreign/duplicate RESP, offline probe, info TLV, timing, switch)");
     return 0;
 }

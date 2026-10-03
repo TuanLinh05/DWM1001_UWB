@@ -13,6 +13,28 @@
 #include <zephyr/sys/reboot.h>
 #include <zephyr/timing/timing.h>
 
+#ifndef UWB_DIRECT_SPIM
+#define UWB_DIRECT_SPIM 0
+#endif
+#ifndef UWB_DIRECT_STM32_SPI
+#define UWB_DIRECT_STM32_SPI 0
+#endif
+#if UWB_DIRECT_SPIM || UWB_DIRECT_STM32_SPI
+#include <zephyr/drivers/pinctrl.h>
+#endif
+#if UWB_DIRECT_SPIM
+#include <hal/nrf_spim.h>
+#if !defined(CONFIG_SOC_NRF52832)
+#error "Direct SPIM backend is qualified only for nRF52832"
+#endif
+#endif
+#if UWB_DIRECT_STM32_SPI
+#include <stm32f1xx.h>
+#if !defined(CONFIG_SOC_SERIES_STM32F1X)
+#error "Direct STM32 SPI is qualified only for the F103 SPI1 board"
+#endif
+#endif
+
 #define DW1000_NODE DT_NODELABEL(ieee802154)
 #define LED_NODE DT_ALIAS(status_led)
 #define FAULT_LED_NODE DT_ALIAS(fault_led)
@@ -30,7 +52,36 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(DW1000_NODE, okay),
 BUILD_ASSERT(DT_NODE_HAS_STATUS(LED_NODE, okay),
              "The board overlay must provide the status-led alias");
 
+#if UWB_DIRECT_SPIM || UWB_DIRECT_STM32_SPI
+BUILD_ASSERT(IS_ENABLED(CONFIG_PINCTRL),
+             "Direct SPI requires highrate_common.conf for pinctrl support");
+#endif
+
+#if UWB_DIRECT_SPIM
+/* Exclusive ownership: the overlay disables the Zephyr bus device. GPIO,
+ * pinctrl, UART, watchdog and the kernel still use their Zephyr drivers. */
+BUILD_ASSERT(IS_ENABLED(CONFIG_NRFX_SPIM),
+             "Direct SPIM requires highrate_nrf.conf for Nordic pinctrl support");
+BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_BUS(DW1000_NODE), disabled),
+             "Direct SPIM requires the DW1000 SPI bus disabled in devicetree");
+BUILD_ASSERT(DT_REG_ADDR(DT_BUS(DW1000_NODE)) == 0x40023000UL,
+             "Direct SPIM requires the DWM1001 internal SPIM2 bus");
+PINCTRL_DT_DEFINE(DT_BUS(DW1000_NODE));
+static NRF_SPIM_Type *const s_spim =
+    (NRF_SPIM_Type *)DT_REG_ADDR(DT_BUS(DW1000_NODE));
+#elif UWB_DIRECT_STM32_SPI
+BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_BUS(DW1000_NODE), disabled),
+             "Direct STM32 SPI requires highrate_stm32.overlay");
+BUILD_ASSERT(DT_REG_ADDR(DT_BUS(DW1000_NODE)) == 0x40013000UL,
+             "Direct STM32 SPI requires SPI1");
+BUILD_ASSERT(DT_PROP(DT_NODELABEL(rcc), clock_frequency) == 64000000UL,
+             "SPI1 divisors are qualified for the 64 MHz board clock");
+BUILD_ASSERT(DT_PROP(DT_NODELABEL(rcc), apb2_prescaler) == 1,
+             "SPI1 requires APB2 = 64 MHz");
+PINCTRL_DT_DEFINE(DT_BUS(DW1000_NODE));
+#else
 static const struct device *const s_spi = DEVICE_DT_GET(DT_BUS(DW1000_NODE));
+#endif
 static const struct gpio_dt_spec s_cs = SPI_CS_GPIOS_DT_SPEC_GET(DW1000_NODE);
 static const struct gpio_dt_spec s_irq =
     GPIO_DT_SPEC_GET(DW1000_NODE, int_gpios);
@@ -57,6 +108,7 @@ static const struct gpio_dt_spec s_wake =
 static struct gpio_callback s_irq_callback;
 static bool s_initialized;
 static uint32_t s_timing_cycles_per_us;
+#if !UWB_DIRECT_SPIM && !UWB_DIRECT_STM32_SPI
 static const struct spi_config s_spi_config_init = {
     .frequency = 2000000U,
     .operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB,
@@ -70,6 +122,7 @@ static const struct spi_config s_spi_config_fast = {
     .word_delay = 0U,
 };
 static const struct spi_config *s_active_spi_config = &s_spi_config_init;
+#endif
 
 static void dw1000_irq_callback(const struct device *port,
                                 struct gpio_callback *callback,
@@ -89,7 +142,11 @@ int uwb_platform_init(void)
         return 0;
     }
 
-    if (!device_is_ready(s_spi) || !gpio_is_ready_dt(&s_cs) ||
+    if (
+#if !UWB_DIRECT_SPIM && !UWB_DIRECT_STM32_SPI
+        !device_is_ready(s_spi) ||
+#endif
+        !gpio_is_ready_dt(&s_cs) ||
         !gpio_is_ready_dt(&s_irq) || !gpio_is_ready_dt(&s_reset) ||
         !gpio_is_ready_dt(&s_led)) {
         return -ENODEV;
@@ -176,25 +233,84 @@ int uwb_platform_init(void)
     s_timing_cycles_per_us = arch_timing_freq_get_mhz();
     if (s_timing_cycles_per_us == 0U)
         return -EIO;
+#if UWB_DIRECT_SPIM
+    s_spim->ENABLE = SPIM_ENABLE_ENABLE_Disabled;
+    error = pinctrl_apply_state(PINCTRL_DT_DEV_CONFIG_GET(DT_BUS(DW1000_NODE)),
+                                PINCTRL_STATE_DEFAULT);
+    if (error != 0)
+        return error;
+    s_spim->INTENCLR = 0xFFFFFFFFUL;
+    s_spim->SHORTS = 0U;
+    s_spim->CONFIG = 0U; /* mode 0, MSB first */
+    s_spim->ORC = 0U;
+    s_spim->FREQUENCY = SPIM_FREQUENCY_FREQUENCY_M2;
+    s_spim->ENABLE = SPIM_ENABLE_ENABLE_Enabled;
+#elif UWB_DIRECT_STM32_SPI
+    error = pinctrl_apply_state(PINCTRL_DT_DEV_CONFIG_GET(DT_BUS(DW1000_NODE)),
+                                PINCTRL_STATE_DEFAULT);
+    if (error != 0)
+        return error;
+    RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
+    __DSB();
+    RCC->APB2RSTR |= RCC_APB2RSTR_SPI1RST;
+    RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI1RST;
+    SPI1->CR2 = 0U;
+    /* APB2/32 = 2 MHz for reset/OTP/LDE. Mode 0, 8 bit, software NSS. */
+    SPI1->CR1 = SPI_CR1_MSTR | SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_BR_2;
+    SPI1->CR1 |= SPI_CR1_SPE;
+#endif
     s_initialized = true;
     return 0;
 }
 
 int uwb_platform_spi_set_frequency(uint32_t frequency_hz)
 {
-    /* nRF52832 SPI and the board devicetree are both rated at 8 MHz here. */
+    /* The devicetree profile owns the qualified runtime ceiling. */
     const uint32_t maximum = DT_PROP(DW1000_NODE, spi_max_frequency);
 
     if (frequency_hz == 0U || frequency_hz > maximum) {
         return -EINVAL;
     }
+#if UWB_DIRECT_SPIM
+    if (frequency_hz != 2000000U && frequency_hz != 8000000U)
+        return -EINVAL;
+    s_spim->FREQUENCY = frequency_hz == 2000000U
+        ? SPIM_FREQUENCY_FREQUENCY_M2 : SPIM_FREQUENCY_FREQUENCY_M8;
+#elif UWB_DIRECT_STM32_SPI
+    uint32_t divisor;
+    if (frequency_hz == 2000000U)
+        divisor = SPI_CR1_BR_2;
+    else if (frequency_hz == 8000000U)
+        divisor = SPI_CR1_BR_1;
+    else if (frequency_hz == 16000000U)
+        divisor = SPI_CR1_BR_0;
+    else
+        return -EINVAL;
+    SPI1->CR1 &= ~SPI_CR1_SPE;
+    SPI1->CR1 = (SPI1->CR1 & ~SPI_CR1_BR) | divisor;
+    SPI1->CR1 |= SPI_CR1_SPE;
+#else
     s_active_spi_config = frequency_hz <= 2000000U
         ? &s_spi_config_init : &s_spi_config_fast;
+#endif
     return 0;
 }
 
 /* Longest DW1000 access: 3-byte header + a 127-byte frame buffer. */
 #define SPI_XFER_MAX (3U + 127U)
+
+#if UWB_DIRECT_STM32_SPI
+static int stm32_spi_abort(int error)
+{
+    const uint32_t config = SPI1->CR1;
+    SPI1->CR1 = 0U;
+    RCC->APB2RSTR |= RCC_APB2RSTR_SPI1RST;
+    RCC->APB2RSTR &= ~RCC_APB2RSTR_SPI1RST;
+    SPI1->CR2 = 0U;
+    SPI1->CR1 = config;
+    return error; /* caller releases CS; SPI-fault recovery resets radio */
+}
+#endif
 
 int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
                           const uint8_t *tx, uint8_t *rx, size_t length)
@@ -222,14 +338,70 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
         memset(&s_tx[header_length], 0, length);
     }
 
+    const bool reading = rx != NULL && length > 0U;
+#if UWB_DIRECT_SPIM
+    /* Full duplex even for writes; equal TX/RX counts >= 2 avoid anomaly 58.
+     * Buffers live in RAM. END is polled, so a register access has no kernel
+     * semaphore/context-switch or DMA interrupt round trip. */
+    if (total < 2U)
+        return -EINVAL;
+    s_spim->EVENTS_END = 0U;
+    s_spim->EVENTS_STOPPED = 0U;
+    s_spim->TXD.PTR = (uint32_t)(uintptr_t)s_tx;
+    s_spim->TXD.MAXCNT = total;
+    s_spim->RXD.PTR = (uint32_t)(uintptr_t)s_rx;
+    s_spim->RXD.MAXCNT = total;
+    __DMB();
+    const uint32_t started = uwb_platform_cycle_now();
+    s_spim->TASKS_START = 1U;
+    while (s_spim->EVENTS_END == 0U) {
+        if (uwb_platform_elapsed_us(started) > 1000U) {
+            s_spim->TASKS_STOP = 1U;
+            const uint32_t stopping = uwb_platform_cycle_now();
+            while (s_spim->EVENTS_STOPPED == 0U
+                   && uwb_platform_elapsed_us(stopping) < 100U) {
+            }
+            /* Always stop DMA before the caller reuses the staging buffer.
+             * The existing SPI-fault path resets the DW1000 and reinitializes. */
+            s_spim->ENABLE = SPIM_ENABLE_ENABLE_Disabled;
+            s_spim->ENABLE = SPIM_ENABLE_ENABLE_Enabled;
+            return -ETIMEDOUT;
+        }
+    }
+    __DMB();
+    const int error = (s_spim->TXD.AMOUNT == total && s_spim->RXD.AMOUNT == total)
+        ? 0 : -EIO;
+#elif UWB_DIRECT_STM32_SPI
+    /* One byte outstanding at a time. Reads drain RXNE even for writes,
+     * preventing OVR. No ISR, semaphore or context switch per access. */
+    const uint32_t started = uwb_platform_cycle_now();
+    for (size_t i = 0U; i < total; i++) {
+        while ((SPI1->SR & SPI_SR_TXE) == 0U) {
+            if (uwb_platform_elapsed_us(started) > 1000U)
+                return stm32_spi_abort(-ETIMEDOUT);
+        }
+        *(volatile uint8_t *)&SPI1->DR = s_tx[i];
+        while ((SPI1->SR & SPI_SR_RXNE) == 0U) {
+            if (uwb_platform_elapsed_us(started) > 1000U)
+                return stm32_spi_abort(-ETIMEDOUT);
+        }
+        s_rx[i] = *(volatile uint8_t *)&SPI1->DR;
+    }
+    while ((SPI1->SR & SPI_SR_BSY) != 0U) {
+        if (uwb_platform_elapsed_us(started) > 1000U)
+            return stm32_spi_abort(-ETIMEDOUT);
+    }
+    const int error = (SPI1->SR & (SPI_SR_OVR | SPI_SR_MODF)) != 0U
+        ? stm32_spi_abort(-EIO) : 0;
+#else
     const struct spi_buf tx_buffer = { .buf = s_tx, .len = total };
     const struct spi_buf rx_buffer = { .buf = s_rx, .len = total };
     const struct spi_buf_set tx_set = { .buffers = &tx_buffer, .count = 1U };
     const struct spi_buf_set rx_set = { .buffers = &rx_buffer, .count = 1U };
-    const bool reading = rx != NULL && length > 0U;
 
     const int error = spi_transceive(s_spi, s_active_spi_config, &tx_set,
                                      reading ? &rx_set : NULL);
+#endif
     if (error == 0 && reading) {
         memcpy(rx, &s_rx[header_length], length);
     }

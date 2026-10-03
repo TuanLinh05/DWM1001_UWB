@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-HOST_FILTER_VERSION = "median3-cv-alpha-beta-v3"
+HOST_FILTER_VERSION = "median3-cv-alpha-beta-v4"
 
 # Constant-velocity alpha-beta gains at the nominal 50 Hz update rate.
 POSITION_GAIN = 0.30
@@ -35,7 +35,9 @@ MIN_RANGE_MM = 1.0
 # only velocity/median after that gap; position remains continuous.
 STALE_RESET_MS = 120
 NOMINAL_SAMPLE_MS = 20
-MIN_TRACKING_DT_MS = 10
+# RANGE_BURST carries device time. 200 Hz samples arrive 4-5 ms apart;
+# clamping them to 10 ms would double the prediction time and motion limits.
+MIN_TRACKING_DT_MS = 1
 MAX_TRACKING_DT_MS = 100
 
 

@@ -37,9 +37,8 @@
  */
 #define ANCHOR_TX_TIMEOUT_MS    10
 
-/** DS-TWR: max wait for FINAL after RESP TX. FINAL normally arrives within
- *  ~1-2 ms; must stay below the TAG's slot so the anchor is back in RX_WAIT
- *  before its next POLL. */
+/** Unicast DS-TWR: max wait for FINAL after RESP TX. Burst v3 derives its
+ * timeout from the FINAL time advertised in POLL. */
 #define ANCHOR_FINAL_TIMEOUT_MS  5
 
 /** Restart RX after this long without any event (known DW1000 RX lock-up). */
@@ -47,12 +46,14 @@
 
 /**
  * v3 burst: the receiver is turned on this long before the FINAL RMARKER
- * announced in the POLL (the FINAL preamble plus margin for clock offset and
- * DX_TIME's 9-bit granularity). Between its own RESP and this moment the
- * anchor's receiver is off, so it never has to read the other anchors'
- * RESPs; if the moment already passed, it listens at once.
+ * announced in the POLL (the FINAL preamble plus margin for clock offset).
+ * WAIT4RESP's relative delay is programmed before RESP and includes a
+ * conservative bound on its post-RMARKER tail, including optional TLVs.
  */
 #define ANCHOR_BURST_FINAL_LEAD_UUS (DW_PHY_PREAMBLE_UUS + 40U)
+/* Conservative PHR + coded payload/FCS tail for <=64-byte 6.8 Mbps RESP.
+ * WAIT4RESP is relative to TX end, while FINAL is relative to RMARKER. */
+#define ANCHOR_BURST_RESP_TAIL_MAX_UUS 160U
 
 /**
  * 1: RESP is sent with WAIT4RESP in DS mode so the receiver is on for FINAL

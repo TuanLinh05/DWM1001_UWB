@@ -5,8 +5,10 @@ telemetry nhị phân qua UART → gateway ESP32-C3 → PC/UP 7000. Firmware ch�
 **đo**; bộ ước lượng vị trí chạy trên host (ADR-001 trong `Plan/`).
 
 Từ 0.5 (2026-09-26) Tag_DevKit mặc định chạy **burst DS-TWR một-nhiều**: một
-POLL broadcast, tám RESP theo slot, một FINAL broadcast, ~4,5 ms/chu kỳ (~220 Hz
-cho mỗi anchor). PHY chuyển sang preamble 128 / PAC 8. Chi tiết:
+POLL broadcast, tám RESP theo slot, một FINAL broadcast. Profile ban đầu
+~4,5 ms/chu kỳ (~220 Hz cho mỗi anchor); Tag_DevKit hiện dùng timing 20 ms
+và mask A1–A8 sau khi thử trên phần cứng thật. PHY chuyển sang preamble 128 /
+PAC 8. Chi tiết:
 `CHANGELOG.md` §0.5.
 
 > **Phần cứng hiện có (xác nhận 2026-09-23):** A1–A4 là DWM1001C; A5–A8 là
@@ -43,6 +45,12 @@ bản sao mã nguồn chung — `tests/test_node_projects.py` sẽ báo lỗi n�
 
 ## 2. Build
 
+Bản tối ưu ngày **2026-10-02**, mục tiêu ≥200 kết quả DS/s trên mỗi anchor,
+được build riêng bằng `scripts/build_highrate.ps1` cho TAG + tám anchor đúng
+board vật lý. Period 4500 µs (~222 Hz danh định), anchor auto RX,
+STM32 SPI trực tiếp 16 MHz, nRF FPU. Cần nạp lại đủ chín image và đo log để
+xác nhận tần số thực tế. Xem [hướng dẫn highrate](highrate_200_dist/README.md).
+
 Yêu cầu nRF Connect SDK v3.4.0, board Zephyr `decawave_dwm1001_dev/nrf52832`.
 
 ```powershell
@@ -57,15 +65,16 @@ Mỗi project cũng có `scripts/build.ps1` và `scripts/flash.ps1` riêng.
 Với bốn board STM32 vật lý, chạy `scripts/build_stm32_anchors.ps1`, sau đó
 `python tools/verify_stm32_images.py`. Chạy `scripts/package_8_anchors.ps1`
 để chép tám ảnh tương ứng board vật lý vào `anchor_8_dist/` cùng SHA-256.
-A1–A4 nạp qua J-Link/OpenOCD; A5–A8 nạp qua ST-LINK Utility.
+A1–A4 nạp qua ST-LINK/OpenOCD theo cấu hình VS Code của từng project;
+A5–A8 nạp qua ST-LINK Utility.
 
 Firmware mang theo git hash, cờ dirty (kể cả file untracked) và hash cấu hình
 riêng của node trong `DEVICE_INFO`, nên có thể đối chiếu source lẫn cấu hình
 đã tạo ra binary.
 
-> **Thứ tự flash bắt buộc: tám anchor trước, TAG sau.** Anchor 0.5 trả lời POLL
+> **Thứ tự flash: các anchor đang dùng trước, TAG sau.** Anchor 0.5 trả lời POLL
 > v1, v2 và v3 (burst). Firmware trước 0.5 dùng preamble 256 nên **không nghe
-> được** node 0.5 (preamble 128) và ngược lại: phải nạp lại cả chín node.
+> được** node 0.5 (preamble 128) và ngược lại; mọi node tham gia cần dùng cùng PHY.
 > Chi tiết ở `CHANGELOG.md` §0.5 và §1.
 
 ## 3. Kiểm thử trên PC (bắt buộc trước khi flash)
@@ -103,7 +112,7 @@ tại chỉ A1–A4 dùng các project này; A5–A8 dùng `STM32_Anchor_5..8`.
 
 | Project | Short address | Nhịp cập nhật |
 |---|---:|---:|
-| Anchor_1 … Anchor_8 | `0x0001` … `0x0008` | burst: ~4,5 ms / ~220 Hz; tuần tự: ~34 ms / 29 Hz (đo 2026-09-26) |
+| Anchor_1 … Anchor_8 | `0x0001` … `0x0008` | phụ thuộc timing TAG; Tag_DevKit hiện đặt tối thiểu 20 ms / ~50 Hz cho A1–A8 |
 
 TAG probe xoay vòng các anchor mất kết nối (F1), nên một module hỏng không chiếm
 hết thời gian chờ của chu kỳ. Ở burst, anchor im lặng 8 chu kỳ bị bỏ khỏi mask
@@ -111,17 +120,21 @@ và được thử lại mỗi 25 chu kỳ. `period_us` của RANGE_BURST là ch
 
 ### Chỉnh timing burst (`SET_BURST`, chỉ lưu RAM)
 
+Bảng là mặc định mới của **Tag_DevKit** cho tám anchor vật lý. Project `Tag`
+cho PCB riêng vẫn giữ profile cũ; thay đổi qua `SET_BURST` sẽ mất khi TAG reset.
+
 | Thông số | Mặc định | Ý nghĩa |
 |---|---:|---|
-| base | 800 UUS | POLL → RESP đầu tiên: thời gian anchor chậm nhất đọc POLL và hẹn RESP |
-| slot | 350 UUS | khoảng cách hai RESP: air time (~205 µs) + TAG đọc RESP |
-| margin | 450 UUS | RESP cuối → FINAL |
-| gap | 500 µs | FINAL → POLL kế tiếp (anchor mở lại receiver, TAG gửi UART) |
-| period | 0 | chu kỳ tối thiểu, 0 = không giới hạn |
+| base | 2500 UUS | POLL → RESP đầu tiên: thời gian anchor chậm nhất đọc POLL và hẹn RESP |
+| slot | 1000 UUS | khoảng cách hai RESP: air time (~205 µs) + TAG đọc RESP |
+| margin | 1200 UUS | RESP cuối → FINAL |
+| gap | 1500 µs | FINAL → POLL kế tiếp (anchor mở lại receiver, TAG gửi UART) |
+| period | 20000 µs | chu kỳ POLL tối thiểu |
 
 ```powershell
 py -3.12 uwb_command.py --port COM14 set-burst                   # xem
-py -3.12 uwb_command.py --port COM14 set-burst --slot 300 --gap 300
+py -3.12 uwb_command.py --port COM14 set-mask 0xFF           # bật cả A1–A8
+py -3.12 uwb_command.py --port COM14 set-burst --base 2500 --slot 1000 --margin 1200 --gap 1500 --period 20000
 py -3.12 uwb_command.py --port COM14 set-burst --mode sequential   # A/B với sơ đồ cũ
 ```
 
@@ -137,7 +150,7 @@ Khung: `AA 55 | VER=1 | TYPE | LEN | SEQ | TIME | payload | CRC16-CCITT`.
 |---|---|---|
 | 0x00 / 0x01 / 0x02 | INFO / RANGE / STATS | 1 Hz / mỗi chu kỳ / 1 Hz |
 | 0x10 | RANGE_MEAS (từng phép đo) | cần UART ≥ 460800 baud; Tag_DevKit (460800) bật mặc định, Tag (115200) tắt; chỉ ở chế độ tuần tự |
-| 0x18 | RANGE_BURST (cả chu kỳ burst, 22 + 8·n byte) | mỗi chu kỳ (~220 Hz), cùng cờ feature với RANGE_MEAS; snapshot RANGE giảm còn 5 Hz |
+| 0x18 | RANGE_BURST (cả chu kỳ burst, 22 + 8·n byte) | mỗi chu kỳ (Tag_DevKit: khoảng 50 Hz), cùng cờ feature với RANGE_MEAS; snapshot RANGE giảm còn 5 Hz |
 | 0x11 / 0x12 | DIAG_ANCHOR / ANCHOR_INFO | 2 anchor/s / khi nhận TLV |
 | 0x13 | CMD_ACK | trả lời lệnh |
 | 0x14 | SNIFFER_FRAME | chỉ vai trò sniffer |
@@ -204,6 +217,7 @@ Không bật mask và không đưa range vào bộ điều khiển bay trước 
 
 | File | Nội dung |
 |---|---|
+| `highrate_200_dist/README.md` | bộ thử nghiệm mục tiêu ≥ 200 Hz/tám anchor, SPI trực tiếp, DS-only và hướng dẫn bench |
 | `CHANGELOG.md` | nội dung bản nâng cấp v2, thứ tự flash, tương thích |
 | `HARDWARE_AB_CHECKLIST.md` | quy trình A/B trên board thật và tiêu chí nghiệm thu |
 | `ANCHOR_DEPLOYMENT.md` | gán module, flash, kiểm tra địa chỉ, calibration |

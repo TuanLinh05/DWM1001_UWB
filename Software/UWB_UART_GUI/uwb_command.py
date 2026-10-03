@@ -39,6 +39,19 @@ import telemetry_protocol as tp
 
 TX_POWER_MODES = {"legacy": 0, "reference": 1, "smart": 2, "custom": 3}
 
+# Nominal POLL rates only. Verify DS successes and fresh cycle sequence in
+# device time; a preset does not guarantee useful measurement throughput.
+BURST_TIMING_PRESETS = {
+    "stable50": dict(base_uus=2500, slot_uus=1000, final_margin_uus=1200,
+                     gap_us=1500, period_us=20000),
+    "hz100": dict(base_uus=600, slot_uus=350, final_margin_uus=1200,
+                  gap_us=300, period_us=10000),
+    "hz200": dict(base_uus=550, slot_uus=350, final_margin_uus=450,
+                  gap_us=250, period_us=4500),
+    "hz220": dict(base_uus=550, slot_uus=350, final_margin_uus=450,
+                  gap_us=250, period_us=4500),
+}
+
 
 class TagLink:
     def __init__(self, port: str, baud: int) -> None:
@@ -61,11 +74,18 @@ class TagLink:
         return messages
 
     def wait_for(self, predicate, timeout_s: float):
+        for index, message in enumerate(self.pending):
+            if predicate(message):
+                return self.pending.pop(index)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            for message in self._read_messages():
+            messages = self._read_messages()
+            for index, message in enumerate(messages):
                 if predicate(message):
+                    self.pending.extend(messages[:index])
+                    self.pending.extend(messages[index + 1:])
                     return message
+            self.pending.extend(messages)
         return None
 
     def command(self, command_id: int, arguments: bytes = b"", retries: int = 3,
@@ -175,6 +195,8 @@ def main(argv: list[str]) -> int:
         "set-burst", help="show (no options) or change the burst DS-TWR scheme; "
                           "RAM only, the TAG boots with its firmware defaults")
     burst.add_argument("--mode", choices=("burst", "sequential"))
+    burst.add_argument("--profile", choices=tuple(BURST_TIMING_PRESETS),
+                       help="nominal timing; hz200/hz220 use 222 Hz and require the 2026-10-02 firmware")
     burst.add_argument("--base", type=int, help="POLL -> first RESP, UUS (200-10000)")
     burst.add_argument("--slot", type=int, help="RESP spacing, UUS (150-5000)")
     burst.add_argument("--margin", type=int, help="last RESP -> FINAL, UUS (150-10000)")
@@ -262,8 +284,12 @@ def main(argv: list[str]) -> int:
             changes = {name: getattr(args, option) for name, option in (
                 ("base_uus", "base"), ("slot_uus", "slot"), ("final_margin_uus", "margin"),
                 ("gap_us", "gap"), ("period_us", "period")) if getattr(args, option) is not None}
+            if args.profile is not None:
+                changes = {**BURST_TIMING_PRESETS[args.profile], **changes}
             if args.mode is not None or changes:
                 wanted = replace(current, mode=0xFF, **changes)
+                if args.profile is not None:
+                    wanted = replace(wanted, mode=1)
                 if args.mode is not None:
                     wanted = replace(wanted, mode=1 if args.mode == "burst" else 0)
                 current = tp.BurstSettings.decode(

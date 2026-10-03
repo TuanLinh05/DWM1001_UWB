@@ -43,6 +43,19 @@ static int test_spi_failure_and_truncation(void)
     CHECK(data[0] == 0xCC);
     sim_reg[DW_REG_RX_FINFO][0] = 16;
     CHECK(DW1000_ReadRxData(data, sizeof(data)) == 16U);
+    sim_reg[DW_REG_RX_BUFFER][0] = 0x41U;
+    sim_reg[DW_REG_RX_FINFO][0] = 29U;
+    CHECK(DW1000_PeekRxPrefix(data, 12U) == 29U && data[0] == 0x41U);
+    sim_reg[DW_REG_RX_FINFO][0] = 13U;
+    CHECK(DW1000_PeekRxPrefix(data, 12U) == 0U);
+    sim_reg[DW_REG_RX_FINFO][0] = 29U;
+    sim_reg[DW_REG_RX_FINFO][1] = 1U; /* extended frame >127 bytes */
+    CHECK(DW1000_PeekRxPrefix(data, 12U) == 0U);
+    sim_reg[DW_REG_RX_FINFO][1] = 0U;
+    sim_fail_spi = 1;
+    CHECK(DW1000_PeekRxPrefix(data, 12U) == 0U);
+    sim_fail_spi = 0;
+    CHECK(DW1000_PeekRxPrefix(NULL, 12U) == 0U);
     return 0;
 }
 
@@ -217,6 +230,33 @@ static int test_status_and_reset_helpers(void)
     sim_status = DW_HPDWARN_BIT;
     CHECK(DW1000_StartTxDelayedEx(1U) == -1);
     CHECK(sim_last_ctrl() == (DW_TXSTRT_BIT | DW_TXDLYS_BIT | DW_WAIT4RESP_BIT));
+    sim_reg[DW_REG_ACK_RESP_T][3] = 0xA5U;
+    DW1000_SetRxAfterTxDelay(0x12345U);
+    CHECK(sim_read_u32(DW_REG_ACK_RESP_T,0) == 0xA5012345UL);
+    DW1000_SetRxAfterTxDelay(0U);
+    CHECK(sim_read_u32(DW_REG_ACK_RESP_T,0) == 0xA5000000UL);
+    return 0;
+}
+
+static int test_signal_power_accuracy_sweep(void)
+{
+    uint32_t random = 0xC0FFEEU;
+    for (unsigned k=0U; k<20000U; k++)
+    {
+        random = random*1664525U + 1013904223U;
+        const DW1000_SignalDiag_t d = {
+            .rxpacc=(uint16_t)(1U+(random&0xFFFU)),
+            .fp_ampl1=(uint16_t)(1U+(random&0x7FFFU)),
+            .fp_ampl2=(uint16_t)(random>>16),
+            .fp_ampl3=(uint16_t)(random>>8),
+            .cir_pwr=(uint16_t)(1U+((random>>16)&0x7FFFU)),
+        };
+        const float f1=d.fp_ampl1, f2=d.fp_ampl2, f3=d.fp_ampl3, n=d.rxpacc;
+        const float fp=10.0f*log10f((f1*f1+f2*f2+f3*f3)/(n*n))-UWB_FPP_A_CONST;
+        const float rx=10.0f*log10f((d.cir_pwr*131072.0f)/(n*n))-UWB_FPP_A_CONST;
+        CHECK(fabsf(DW1000_GetFirstPathPower(&d)-fp)<0.0002f);
+        CHECK(fabsf(DW1000_GetRxPower(&d)-rx)<0.0002f);
+    }
     return 0;
 }
 
@@ -231,7 +271,7 @@ int main(void)
         || test_tx_power_modes()
         || test_pll_lock_and_calibration_profile()
         || test_signal_diagnostics()
-        || test_status_and_reset_helpers())
+        || test_status_and_reset_helpers() || test_signal_power_accuracy_sweep())
     {
         return 1;
     }

@@ -1,0 +1,1 @@
+Archived faulty nRF HEX images: SPIM pinctrl support was omitted. TAG startup blinks red before UART init. Do not flash these archived files.

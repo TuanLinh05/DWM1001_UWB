@@ -54,6 +54,29 @@
 #define UWB_TAG_BURST_DEFAULT 1U
 #endif
 
+#if defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
+/* Rev 2: nominal 222.2 cycles/s, leaving DS/drop headroom above 200 sets/s.
+ * WAIT4RESP anchor RX, fast SPI and CPU profiles must be flashed together.
+ * These are scheduling targets; successful DS throughput needs bench data. */
+#define UWB_BURST_BASE_UUS           550U
+#define UWB_BURST_SLOT_UUS           350U
+#define UWB_BURST_FINAL_MARGIN_UUS   450U
+#define UWB_BURST_GAP_US             250U
+#define UWB_BURST_PERIOD_US          4500U
+#else
+/* Bench-verified timing (2026-09-30): the previous 800/350/450 UUS settings
+ * missed nearly every RESP on real boards.  All eight anchors respond with
+ * this profile; A1-A4 also need the scheduled FINAL timeout in the current
+ * anchor image for reliable eight-anchor DS.  The 20 ms floor gives 50 Hz. */
+#define UWB_BURST_BASE_UUS          2500U
+#define UWB_BURST_SLOT_UUS          1000U
+#define UWB_BURST_FINAL_MARGIN_UUS  1200U
+#define UWB_BURST_GAP_US            1500U
+#define UWB_BURST_PERIOD_US         20000U
+#endif
+/* Eight installed anchors: A1-A4 DWM1001C, A5-A8 STM32F103 + DW1000. */
+#define UWB_TAG_ACTIVE_ANCHOR_MASK  0xFFU
+
 /* Set to 1 for human-readable CSV, or 0 for the binary packet protocol. */
 #define TELEM_ASCII 0
 

@@ -54,7 +54,7 @@ endfunction()
 # by the shared source commit alone. SHA-256 is truncated to 32 bits for the
 # compact DEVICE_INFO payload; the full files remain the release authority.
 function(uwb_read_config_id role out_hash)
-  set(material "role=${role}\nboard=${BOARD}\n")
+  set(material "role=${role}\nboard=${BOARD}\nhigh_rate=${UWB_HIGH_RATE}\n")
   foreach(relative IN ITEMS
       CMakeLists.txt
       prj.conf
@@ -68,12 +68,47 @@ function(uwb_read_config_id role out_hash)
       string(APPEND material "${relative}=MISSING\n")
     endif()
   endforeach()
+  if(UWB_HIGH_RATE)
+    # Include sources as well as configuration: dirty builds from the same
+    # commit must not advertise the previous package's config identity.
+    foreach(relative IN ITEMS
+        cmake/uwb_node.cmake include/dw1000_hw.h include/anchor_ranging.h
+        include/tag_ranging.h src/platform/uwb_platform_zephyr.c
+        src/drivers/dw1000.c src/ranging/anchor_ranging.c
+        src/ranging/tag_ranging.c src/app/main_tag.c src/app/main_anchor.c
+        include/uwb_frame.h include/uwb_platform.h include/uwb_health.h
+        src/ranging/uwb_frame.c src/filters/range_filter.c
+        src/app/uwb_cmd.c src/app/uwb_health.c src/app/uwb_settings.c
+        src/telemetry/telemetry.c src/telemetry/telemetry_frame.c
+        src/telemetry/uart_tx_zephyr.c)
+      file(SHA256 "${UWB_COMMON_DIR}/${relative}" source_hash)
+      string(APPEND material "${relative}=${source_hash}\n")
+    endforeach()
+    foreach(profile IN ITEMS highrate_common.conf highrate_stm32.overlay)
+      file(SHA256 "${UWB_COMMON_DIR}/../profiles/${profile}" extra_hash)
+      string(APPEND material "${profile}=${extra_hash}\n")
+    endforeach()
+    file(SHA256 "${UWB_COMMON_DIR}/../profiles/highrate_nrf.overlay" profile_hash)
+    string(APPEND material "highrate_overlay=${profile_hash}\n")
+    if(CONFIG_SOC_NRF52832)
+      file(SHA256 "${UWB_COMMON_DIR}/../profiles/highrate_nrf.conf" profile_conf_hash)
+      string(APPEND material "highrate_conf=${profile_conf_hash}\n")
+    endif()
+  endif()
   string(SHA256 config_hash "${material}")
   string(SUBSTRING "${config_hash}" 0 8 config_hash_short)
   set(${out_hash} "0x${config_hash_short}" PARENT_SCOPE)
 endfunction()
 
 function(uwb_node_setup role)
+  if(UWB_HIGH_RATE)
+    target_compile_definitions(app PRIVATE UWB_HIGH_RATE=1 UWB_BURST_REQUIRE_DS=1)
+    if(CONFIG_SOC_NRF52832)
+      target_compile_definitions(app PRIVATE UWB_DIRECT_SPIM=1)
+    elseif(CONFIG_SOC_SERIES_STM32F1X)
+      target_compile_definitions(app PRIVATE UWB_DIRECT_STM32_SPI=1 DW_SPI_FAST_MHZ=16U)
+    endif()
+  endif()
   # The node's own include/ directory comes first: it provides uwb_app_config.h.
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

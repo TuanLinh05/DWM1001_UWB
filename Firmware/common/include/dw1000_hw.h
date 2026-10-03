@@ -238,7 +238,9 @@ static inline DW1000_RxEvent_t DW1000_ClassifyRx(uint64_t status)
  * the nRF52832 SPI instance. The driver falls back to 2 MHz if the device-ID
  * readback is not reliable at 8 MHz. */
 #define DW_SPI_INIT_MHZ          2U
+#ifndef DW_SPI_FAST_MHZ
 #define DW_SPI_FAST_MHZ          8U
+#endif
 extern volatile uint8_t dw1000_spi_mhz;
 
 /* Default antenna delay (Decawave starting point before calibration) */
@@ -401,6 +403,9 @@ void DW1000_StartTx(void);
  */
 void DW1000_StartTxWait4Resp(void);
 
+/** Hardware WAIT4RESP delay, in UUS from the end of TX; ACK timing is kept. */
+void DW1000_SetRxAfterTxDelay(uint32_t delay_uus);
+
 /** @brief Set the delayed TX time (DX_TIME register). */
 void DW1000_SetDelayedTxTime(const uint8_t tx_time[5]);
 
@@ -444,6 +449,19 @@ int DW1000_WaitRxDone(uint32_t timeout_ms);
  * @retval Frame length in bytes, 0 when it does not fit in max_len.
  */
 uint16_t DW1000_ReadRxData(uint8_t *data, uint16_t max_len);
+
+/** Read only a prefix while RX is stopped; return the actual frame length
+ * including FCS. Returns 0 on a short/invalid frame or SPI failure. */
+uint16_t DW1000_PeekRxPrefix(uint8_t *data, uint16_t prefix_len);
+
+/** Read one frame and its timestamp/quality while RX is stopped. Reuses
+ * RX_FINFO and reads RX_TIME[0..8] once: four SPI accesses instead of six.
+ * Returns 0 on truncation or SPI failure. Rearm RX only after this returns. */
+uint16_t DW1000_ReadRxFrame(uint8_t *data, uint16_t max_len,
+                           uint8_t ts[5], DW1000_SignalDiag_t *diag);
+
+/** Capture timestamp + quality together (three SPI accesses). */
+void DW1000_ReadRxTimestampDiag(uint8_t ts[5], DW1000_SignalDiag_t *diag);
 
 /** @brief Read the 5-byte RX timestamp (RX_TIME, adjusted RMARKER). */
 void DW1000_ReadRxTimestamp(uint8_t ts[5]);
@@ -567,6 +585,10 @@ uint32_t DW1000_VerifyConfig(void);
  *         Only call while the radio is idle.
  */
 void DW1000_ReadTempVbatRaw(uint8_t *temp_raw, uint8_t *vbat_raw);
+/** Nonblocking SAR conversion: call Finish at least 1 ms after Begin.
+ * Both calls must run in a radio quiet window. */
+void DW1000_BeginTempVbat(void);
+void DW1000_FinishTempVbat(uint8_t *temp_raw, uint8_t *vbat_raw);
 
 /** @brief Die temperature SAR reading only (compatibility wrapper). */
 uint8_t DW1000_ReadTemperatureRaw(void);

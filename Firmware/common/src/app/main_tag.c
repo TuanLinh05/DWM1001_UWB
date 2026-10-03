@@ -95,6 +95,8 @@ int main(void)
     uint32_t last_host_ms = last_stats_ms;
     uint32_t config_checks = 0U;
     uint8_t diag_anchor = 0U;
+    uint8_t environment_pending = 0U;
+    uint64_t environment_started_us = 0U;
 
     while (true) {
         const uint32_t now = uwb_platform_time_ms();
@@ -113,6 +115,7 @@ int main(void)
                 /* Never publish data read through a failed SPI transfer:
                  * Tag_RecoverRadio() invalidates every anchor. */
                 radio_ok = recover(UWB_FAULT_SPI);
+                environment_pending = 0U;
                 spi_errors_seen = dw1000_spi_error_count;
             } else if (Tag_IsIdle() && uwb_health_config_check_due()) {
                 /* Brown-out/reset of the DW1000 restores register defaults. */
@@ -120,13 +123,28 @@ int main(void)
                 uwb_health_note_config_check(mismatch);
                 if (mismatch != 0U) {
                     radio_ok = recover(UWB_FAULT_CONFIG);
+                    environment_pending = 0U;
                 } else if ((++config_checks % TAG_ENV_PERIOD_CHECKS) == 0U) {
-                    uint8_t temp_raw = 0U;
-                    uint8_t vbat_raw = 0U;
-                    DW1000_ReadTempVbatRaw(&temp_raw, &vbat_raw);
-                    Telem_SetEnvironment(temp_raw, vbat_raw);
+                    DW1000_BeginTempVbat();
+                    environment_started_us = uwb_platform_time_us64();
+                    environment_pending = 1U;
+                }
+                if (dw1000_spi_error_count != spi_errors_seen && mismatch == 0U) {
+                    radio_ok = recover(UWB_FAULT_SPI);
+                    environment_pending = 0U;
                 }
                 spi_errors_seen = dw1000_spi_error_count;
+            }
+            if (radio_ok && environment_pending && Tag_IsIdle()
+                && Tag_IdleBudgetUs() >= 150U
+                && uwb_platform_time_us64() - environment_started_us >= 1000U) {
+                uint8_t temp_raw = 0U;
+                uint8_t vbat_raw = 0U;
+                DW1000_FinishTempVbat(&temp_raw, &vbat_raw);
+                if (dw1000_spi_error_count == spi_errors_seen) {
+                    Telem_SetEnvironment(temp_raw, vbat_raw);
+                }
+                environment_pending = 0U;
             }
         } else {
             if (uwb_platform_fault_led_available()) {
@@ -189,7 +207,8 @@ int main(void)
             Telem_SendAnchorInfo(&anchor_info);
         }
 
-        if (window && (uint32_t)(now - last_stats_ms) >= TAG_STATS_PERIOD_MS) {
+        if (window && Tag_IdleBudgetUs() >= 300U
+            && (uint32_t)(now - last_stats_ms) >= TAG_STATS_PERIOD_MS) {
             const uint32_t elapsed = now - last_stats_ms;
             const uint32_t cycles = tag_cycle_count - last_cycle_count;
             const uint32_t successes = response_ok_count - last_ok_count;
@@ -209,11 +228,15 @@ int main(void)
             last_ok_count = response_ok_count;
         }
 
-        if (window && (uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS) {
+        if (window && Tag_IdleBudgetUs() >= 200U
+            && (uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS) {
             Telem_SendDeviceInfo();
             last_device_info_ms = now;
         }
 
+        /* Keep host control alive even if the selected period is too short.
+         * Otherwise an overloaded profile could never accept PAUSE or a
+         * slower SET_BURST command. Commands already require an idle window. */
         if (window) {
             uwb_cmd_poll();
         }
@@ -228,7 +251,11 @@ int main(void)
             uwb_platform_host_led_set(false);
         }
         uwb_health_service();
+#if defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
+        k_busy_wait(1U);
+#else
         k_busy_wait(10U);
+#endif
     }
 
     return 0;

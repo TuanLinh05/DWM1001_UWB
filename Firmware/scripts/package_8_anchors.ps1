@@ -35,7 +35,7 @@ foreach ($number in 1..8) {
         $source = Join-Path $firmwareRoot "Anchor_$number\build\zephyr\zephyr.hex"
         $fileName = "A${number}_DWM1001C_nRF52832.hex"
         $mcu = 'nRF52832'
-        $programmer = 'J-Link/OpenOCD'
+        $programmer = 'ST-LINK/OpenOCD'
     } else {
         $source = Join-Path $firmwareRoot "stm32_anchor\dist\anchor_${number}_stm32f103.hex"
         $fileName = "A${number}_STM32F103C8.hex"

@@ -219,7 +219,9 @@ static int test_v3_burst_exchange(void)
     deliver_burst_poll(0x40U, 0x0DU, 0U, poll_rx);
     Anchor_Task();
     CHECK(s_state == ANCHOR_STATE_TX_BURST_RESP);
-    CHECK(sim_last_ctrl() == (DW_TXSTRT_BIT | DW_TXDLYS_BIT));     /* no WAIT4RESP */
+    CHECK(sim_last_ctrl() == (DW_TXSTRT_BIT | DW_TXDLYS_BIT | DW_WAIT4RESP_BIT));
+    CHECK((sim_read_u32(DW_REG_ACK_RESP_T, 0) & 0xFFFFFU)
+          == 2200U - ANCHOR_BURST_FINAL_LEAD_UUS - ANCHOR_BURST_RESP_TAIL_MAX_UUS);
     const uint64_t resp_tx = (poll_rx + 800ULL * UWB_UUS_TO_DWT) & 0xFFFFFFFE00ULL;
     CHECK(dx_time() == resp_tx);
     CHECK(burst_resp(&resp) == 0);
@@ -233,10 +235,8 @@ static int test_v3_burst_exchange(void)
     sim_complete_tx(rmarker);
     Anchor_Task();
     CHECK(s_state == ANCHOR_STATE_WAIT_BURST_FINAL);
-    CHECK(sim_rx_enable_count == rx_enables + 1U);
-    const uint64_t rx_at = (poll_rx + (3000ULL - ANCHOR_BURST_FINAL_LEAD_UUS) * UWB_UUS_TO_DWT)
-                           & UWB_TS40_MASK;
-    CHECK(dx_time() == rx_at);
+    CHECK(sim_rx_enable_count == rx_enables);  /* hardware W4R, no RX command */
+    CHECK(dx_time() == resp_tx);              /* RX does not overwrite DX_TIME */
 
     /* A stray RESP of another anchor keeps the FINAL wait. */
     uint8_t other[UWB_FRAME_MAX_RX_LEN];
@@ -295,10 +295,70 @@ static int test_v3_burst_exchange(void)
     return 0;
 }
 
+static int test_v3_long_final_window(void)
+{
+    CHECK(fresh_anchor() == 0);
+    const uint64_t poll_rx = 7000000000ULL;
+    uint8_t frame[UWB_FRAME_MAX_RX_LEN];
+    const UwbPoll_t poll = {
+        .version = UWB_FRAME_V3, .txn = 0x50U, .anchor_mask = 0xFFU,
+        .base_uus = 2500U, .slot_uus = 1000U, .final_uus = 10700U,
+    };
+    const uint16_t len = uwb_frame_build_poll(frame, 0x50U, DW_PAN_ID,
+                                               UWB_FRAME_BROADCAST, TAG_ADDR, &poll);
+    sim_deliver_rx(frame, len, poll_rx, 0U);
+    Anchor_Task();
+    CHECK(s_state == ANCHOR_STATE_TX_BURST_RESP);
+    const uint64_t resp_tx = (poll_rx + 2500ULL * UWB_UUS_TO_DWT) & 0xFFFFFFFE00ULL;
+    sim_complete_tx((resp_tx + DW1000_ActiveTxAntennaDelay()) & UWB_TS40_MASK);
+    Anchor_Task();
+    CHECK(s_state == ANCHOR_STATE_WAIT_BURST_FINAL);
+    CHECK(s_burst_final_timeout_ms > ANCHOR_FINAL_TIMEOUT_MS);
+
+    /* The old fixed 5 ms timeout discarded the delayed FINAL for rank 0. */
+    sim_us += 6000U;
+    Anchor_Task();
+    CHECK(s_state == ANCHOR_STATE_WAIT_BURST_FINAL);
+    CHECK(anchor_stats.burst_final_missed == 0U);
+    deliver_burst_final(0x50U, poll_rx + 10700ULL * UWB_UUS_TO_DWT);
+    Anchor_Task();
+    CHECK(anchor_stats.burst_finals == 1U);
+    return 0;
+}
+
+static int test_v3_coalesced_final_and_legacy_delay_restore(void)
+{
+    CHECK(fresh_anchor() == 0);
+    const uint64_t poll_rx = UWB_TS40_MASK - 10000000ULL;
+    deliver_burst_poll(0x60U, 0x0DU, 0U, poll_rx);
+    Anchor_Task();
+    const uint64_t resp_tx = ((poll_rx + 800ULL * UWB_UUS_TO_DWT) & 0xFFFFFFFE00ULL);
+    const uint64_t t3 = (resp_tx + DW1000_ActiveTxAntennaDelay()) & UWB_TS40_MASK;
+    const uint64_t t6 = (poll_rx + 3000ULL * UWB_UUS_TO_DWT) & UWB_TS40_MASK;
+    sim_complete_tx(t3);
+    /* Slow MCU: FINAL already latched alongside TXFRS in one IRQ. */
+    deliver_burst_final(0x60U, t6);
+    CHECK((sim_status & DW_TXFRS_BIT) && (sim_status & DW_RXFCG_BIT));
+    const uint32_t rx_enables = sim_rx_enable_count;
+    Anchor_Task();
+    CHECK(s_state == ANCHOR_STATE_RX_WAIT);
+    CHECK(anchor_stats.burst_finals == 1U && s_burst_prev_valid);
+    CHECK(s_burst_prev_rb == (uint32_t)((t6-t3)&UWB_TS40_MASK));
+    CHECK(sim_rx_enable_count == rx_enables + 1U); /* only rearm after FINAL */
+    CHECK((sim_status & (DW_TXFRS_BIT | DW_RXFCG_BIT)) == 0U);
+
+    deliver_poll(UWB_FRAME_V2,0x61U,0U,ANCHOR_ADDR,7000000000ULL,0U);
+    Anchor_Task();
+    CHECK(s_state == ANCHOR_STATE_TX_RESPOND);
+    CHECK((sim_read_u32(DW_REG_ACK_RESP_T,0)&0xFFFFFU) == 0U);
+    return 0;
+}
+
 int main(void)
 {
     if (test_v1_exchange() || test_v2_exchange_txn_and_info()
-        || test_errors_and_foreign_traffic() || test_v3_burst_exchange())
+        || test_errors_and_foreign_traffic() || test_v3_burst_exchange()
+        || test_v3_long_final_window() || test_v3_coalesced_final_and_legacy_delay_restore())
         return 1;
     puts("anchor responder tests passed (v1/v2, txn, TLV, WAIT4RESP, errors, timeouts, "
          "v3 burst slots/delayed FINAL RX/Rb next cycle/late)");

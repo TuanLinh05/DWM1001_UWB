@@ -139,7 +139,7 @@ class SessionRecorderTests(unittest.TestCase):
         self.assertGreaterEqual(metadata["duration_s"], 0)
         self.assertEqual(
             metadata["host_filter"]["version"],
-            "median3-cv-alpha-beta-v3",
+            "median3-cv-alpha-beta-v4",
         )
         self.assertEqual(
             metadata["host_filter"]["model"],

@@ -190,7 +190,11 @@ int main(void)
         }
 
         uwb_health_service();
+#if defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
+        k_busy_wait(1U);
+#else
         k_busy_wait(10U);
+#endif
     }
 
     return 0;

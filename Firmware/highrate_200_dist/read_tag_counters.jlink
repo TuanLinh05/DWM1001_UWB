@@ -1,0 +1,14 @@
+ExitOnError 1
+connect
+savebin "D:\Drone Project\Github Clone UWB Test\Firmware\highrate_200_dist\tag_flash_readback.bin" 0x00000000 61288
+mem32 0x20000CA4 6
+mem32 0x200014F4 8
+mem32 0x200015F4 8
+mem32 0x20001574 8
+mem32 0x20001614 2
+mem32 0x20001634 1
+mem32 0x200018A4 1
+mem16 0x20001C76 5
+savebin "D:\Drone Project\Github Clone UWB Test\Firmware\highrate_200_dist\tag_uart_ring.bin" 0x20001F2C 1024
+mem32 0x20001634 1
+q

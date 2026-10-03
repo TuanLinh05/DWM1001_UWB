@@ -77,15 +77,24 @@ function Invoke-Python {
 $cTests = @(
     @{ Name = 'test_driver'; Role = 'TAG'; Config = 'Tag'
        Sources = @('sim', 'drivers\dw1000.c') }
+    @{ Name = 'test_driver_highrate'; Source = 'test_driver'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Defines = @('UWB_HIGH_RATE=1', 'UWB_BURST_REQUIRE_DS=1')
+       Sources = @('sim', 'drivers\dw1000.c') }
     @{ Name = 'test_uwb_frame'; Role = 'TAG'; Config = 'Tag'
        Sources = @('ranging\uwb_frame.c') }
     @{ Name = 'test_tag_state'; Role = 'TAG'; Config = 'Tag'
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     @{ Name = 'test_anchor_state'; Role = 'ANCHOR'; Config = 'Anchor_1'
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c') }
+    @{ Name = 'test_anchor_last_highrate'; Role = 'ANCHOR'; Config = 'STM32_Anchor_8'
+       Defines = @('UWB_HIGH_RATE=1', 'DW_SPI_FAST_MHZ=16U', 'UWB_BURST_REQUIRE_DS=1')
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c') }
     # One-to-many burst v3 on the TAG DevKit configuration: eight modelled
     # anchors with their own crystal offsets, Rb one cycle late.
     @{ Name = 'test_tag_burst'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
+    @{ Name = 'test_tag_burst_highrate'; Source = 'test_tag_burst'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Defines = @('UWB_HIGH_RATE=1', 'UWB_BURST_REQUIRE_DS=1')
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     # No role: the parser half of uwb_cmd.c must build without the executor.
     @{ Name = 'test_cmd_parser'; Role = ''; Config = 'Tag'
@@ -186,6 +195,11 @@ Invoke-Step -Name 'test_telemetry_golden.py' -Body {
 Invoke-Step -Name 'test_node_projects.py' -Body {
     Invoke-Python -Arguments @((Join-Path $PSScriptRoot 'test_node_projects.py')) `
                   -Message 'Node project validation failed'
+}
+
+Invoke-Step -Name 'test_highrate_package.py' -Body {
+    Invoke-Python -Arguments @((Join-Path $PSScriptRoot 'test_highrate_package.py')) `
+                  -Message 'High-rate HEX validation tests failed'
 }
 
 Invoke-Step -Name 'test_sniffer_tool.py' -Body {

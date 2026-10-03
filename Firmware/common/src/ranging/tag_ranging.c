@@ -262,6 +262,8 @@ volatile uint32_t response_ok_count   = 0;
 volatile uint32_t rx_timeout_count    = 0;
 volatile uint32_t rx_error_count      = 0;
 volatile uint32_t cycle_overrun_count = 0;
+volatile uint32_t tag_burst_rx_service_max_us = 0;
+volatile uint32_t tag_burst_publish_max_us = 0;
 volatile uint32_t anchor_success_count[TAG_NUM_ANCHORS] = {0};
 volatile uint32_t anchor_timeout_count[TAG_NUM_ANCHORS] = {0};
 volatile uint32_t anchor_rx_error_count[TAG_NUM_ANCHORS] = {0};
@@ -1411,6 +1413,7 @@ static uint8_t meters_to_mm_checked(double dist_m, int32_t *out_mm);
  * @retval Distance in mm (>=0), RANGE_COMPUTE_ERROR, or
  *         RANGE_CALIBRATION_MISSING.
  */
+#if !UWB_USE_DS_TWR || !UWB_BURST_REQUIRE_DS
 static int32_t compute_distance_ss_terms_mm(const uint8_t *resp_rx_ts_raw,
                                              uint32_t t_reply_ticks,
                                              int32_t carrier_integrator,
@@ -1463,6 +1466,7 @@ static int32_t compute_distance_ss_terms_mm(const uint8_t *resp_rx_ts_raw,
         ? TAG_MEAS_MODE_SS_FALLBACK : TAG_MEAS_MODE_SS;
     return apply_offset_and_clamp(dist_m, mode);
 }
+#endif
 
 static uint8_t meters_to_mm_checked(double dist_m, int32_t *out_mm)
 {
@@ -1815,17 +1819,21 @@ static int32_t compute_distance_ds_mm(uint32_t rb_ticks,
     uint64_t t4 = ts_to_u64(s_resp_rx_ts);
     uint64_t t5 = ts_to_u64(s_final_tx_ts);
 
-    double Ra = (double)((t4 - t1) & 0xFFFFFFFFFFULL);
-    double Db = (double)((t5 - t4) & 0xFFFFFFFFFFULL);
-    double Da = (double)s_da_from_resp;
-    double Rb = (double)rb_ticks;
-
-    double denom = Ra + Rb + Da + Db;
-    if (denom <= 0.0)
+    /* Keep the large cancelling products exact (altDS-TWR). Bound each
+     * interval to < 2^31 DTU (~33.6 ms), so signed 64-bit products cannot
+     * overflow. A stale/wrapped exchange is rejected before multiplication. */
+    const uint64_t ra = (t4 - t1) & 0xFFFFFFFFFFULL;
+    const uint64_t db = (t5 - t4) & 0xFFFFFFFFFFULL;
+    const uint64_t da = s_da_from_resp;
+    const uint64_t rb = rb_ticks;
+    if (ra == 0U || rb == 0U || da == 0U || db == 0U
+        || ra >= 0x80000000ULL || rb >= 0x80000000ULL
+        || da >= 0x80000000ULL || db >= 0x80000000ULL)
         return RANGE_COMPUTE_ERROR;
-    double tof = (Ra * Rb - Da * Db) / denom;
-    if (tof <= 0.0)
+    const int64_t numerator = (int64_t)(ra * rb) - (int64_t)(da * db);
+    if (numerator <= 0)
         return RANGE_COMPUTE_ERROR;
+    const double tof = (double)numerator / (double)(ra + rb + da + db);
 
     double dist_m = tof * UWB_DWT_TIME_UNIT_S * UWB_SPEED_OF_LIGHT;
 
@@ -1861,9 +1869,15 @@ static void build_and_send_final(uint16_t target_anchor)
  */
 static void finish_with_ss_fallback(void)
 {
+    note_anchor_ds_incomplete(s_current_anchor);
+#if UWB_BURST_REQUIRE_DS
+    s_meas.mode = TAG_MEAS_MODE_NONE;
+    s_meas.flags = 0U;
+    mark_anchor_result(s_current_anchor, 0U, TAG_ST_TIMEOUT, 0, 0, 0.0f);
+    advance_to_next_anchor();
+#else
     ds_fallback_count++;
     anchor_ds_fallback_count[s_current_anchor]++;
-    note_anchor_ds_incomplete(s_current_anchor);
     int32_t ss_uncalibrated_raw_mm = 0;
 
     /* C0: SS_FALLBACK phải resolve về profile SS, không dùng DS. */
@@ -1893,6 +1907,7 @@ static void finish_with_ss_fallback(void)
 
     publish_distance(dist_mm, &s_resp_diag, s_resp_fpp, TAG_ST_DS_FALLBACK);
     advance_to_next_anchor();
+#endif
 }
 #endif /* UWB_USE_DS_TWR */
 
@@ -2463,6 +2478,9 @@ static void burst_start_cycle(uint64_t now_us)
         tag_cycle_duration_us = (uint32_t)(period > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : period);
         if (tag_cycle_duration_us > tag_cycle_duration_max_us)
             tag_cycle_duration_max_us = tag_cycle_duration_us;
+        if (s_burst_timing.period_us != 0U
+            && period > (uint64_t)s_burst_timing.period_us + 100U)
+            cycle_overrun_count++;
         if (prev->seq != 0U)
             prev->period_us = tag_cycle_duration_us;
     }
@@ -2529,12 +2547,9 @@ static void burst_start_cycle(uint64_t now_us)
 }
 
 /**
- * A good frame in the RESP window. With `rearm` the receiver goes back on
- * first: the next RESP is one slot away, and its registers are overwritten
- * only once its own preamble has been received, long after this read. The
- * last RESP is read after the FINAL has been scheduled (rearm = 0): the RX
- * buffer, RX_TIME, diagnostics and carrier integrator keep the frame until
- * the next reception.
+ * Capture all metadata before rearming the single RX buffer. The direct
+ * backend and combined snapshot make this fit between short RESP slots;
+ * enabling RX before reading could mix two anchors' data and timestamps.
  */
 static void burst_read_resp(uint8_t rearm)
 {
@@ -2544,15 +2559,16 @@ static void burst_read_resp(uint8_t rearm)
     uint8_t rx_buf[MAX_RX_FRAME_LEN];
     DW1000_SignalDiag_t diag;
 
+    const uint16_t rx_len = DW1000_ReadRxFrame(rx_buf, MAX_RX_FRAME_LEN, rx_ts, &diag);
+    const int32_t ci = DW1000_ReadCarrierIntegrator();
     if (rearm)
     {
         DW1000_ClearAllStatus();
         DW1000_StartRx();
     }
-    DW1000_ReadRxTimestamp(rx_ts);
-    const uint16_t rx_len = DW1000_ReadRxData(rx_buf, MAX_RX_FRAME_LEN);
-    DW1000_ReadSignalDiag(&diag);
-    const int32_t ci = DW1000_ReadCarrierIntegrator();
+    const uint32_t service_us = MCU_ElapsedUs(start);
+    if (service_us > tag_burst_rx_service_max_us)
+        tag_burst_rx_service_max_us = service_us;
 
     UwbFrameHeader_t hdr;
     UwbResp_t resp;
@@ -2601,6 +2617,26 @@ static void burst_read_resp(uint8_t rearm)
     const uint32_t cost = MCU_ElapsedUs(start);
     if (cost > anchor_processing_max_us[idx])
         anchor_processing_max_us[idx] = cost;
+}
+
+/** Validate the pending last response before closing the receiver. */
+static uint8_t burst_pending_resp_matches(void)
+{
+    /* Do not stop RX for a foreign frame just because seven anchors have
+     * responded. Peek only the header/version/txn, keeping the FINAL arm
+     * ahead of the full timestamp/quality capture of the last RESP. */
+    uint8_t prefix[UWB_FRAME_HEADER_LEN + 2U];
+    const uint16_t rx_len = DW1000_PeekRxPrefix(prefix, sizeof(prefix));
+    UwbFrameHeader_t hdr;
+    TagBurstCycle_t *c = &s_bc[s_bc_cur];
+    if (rx_len < UWB_RESP_V3_MIN_RX_LEN
+        || !uwb_frame_parse_header(prefix, rx_len, DW_PAN_ID, &hdr)
+        || hdr.func != FRAME_RESP_FUNC || hdr.dst != TAG_ADDR
+        || prefix[UWB_FRAME_HEADER_LEN] != UWB_FRAME_V3
+        || prefix[UWB_FRAME_HEADER_LEN + 1U] != c->txn)
+        return 0U;
+    const int idx = anchor_index_of(hdr.src);
+    return idx >= 0 && ((c->mask >> idx) & 1U) && !c->resp[idx].present;
 }
 
 /** Schedule the broadcast FINAL at POLL + final_uus (delayed TX). */
@@ -2719,10 +2755,15 @@ static void burst_publish(const TagBurstCycle_t *prev, const TagBurstCycle_t *cu
         }
         else
         {
-            /* The anchor missed our FINAL (or we could not send it): SS with
-             * the carrier-integrator correction, flagged as a fallback. */
             anchor_report_timeout_count[idx]++;
             ds_report_timeout_count++;
+#if UWB_BURST_REQUIRE_DS
+            /* No complete DS exchange: publish an invalid NONE record.
+             * Calibration and filters cannot turn it into a usable range. */
+            mark_anchor_result(idx, 0U, TAG_ST_TIMEOUT, 0, 0, 0.0f);
+            note_anchor_ds_incomplete(idx);
+#else
+            /* Legacy profile permits explicitly flagged SS fallback. */
             ds_fallback_count++;
             anchor_ds_fallback_count[idx]++;
 
@@ -2742,6 +2783,7 @@ static void burst_publish(const TagBurstCycle_t *prev, const TagBurstCycle_t *cu
             {
                 mark_anchor_result(idx, 0U, TAG_ST_COMPUTE, 0, 0, 0.0f);
             }
+#endif
         }
 
         e->status = s_meas.status;
@@ -2771,6 +2813,7 @@ static void burst_publish(const TagBurstCycle_t *prev, const TagBurstCycle_t *cu
 /** FINAL done (or given up): bookkeeping, publish the previous cycle. */
 static void burst_finish_cycle(void)
 {
+    const McuCycleStamp_t publish_start = MCU_CycleNow();
     TagBurstCycle_t *c = &s_bc[s_bc_cur];
     TagBurstCycle_t *prev = &s_bc[s_bc_cur ^ 1U];
 
@@ -2807,6 +2850,9 @@ static void burst_finish_cycle(void)
         tag_cycle_ready = 1U;
     }
     s_cycle_end_cycle = MCU_CycleNow();
+    const uint32_t publish_us = MCU_ElapsedUs(publish_start);
+    if (publish_us > tag_burst_publish_max_us)
+        tag_burst_publish_max_us = publish_us;
     s_state = TAG_STATE_IDLE;
 }
 
@@ -2881,7 +2927,8 @@ static void burst_task(void)
                 const uint64_t status = DW1000_ReadStatus();
                 const DW1000_RxEvent_t event = DW1000_ClassifyRx(status);
                 if (event == DW_RX_EVENT_GOOD
-                    && (uint8_t)(s_burst_received + 1U) >= s_burst_expected)
+                    && (uint8_t)(s_burst_received + 1U) >= s_burst_expected
+                    && burst_pending_resp_matches())
                 {
                     /* Presumably the last RESP. The FINAL's air time is
                      * fixed, so it is scheduled before the ~9 register reads
@@ -3024,6 +3071,28 @@ uint8_t Tag_TelemetryWindow(void)
     }
 #endif
     return 1U;
+}
+
+uint32_t Tag_IdleBudgetUs(void)
+{
+#if UWB_USE_DS_TWR
+    if (s_burst_enabled && !s_pause_requested && !s_paused)
+    {
+        if (s_state != TAG_STATE_IDLE)
+            return 0U;
+        /* The next POLL waits for both the period and the anchor recovery gap. */
+        uint64_t due = s_burst_final_done_us + s_burst_timing.gap_us;
+        const uint64_t period_due = s_burst_last_poll_us + s_burst_timing.period_us;
+        if (period_due > due)
+            due = period_due;
+        const uint64_t now = uwb_platform_time_us64();
+        if (now >= due)
+            return 0U;
+        const uint64_t budget = due - now;
+        return budget > UINT32_MAX ? UINT32_MAX : (uint32_t)budget;
+    }
+#endif
+    return UINT32_MAX;
 }
 
 uint8_t Tag_AnchorBackedOff(uint8_t anchor_index)
@@ -3299,6 +3368,13 @@ void Tag_SetActiveAnchorMask(uint8_t mask)
         {
             s_track[i].valid = 0U;
             s_track[i].status = TAG_ST_TIMEOUT;
+        }
+        else if ((s_active_anchor_mask & bit) == 0U && (mask & bit) != 0U)
+        {
+            /* A previously disabled anchor may retain an offline streak
+             * from before it was masked out. Probe it immediately. */
+            anchor_response_timeout_streak[i] = 0U;
+            s_anchor_next_probe_cycle[i] = 0U;
         }
     }
     s_active_anchor_mask = mask;

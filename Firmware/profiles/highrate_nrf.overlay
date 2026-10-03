@@ -1,0 +1,6 @@
+/* Only build_highrate.ps1 uses this overlay. The application owns SPIM2;
+ * disabling the bus prevents Zephyr/nrfx from registering a second owner.
+ * The child DW1000's properties and board pinctrl remain available. */
+&spi2 {
+    status = "disabled";
+};

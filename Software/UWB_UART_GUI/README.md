@@ -64,13 +64,24 @@ thay đổi chỉ có hiệu lực tới khi TAG reboot, trừ khi lưu bằng
 firmware từ chối RANGE_MEAS nên nút bị khóa.
 
 **Chế độ burst (firmware 0.5).** TAG gửi `RANGE_BURST` (0x18), mỗi chu kỳ một
-frame cho cả tám anchor, khoảng 220 chu kỳ/s. GUI tách frame thành các bản ghi
+frame cho cả tám anchor. Tần số thực tế phải tính từ `cycle_seq` và timestamp
+của TAG; số cấu hình không xác nhận tốc độ đạt được. GUI tách frame thành các bản ghi
 RANGE_MEAS đánh số giống TAG, nên bảng, khe hở `meas_seq`, biểu đồ và `meas.csv`
 vẫn như trên. `meas_time_us` là thời điểm POLL của chu kỳ (chung cho mọi
 anchor). Raw được dựng lại từ offset trong INFO khi anchor đã calibration.
 Công suất phía anchor, `std_noise`, `fp_index` và slot không có trong gói burst:
 cột để trống hoặc 0. FP có độ phân giải 0,5 dB, NLOS Δ 0,1 dB, CI 0,25 ppm.
 Biểu đồ vẽ tối đa 2500 điểm mỗi đường; thống kê vẫn dùng mọi bản ghi.
+
+**Tần số đo, snapshot và topic ROS phải được kiểm tra riêng.** Trong burst mode,
+`RANGE` (0x01) là snapshot Live mỗi 200 ms, khoảng 5 Hz. `RANGE_BURST` (0x18)
+là kết quả từng chu kỳ DS, có độ trễ báo cáo một chu kỳ vì Rb nằm trong RESP
+tiếp theo. Node tích hợp cần bật feature RANGE_MEAS (bit 0x02) và giải mã 0x18;
+node chỉ đọc 0x01 sẽ chỉ nhận snapshot khoảng 5 Hz. GUI tự bật feature này cho
+phiên khi UART đủ nhanh, nên node ROS cũng cần kiểm tra DEVICE_INFO thay vì
+dựa vào trạng thái của lần chạy GUI trước. Bản ghi PC hoặc timer publish không
+thay thế phép đo mới: dùng `(boot_id, cycle_seq, anchor_id)`, timestamp TAG và
+các cờ mode/RADIO_OK/CAL_OK/VALID để kiểm tra tần số và chất lượng thực nhận.
 
 ### Bản đồ 2D / 3D
 

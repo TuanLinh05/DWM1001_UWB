@@ -1,0 +1,59 @@
+== test_driver
+== test_driver_highrate
+== test_uwb_frame
+== test_tag_state
+== test_anchor_state
+== test_anchor_last_highrate
+== test_tag_burst
+== test_tag_burst_highrate
+== test_cmd_parser
+== test_cmd_executor
+== test_settings
+== test_range_filter_median_gate
+== test_range_filter_cv_kalman
+== test_telemetry_golden
+== test_tag_motion
+== test_tag_motion_legacy
+== test_tag_motion_cv_kalman
+== test_telemetry_golden.py
+== test_node_projects.py
+== test_highrate_package.py
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK
+== test_sniffer_tool.py
+== gui_python_tests
+..................................................................................
+----------------------------------------------------------------------
+Ran 82 tests in 3.604s
+
+OK
+== gateway_parser
+telemetry protocol tests passed
+
+host tests passed: 23
+  - test_driver
+  - test_driver_highrate
+  - test_uwb_frame
+  - test_tag_state
+  - test_anchor_state
+  - test_anchor_last_highrate
+  - test_tag_burst
+  - test_tag_burst_highrate
+  - test_cmd_parser
+  - test_cmd_executor
+  - test_settings
+  - test_range_filter_median_gate
+  - test_range_filter_cv_kalman
+  - test_telemetry_golden
+  - test_tag_motion
+  - test_tag_motion_legacy
+  - test_tag_motion_cv_kalman
+  - test_telemetry_golden.py
+  - test_node_projects.py
+  - test_highrate_package.py
+  - test_sniffer_tool.py
+  - gui_python_tests
+  - gateway_parser

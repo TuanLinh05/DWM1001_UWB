@@ -19,8 +19,11 @@ hai loại phần cứng.
 | Nạp/debug | J-Link tích hợp trên devkit | Dùng cùng cáp USB cấp nguồn |
 
 SPI1 ngoài trên header Raspberry Pi được tắt vì firmware TAG không sử dụng.
-Mặc định chạy burst DS-TWR một-nhiều (~220 Hz cho mỗi anchor, `CHANGELOG.md`
-§0.5): cả tám anchor phải chạy firmware 0.5 (preamble 128). Build bản tuần tự
+Mặc định chạy burst DS-TWR một-nhiều với A1–A8 (mask `0xFF`, chu kỳ tối thiểu
+20 ms, khoảng 50 Hz cho mỗi anchor). Timing này đã được xác nhận trên phần cứng
+A1–A4; profile cũ ~220 Hz (`CHANGELOG.md` §0.5) bỏ lỡ RESP. Khi dùng đủ tám
+anchor, A1–A4 cần bản firmware có timeout FINAL theo lịch POLL để giữ DS cho
+những slot đầu. Các anchor phải dùng PHY preamble 128. Build bản tuần tự
 để so sánh: `-DUWB_TAG_BURST_DEFAULT=0U`, hoặc `uwb_command.py set-burst --mode
 sequential` khi đang chạy. DW1000 dùng SPIM (EasyDMA) trên SPI2.
 
@@ -53,6 +56,12 @@ runner `jlink` để sử dụng debugger tích hợp của devkit. File sinh ra
 ```text
 Firmware/Tag_DevKit/build/zephyr/zephyr.hex
 ```
+
+Với A1–A4 trong VS Code, mở đúng project `Firmware/Anchor_1` … `Anchor_4`, chọn
+cấu hình debug **Build, flash & debug via ST-LINK/OpenOCD** rồi mới bấm F5.
+Cấu hình **Attach via ST-LINK/OpenOCD (no flash)** chỉ gắn debugger vào firmware
+đang chạy và không nạp HEX. Sau khi debugger dừng tại `main`, bấm Continue để
+firmware chạy. HEX tương ứng nằm ở `Anchor_N/build/zephyr/zephyr.hex`.
 
 Có thể mở workspace `DWM1001-DEV-Tag.code-workspace` và dùng task
 `DWM1001-DEV: Build Tag` hoặc `DWM1001-DEV: Flash Tag via on-board J-Link`.
@@ -98,5 +107,14 @@ Không sao chép offset/antenna delay đã đo trên PCB tự phát triển sang
 - `include/uwb_app_config.h`: ghi rõ profile hiệu chuẩn riêng cho devkit, bộ lọc
   `MEDIAN_GATE` và telemetry mặc định có `RANGE_MEAS`.
 
-Các file driver, ranging, filter và telemetry còn lại là bản clone của TAG tại
-thời điểm chuyển đổi và không được thay đổi về thuật toán.
+Driver, ranging, filter và telemetry dùng chung tại `Firmware/common`.
+
+## Profile thử nghiệm 200 Hz DS-only
+
+Chạy `Firmware/scripts/build_highrate.ps1` từ root repository để build riêng
+TAG và tám anchor vào `Firmware/highrate_200_dist`. Profile dùng SPIM trực tiếp
+trên nRF52832, FPU, period 4500 µs (~222 Hz danh định), auto RX trên anchor
+và SPI 16 MHz trên STM32 A5–A8; không xuất SS fallback khi thiếu Rb.
+200 Hz là mục tiêu chưa được đo trên phần cứng. Xem hướng dẫn, image và cách
+đánh giá tại [highrate_200_dist/README.md](../highrate_200_dist/README.md).
+Script build thông thường vẫn chọn timing 50 Hz.

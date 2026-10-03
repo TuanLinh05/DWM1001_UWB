@@ -166,8 +166,8 @@ static uint8_t SPI_ApplyRuntimeRate(uint8_t rate_mhz)
 
 uint8_t DW1000_EnableFastSPI(void)
 {
-    /* The nRF52832 SPI instance is limited to 8 MHz. Initialization stays at
-     * 2 MHz; runtime switches to 8 MHz after LDE loading. */
+    /* Initialization remains 2 MHz. nRF52832 uses 8 MHz; the qualified
+     * STM32F103 SPI1 backend uses 16 MHz, within the DW1000 20 MHz limit. */
     if (SPI_ApplyRuntimeRate(DW_SPI_FAST_MHZ))
         return DW_SPI_FAST_MHZ;
     if (SPI_ApplyRuntimeRate(DW_SPI_INIT_MHZ))
@@ -569,6 +569,16 @@ void DW1000_StartTxWait4Resp(void)
     write_sys_ctrl((uint8_t)(DW_TXSTRT_BIT | DW_WAIT4RESP_BIT));
 }
 
+void DW1000_SetRxAfterTxDelay(uint32_t delay_uus)
+{
+    const uint32_t delay = delay_uus & 0x000FFFFFUL;
+    const uint8_t bytes[3] = {
+        (uint8_t)delay, (uint8_t)(delay >> 8), (uint8_t)(delay >> 16)
+    };
+    /* W4R_TIM occupies bits 19:0; do not overwrite ACK_TIM in byte 3. */
+    DW1000_WriteReg(DW_REG_ACK_RESP_T, bytes, sizeof(bytes));
+}
+
 void DW1000_SetDelayedTxTime(const uint8_t tx_time[5])
 {
     DW1000_WriteReg(DW_REG_DX_TIME, tx_time, 5);
@@ -718,6 +728,86 @@ void DW1000_ReadSignalDiag(DW1000_SignalDiag_t *diag)
     diag->fp_ampl1 = (uint16_t)(buf[2] | ((uint16_t)buf[3] << 8));
 }
 
+static void read_rx_timestamp_quality(const uint8_t finfo[4],
+                                       uint8_t ts[5], DW1000_SignalDiag_t *diag)
+{
+    uint8_t time[9] = {0};
+    uint8_t quality[8] = {0};
+    DW1000_ReadReg(DW_REG_RX_TIME, time, sizeof(time));
+    DW1000_ReadReg(DW_REG_RX_FQUAL, quality, sizeof(quality));
+    memcpy(ts, time, 5U);
+    diag->rxpacc = (uint16_t)((read_le32(finfo) >> 20) & 0x0FFFU);
+    diag->fp_index = (uint16_t)(time[5] | ((uint16_t)time[6] << 8));
+    diag->fp_ampl1 = (uint16_t)(time[7] | ((uint16_t)time[8] << 8));
+    diag->std_noise = (uint16_t)(quality[0] | ((uint16_t)quality[1] << 8));
+    diag->fp_ampl2 = (uint16_t)(quality[2] | ((uint16_t)quality[3] << 8));
+    diag->fp_ampl3 = (uint16_t)(quality[4] | ((uint16_t)quality[5] << 8));
+    diag->cir_pwr = (uint16_t)(quality[6] | ((uint16_t)quality[7] << 8));
+}
+
+uint16_t DW1000_ReadRxFrame(uint8_t *data, uint16_t max_len,
+                           uint8_t ts[5], DW1000_SignalDiag_t *diag)
+{
+    if (data == NULL || ts == NULL || diag == NULL)
+        return 0U;
+    uint8_t finfo[4] = {0};
+    const uint32_t errors = dw1000_spi_error_count;
+    DW1000_ReadReg(DW_REG_RX_FINFO, finfo, sizeof(finfo));
+    const uint16_t length = finfo[0] & 0x7FU;
+    if (length < 2U || length > max_len)
+        return 0U;
+    read_rx_timestamp_quality(finfo, ts, diag);
+    DW1000_ReadReg(DW_REG_RX_BUFFER, data, length);
+    return dw1000_spi_error_count == errors ? length : 0U;
+}
+
+uint16_t DW1000_PeekRxPrefix(uint8_t *data, uint16_t prefix_len)
+{
+    if (data == NULL || prefix_len == 0U || prefix_len > 125U)
+        return 0U;
+    uint8_t finfo[4] = {0};
+    const uint32_t errors = dw1000_spi_error_count;
+    DW1000_ReadReg(DW_REG_RX_FINFO, finfo, sizeof(finfo));
+    const uint16_t length = finfo[0] & 0x7FU;
+    if (length < prefix_len + 2U || (read_le32(finfo) & 0x3FFU) > 127U)
+        return 0U;
+    DW1000_ReadReg(DW_REG_RX_BUFFER, data, prefix_len);
+    return dw1000_spi_error_count == errors ? length : 0U;
+}
+
+void DW1000_ReadRxTimestampDiag(uint8_t ts[5], DW1000_SignalDiag_t *diag)
+{
+    uint8_t finfo[4] = {0};
+    DW1000_ReadReg(DW_REG_RX_FINFO, finfo, sizeof(finfo));
+    read_rx_timestamp_quality(finfo, ts, diag);
+}
+
+static float signal_log10f(float value)
+{
+#if defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
+    /* IEEE binary32 range reduction plus atanh series. On [1,2), y<=1/3;
+     * truncating after y^9 gives <0.00001 dB error in 10*log10, far below
+     * telemetry's 0.5 dB resolution. No change to DS timestamp arithmetic.
+     * Avoid software libm on F103; nRF's enabled FPU accelerates this too. */
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    const uint32_t exponent = (bits >> 23) & 0xFFU;
+    if ((bits & 0x80000000UL) == 0U && exponent != 0U && exponent != 255U)
+    {
+        const int32_t e = (int32_t)exponent - 127;
+        bits = (bits & 0x007FFFFFUL) | 0x3F800000UL;
+        float m;
+        memcpy(&m, &bits, sizeof(m));
+        const float y = (m - 1.0f) / (m + 1.0f);
+        const float y2 = y * y;
+        const float series = y * (1.0f + y2 * (1.0f/3.0f
+            + y2 * (1.0f/5.0f + y2 * (1.0f/7.0f + y2 * (1.0f/9.0f)))));
+        return (float)e * 0.301029995664f + 0.868588963807f * series;
+    }
+#endif
+    return log10f(value);
+}
+
 float DW1000_GetFirstPathPower(const DW1000_SignalDiag_t *diag)
 {
     if (diag->rxpacc == 0U)
@@ -732,7 +822,7 @@ float DW1000_GetFirstPathPower(const DW1000_SignalDiag_t *diag)
     if (num <= 0.0f)
         return -120.0f;
     /* UM 4.7.1: FP power = 10 log10((F1²+F2²+F3²)/N²) − A, A = 113.77 (PRF16). */
-    return 10.0f * log10f(num / (n * n)) - UWB_FPP_A_CONST;
+    return 10.0f * signal_log10f(num / (n * n)) - UWB_FPP_A_CONST;
 }
 
 float DW1000_GetRxPower(const DW1000_SignalDiag_t *diag)
@@ -742,7 +832,7 @@ float DW1000_GetRxPower(const DW1000_SignalDiag_t *diag)
 
     const float n = (float)diag->rxpacc;
     /* UM 4.7.2: RX level = 10 log10(C × 2^17 / N²) − A. */
-    return 10.0f * log10f(((float)diag->cir_pwr * 131072.0f) / (n * n))
+    return 10.0f * signal_log10f(((float)diag->cir_pwr * 131072.0f) / (n * n))
          - UWB_FPP_A_CONST;
 }
 
@@ -910,7 +1000,7 @@ uint32_t DW1000_VerifyConfig(void)
 #define DW_SUB_TC_SARC       0x00   /* SAR control */
 #define DW_SUB_TC_SARL       0x03   /* SAR latest readings: [0]=vbat, [1]=temp */
 
-void DW1000_ReadTempVbatRaw(uint8_t *temp_raw, uint8_t *vbat_raw)
+void DW1000_BeginTempVbat(void)
 {
     /* Sequence of Decawave dwt_readtempvbat(). */
     write_sub8(DW_REG_RF_CONF, DW_SUB_RF_TLD_BIAS, 0x80U);
@@ -918,8 +1008,10 @@ void DW1000_ReadTempVbatRaw(uint8_t *temp_raw, uint8_t *vbat_raw)
     write_sub8(DW_REG_RF_CONF, DW_SUB_RF_ADC_BIAS, 0x0FU);
     write_sub8(DW_REG_TX_CAL, DW_SUB_TC_SARC, 0x00U);
     write_sub8(DW_REG_TX_CAL, DW_SUB_TC_SARC, 0x01U);
-    uwb_platform_delay_ms(1);
+}
 
+void DW1000_FinishTempVbat(uint8_t *temp_raw, uint8_t *vbat_raw)
+{
     uint8_t sar[2] = {0};
     DW1000_ReadSubReg(DW_REG_TX_CAL, DW_SUB_TC_SARL, sar, 2);
     write_sub8(DW_REG_TX_CAL, DW_SUB_TC_SARC, 0x00U);
@@ -928,6 +1020,13 @@ void DW1000_ReadTempVbatRaw(uint8_t *temp_raw, uint8_t *vbat_raw)
         *vbat_raw = sar[0];
     if (temp_raw != NULL)
         *temp_raw = sar[1];
+}
+
+void DW1000_ReadTempVbatRaw(uint8_t *temp_raw, uint8_t *vbat_raw)
+{
+    DW1000_BeginTempVbat();
+    uwb_platform_delay_ms(1);
+    DW1000_FinishTempVbat(temp_raw, vbat_raw);
 }
 
 uint8_t DW1000_ReadTemperatureRaw(void)

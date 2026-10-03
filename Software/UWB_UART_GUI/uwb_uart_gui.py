@@ -1177,6 +1177,11 @@ class UwbGui:
             burst = (f" burst slot={message.burst_slot_uus}UUS "
                      f"final_late={message.burst_final_late} "
                      f"rec_drop={message.burst_record_drops}")
+            if message.strict_ds is not None:
+                burst += (f" strict_ds={int(message.strict_ds)} "
+                          f"spi_backend={message.spi_backend} "
+                          f"rx_max={message.burst_rx_service_max_us}us "
+                          f"publish_max={message.burst_publish_max_us}us")
         self._append_log(
             f"DIAG cycle={message.cycle_us}us max={message.cycle_max_us}us "
             f"overrun={message.cycle_overruns} recover={message.radio_recoveries} "

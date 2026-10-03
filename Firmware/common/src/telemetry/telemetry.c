@@ -587,6 +587,21 @@ void Telem_SendDiagSystem(void)
     off += telem_put_u16(&buf[off], timing.period_us);
     off += telem_put_u32(&buf[off], tag_burst_final_late_count);
     off += telem_put_u32(&buf[off], tag_burst_record_drops);
+#if defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
+    /* Optional extension v1; old GUI decoders accept the unchanged prefix. */
+    buf[off++] = 1U;
+#if defined(UWB_DIRECT_SPIM) && UWB_DIRECT_SPIM
+    buf[off++] = 1U; /* polled SPIM EasyDMA */
+#elif defined(UWB_DIRECT_STM32_SPI) && UWB_DIRECT_STM32_SPI
+    buf[off++] = 2U; /* polled STM32 SPI1 */
+#else
+    buf[off++] = 0U; /* Zephyr SPI */
+#endif
+    buf[off++] = UWB_BURST_REQUIRE_DS;
+    buf[off++] = 0U;
+    off += telem_put_u32(&buf[off], tag_burst_rx_service_max_us);
+    off += telem_put_u32(&buf[off], tag_burst_publish_max_us);
+#endif
 
     send_frame(buf, TELEM_TYPE_DIAG_SYSTEM, s_frame_seq++, (uint16_t)(off - TELEM_HDR_LEN));
 #endif
