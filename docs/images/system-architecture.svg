@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">DWM1001 UWB ranging and telemetry architecture</title>
+  <desc id="desc">Eight independently addressed DW1000 Anchors exchange DS-TWR messages with a DWM1001C Tag. The Tag sends 115200 baud binary telemetry to an ESP32-C3 UART-to-USB gateway or directly to a Python GUI through a 3.3 volt USB-UART adapter or a DevKit virtual COM port. The 50 hertz cycle is a design target; calibration is required for valid ranges.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0d9488"/>
+    </marker>
+    <style>
+      text { font-family: Segoe UI, Arial, sans-serif; fill: #17304b; }
+      .title { font-size: 34px; font-weight: 700; }
+      .subtitle { font-size: 21px; fill: #52677b; }
+      .heading { font-size: 25px; font-weight: 700; }
+      .body { font-size: 21px; }
+      .label { font-size: 19px; fill: #087e75; font-weight: 600; }
+      .small { font-size: 19px; fill: #52677b; }
+      .node { fill: #ffffff; stroke: #c8d8e4; stroke-width: 2; }
+      .route { fill: none; stroke: #0d9488; stroke-width: 4; }
+    </style>
+  </defs>
+  <rect width="1200" height="680" rx="24" fill="#f2f7fb"/>
+  <rect x="0" y="0" width="1200" height="10" fill="#0d9488"/>
+  <text x="50" y="65" class="title">From UWB time of flight to recorded range data</text>
+  <text x="50" y="103" class="subtitle">DWM1001C radio nodes · Zephyr firmware · Binary telemetry · Python GUI</text>
+  <rect x="50" y="175" width="250" height="380" rx="20" class="node"/>
+  <rect x="50" y="175" width="250" height="8" rx="4" fill="#0d9488"/>
+  <text x="76" y="224" class="heading">Anchors A1 to A8</text>
+  <text x="76" y="258" class="body">DWM1001C</text>
+  <text x="76" y="288" class="small">DW1000 + nRF52832</text>
+  <g fill="#e1f3f1" stroke="#72beb6" stroke-width="1.5">
+    <rect x="76" y="317" width="86" height="45" rx="10"/>
+    <rect x="180" y="317" width="86" height="45" rx="10"/>
+    <rect x="76" y="375" width="86" height="45" rx="10"/>
+    <rect x="180" y="375" width="86" height="45" rx="10"/>
+  </g>
+  <g font-size="20" font-weight="600" text-anchor="middle">
+    <text x="119" y="346">A1 · A2</text><text x="223" y="346">A3 · A4</text>
+    <text x="119" y="404">A5 · A6</text><text x="223" y="404">A7 · A8</text>
+  </g>
+  <text x="76" y="463" class="body">Unique addresses</text>
+  <text x="76" y="494" class="small">0x0001 to 0x0008</text>
+  <text x="76" y="527" class="small">Independent responders</text>
+  <rect x="400" y="175" width="270" height="180" rx="20" class="node"/>
+  <rect x="400" y="175" width="270" height="8" rx="4" fill="#17304b"/>
+  <text x="427" y="224" class="heading">DWM1001C Tag</text>
+  <text x="427" y="259" class="body">Zephyr + DW1000 driver</text>
+  <text x="427" y="291" class="small">Sequential A1 to A8 slots</text>
+  <text x="427" y="323" class="small">Custom carrier or DevKit</text>
+  <path d="M 310 267 H 389" class="route" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="350" y="217" class="label" text-anchor="middle">DS-TWR</text>
+  <text x="350" y="243" class="small" text-anchor="middle">UWB</text>
+  <rect x="400" y="423" width="270" height="132" rx="20" class="node"/>
+  <rect x="400" y="423" width="270" height="8" rx="4" fill="#0d9488"/>
+  <text x="427" y="469" class="heading">ESP32-C3 gateway</text>
+  <text x="427" y="503" class="body">UART frame validation</text>
+  <text x="427" y="534" class="small">Optional USB bridge</text>
+  <path d="M 535 365 V 412" class="route" marker-end="url(#arrow)"/>
+  <text x="554" y="393" class="label">115200 baud · 8N1</text>
+  <rect x="855" y="175" width="295" height="380" rx="20" class="node"/>
+  <rect x="855" y="175" width="295" height="8" rx="4" fill="#17304b"/>
+  <text x="882" y="224" class="heading">Python GUI</text>
+  <text x="882" y="258" class="body">Tkinter + PySerial</text>
+  <path d="M 882 280 H 1123" stroke="#dce5ed" stroke-width="2"/>
+  <text x="882" y="319" class="body">Live range and quality</text>
+  <text x="882" y="359" class="body">Raw / host / FW traces</text>
+  <text x="882" y="399" class="body">Record and analyze</text>
+  <text x="882" y="439" class="body">Calibration capture</text>
+  <text x="882" y="479" class="body">ENU 2D / 3D solver</text>
+  <text x="882" y="527" class="small">Position uses valid ranges</text>
+  <path d="M 680 272 H 844" class="route" marker-end="url(#arrow)"/>
+  <text x="762" y="220" class="label" text-anchor="middle">3.3 V USB-UART</text>
+  <text x="762" y="247" class="small" text-anchor="middle">or DevKit VCOM</text>
+  <path d="M 680 487 H 844" class="route" marker-end="url(#arrow)"/>
+  <text x="762" y="456" class="label" text-anchor="middle">USB Serial/JTAG</text>
+  <rect x="50" y="589" width="1100" height="56" rx="14" fill="#17304b"/>
+  <text x="74" y="624" font-size="21" style="fill: #ffffff;">20 ms / 50 Hz is the cycle target. Calibrate each physical pair before accepting its range.</text>
+</svg>
