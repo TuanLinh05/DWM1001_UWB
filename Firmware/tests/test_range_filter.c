@@ -1,5 +1,5 @@
 /*
- * Unit tests of the C9 range conditioner (common/src/filters/range_filter.c)
+ * Unit tests of the C9 range conditioner (common/filters/range_filter.c)
  * on its own, without the TAG state machine. Built once per mode:
  *   -DUWB_RANGE_FILTER_MODE=1U  MEDIAN_GATE
  *   -DUWB_RANGE_FILTER_MODE=2U  CV_KALMAN_V2

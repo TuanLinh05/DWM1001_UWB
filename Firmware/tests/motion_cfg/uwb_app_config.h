@@ -18,7 +18,7 @@
  * scheme the DevKit now boots in has its own test (test_tag_burst.c). */
 #define UWB_TAG_BURST_DEFAULT 0U
 
-#include "../../Tag_DevKit/include/uwb_app_config.h"
+#include "../../nodes/tag/Tag_DevKit/include/uwb_app_config.h"
 
 #ifdef MOTION_LEGACY_ADAPTIVE_MODE
 #undef UWB_LEGACY_ADAPTIVE_MODE

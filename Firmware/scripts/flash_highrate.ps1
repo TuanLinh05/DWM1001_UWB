@@ -20,8 +20,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$firmwareRoot = Split-Path $PSScriptRoot -Parent
-$packageRoot = Join-Path $firmwareRoot 'highrate_200_dist'
+. (Join-Path $PSScriptRoot 'uwb_nodes.ps1')
+$firmwareRoot = $script:UwbFirmwareRoot
+$packageRoot = Join-Path $firmwareRoot 'release\highrate_200'
 $Node = $Node.ToUpperInvariant()
 $fileName = if ($Node -eq 'TAG') { 'TAG_DWM1001_DEV.hex' } else { "${Node}_DWM1001C_nRF52832.hex" }
 $hexPath = (Resolve-Path -LiteralPath (Join-Path $packageRoot $fileName)).Path
@@ -37,7 +38,7 @@ Write-Host "SHA256: $hash (matches manifest)"
 Write-Host 'Connect only the intended target to the selected programmer.'
 
 if ($Node -eq 'TAG') {
-    . (Join-Path $firmwareRoot 'Tag_DevKit\scripts\ncs_env.ps1')
+    . (Join-Path $PSScriptRoot 'ncs_env.ps1')
     $resolvedJLinkRoot = Find-JLinkRoot -RequestedRoot $JLinkRoot
     if (-not $resolvedJLinkRoot) { throw 'JLink.exe not found. Specify -JLinkRoot or set JLINK_ROOT.' }
     $executable = Join-Path $resolvedJLinkRoot 'JLink.exe'
@@ -68,7 +69,7 @@ if ($Node -eq 'TAG') {
     . (Join-Path $PSScriptRoot 'ncs_env.ps1')
     $openOcd = Find-OpenOcdEnvironment -RequestedExecutable $OpenOcdPath -RequestedScripts $OpenOcdScripts
     $anchorNumber = $Node.Substring(1)
-    $config = (Resolve-Path -LiteralPath (Join-Path $firmwareRoot "Anchor_${anchorNumber}\.vscode\openocd-stlink.cfg")).Path
+    $config = (Resolve-Path -LiteralPath (Join-Path (Get-UwbNode "Anchor_${anchorNumber}").Dir '.vscode\openocd-stlink.cfg')).Path
     $tclHexPath = $hexPath.Replace('\', '/')
     if ($tclHexPath -match '[{}\r\n]') { throw 'HEX path contains unsupported Tcl characters.' }
     $programCommand = "program {$tclHexPath} verify reset exit"

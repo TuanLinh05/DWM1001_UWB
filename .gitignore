@@ -60,9 +60,8 @@ dist/
 *.egg-info/
 
 # Flashable eight-anchor release images are intentional artifacts.
-!/Firmware/stm32_anchor/dist/
-!/Firmware/stm32_anchor/dist/*.hex
-!/Firmware/anchor_8_dist/*.hex
+!/Firmware/release/stm32_anchor/*.hex
+!/Firmware/release/anchor_8/*.hex
 
 # Runtime captures, logs and local GUI state
 *.log
@@ -77,7 +76,7 @@ dist/
 
 # Host-test executables
 /Firmware/tests/*.exe
-/Firmware/ESP32C3_Gateway/tests/*.exe
+/Firmware/gateway/ESP32C3_Gateway/tests/*.exe
 
 # Downloaded third-party binaries and vendor documents kept only for local use
 /tools/

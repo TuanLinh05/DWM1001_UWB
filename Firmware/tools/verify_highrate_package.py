@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import struct
 
+from uwb_layout import node_dir
+
 FIRMWARE = Path(__file__).resolve().parents[1]
 NODES = [("TAG", "Tag_DevKit", "TAG_DWM1001_DEV.hex")]
 NODES += [(f"A{i}", f"Anchor_{i}", f"A{i}_DWM1001C_nRF52832.hex") for i in range(1, 5)]
@@ -81,7 +83,7 @@ def verify(firmware: Path, package: Path) -> list[dict]:
         row = next(r for r in manifest if r["File"] == filename)
         require(digest == row["SHA256"].lower() and path.stat().st_size == int(row["Bytes"]),
                 f"{node}: manifest mismatch")
-        build = firmware / project / "build_highrate"
+        build = node_dir(project, firmware) / "build_highrate"
         require(path.read_bytes() == (build / "zephyr/zephyr.hex").read_bytes(),
                 f"{node}: package differs from build")
         ninja = (build / "build.ninja").read_text(encoding="utf-8")
@@ -128,7 +130,7 @@ def main() -> None:
     parser.add_argument("--package", type=Path)
     parser.add_argument("--json", type=Path)
     args = parser.parse_args()
-    rows = verify(args.firmware, args.package or args.firmware / "highrate_200_dist")
+    rows = verify(args.firmware, args.package or args.firmware / "release" / "highrate_200")
     result = dict(status="PASS", hardware_frequency_verified=False, nodes=rows)
     if args.json:
         args.json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

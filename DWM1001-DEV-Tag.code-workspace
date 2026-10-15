@@ -1,7 +1,7 @@
 {
   "folders": [
     {
-      "path": "Firmware/Tag_DevKit"
+      "path": "Firmware/nodes/tag/Tag_DevKit"
     }
   ],
   "settings": {

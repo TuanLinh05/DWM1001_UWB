@@ -10,8 +10,9 @@
 param([switch]$Build)
 
 $ErrorActionPreference = 'Stop'
-$firmwareRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$dist = [IO.Path]::GetFullPath((Join-Path $firmwareRoot 'anchor_8_dist'))
+. (Join-Path $PSScriptRoot 'uwb_nodes.ps1')
+$firmwareRoot = $script:UwbFirmwareRoot
+$dist = [IO.Path]::GetFullPath((Join-Path $firmwareRoot 'release\anchor_8'))
 $rootPrefix = [IO.Path]::GetFullPath($firmwareRoot).TrimEnd('\') + '\'
 if (-not $dist.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Distribution directory escapes Firmware: '$dist'."
@@ -32,12 +33,12 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $manifest = @()
 foreach ($number in 1..8) {
     if ($number -le 4) {
-        $source = Join-Path $firmwareRoot "Anchor_$number\build\zephyr\zephyr.hex"
+        $source = Join-Path (Get-UwbNode "Anchor_$number").Dir 'build\zephyr\zephyr.hex'
         $fileName = "A${number}_DWM1001C_nRF52832.hex"
         $mcu = 'nRF52832'
         $programmer = 'ST-LINK/OpenOCD'
     } else {
-        $source = Join-Path $firmwareRoot "stm32_anchor\dist\anchor_${number}_stm32f103.hex"
+        $source = Join-Path $firmwareRoot "release\stm32_anchor\anchor_${number}_stm32f103.hex"
         $fileName = "A${number}_STM32F103C8.hex"
         $mcu = 'STM32F103C8T6'
         $programmer = 'ST-LINK Utility'

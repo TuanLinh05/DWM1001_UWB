@@ -7,7 +7,7 @@
 #include "uwb_cmd.h"
 #include "uwb_health.h"
 #include "uwb_settings.h"
-#include "../common/src/ranging/tag_ranging.c"
+#include "../common/ranging/tag_ranging.c"
 #include "telemetry.h"
 
 #define CHECK(cond) do { if (!(cond)) { \

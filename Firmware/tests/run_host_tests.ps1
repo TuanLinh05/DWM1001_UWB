@@ -29,7 +29,10 @@ $ErrorActionPreference = 'Stop'
 
 $firmwareRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $firmwareRoot
-$commonSource = Join-Path $firmwareRoot 'common\src'
+$commonSource = Join-Path $firmwareRoot 'common'
+# Node paths (Config = node name) come from the same registry as the build scripts.
+. (Join-Path $firmwareRoot 'scripts\uwb_nodes.ps1')
+$commonModules = @('app', 'drivers', 'platform', 'ranging', 'filters', 'telemetry', 'services', 'config')
 $guiTests = Join-Path $repoRoot 'Software\UWB_UART_GUI\tests'
 $outputDirectory = Join-Path ([IO.Path]::GetTempPath()) 'uwb-firmware-host-tests'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
@@ -80,6 +83,9 @@ $cTests = @(
     @{ Name = 'test_driver_highrate'; Source = 'test_driver'; Role = 'TAG'; Config = 'Tag_DevKit'
        Defines = @('UWB_HIGH_RATE=1', 'UWB_BURST_REQUIRE_DS=1')
        Sources = @('sim', 'drivers\dw1000.c') }
+    @{ Name = 'test_driver_highrate_300'; Source = 'test_driver'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Defines = @('UWB_HIGH_RATE_300=1', 'UWB_HIGH_RATE=1', 'UWB_PHY_PREAMBLE=64U', 'UWB_BURST_REQUIRE_DS=1')
+       Sources = @('sim', 'drivers\dw1000.c') }
     @{ Name = 'test_uwb_frame'; Role = 'TAG'; Config = 'Tag'
        Sources = @('ranging\uwb_frame.c') }
     @{ Name = 'test_tag_state'; Role = 'TAG'; Config = 'Tag'
@@ -96,14 +102,17 @@ $cTests = @(
     @{ Name = 'test_tag_burst_highrate'; Source = 'test_tag_burst'; Role = 'TAG'; Config = 'Tag_DevKit'
        Defines = @('UWB_HIGH_RATE=1', 'UWB_BURST_REQUIRE_DS=1')
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
+    @{ Name = 'test_tag_burst_highrate_300'; Source = 'test_tag_burst'; Role = 'TAG'; Config = 'Tag_DevKit'
+       Defines = @('UWB_HIGH_RATE_300=1', 'UWB_HIGH_RATE=1', 'UWB_PHY_PREAMBLE=64U', 'UWB_BURST_REQUIRE_DS=1')
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c') }
     # No role: the parser half of uwb_cmd.c must build without the executor.
     @{ Name = 'test_cmd_parser'; Role = ''; Config = 'Tag'
-       Sources = @('app\uwb_cmd.c', 'telemetry\telemetry_frame.c') }
+       Sources = @('services\uwb_cmd.c', 'telemetry\telemetry_frame.c') }
     @{ Name = 'test_cmd_executor'; Role = 'TAG'; Config = 'Tag'
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c',
-                    'app\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c') }
+                    'services\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c') }
     @{ Name = 'test_settings'; Role = 'TAG'; Config = 'Tag'
-       Sources = @('app\uwb_settings.c') }
+       Sources = @('services\uwb_settings.c') }
     # The C9 range conditioner on its own, once per mode (no Legacy: the
     # Legacy path lives in tag_ranging.c and test_tag_state covers it).
     @{ Name = 'test_range_filter_median_gate'; Source = 'test_range_filter'; Role = ''
@@ -116,7 +125,7 @@ $cTests = @(
     # executor out of uwb_cmd.c keeps the golden binary free of Zephyr stubs.
     @{ Name = 'test_telemetry_golden'; Role = ''; Config = 'Tag'
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c',
-                   'app\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c')
+                   'services\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c')
        Arguments = @((Join-Path $outputDirectory 'golden.bin')) }
     # Motion: the real TAG pipeline against a radio-channel model (trajectory,
     # drifting 40-bit clocks, NLOS, dropouts, 8-anchor flight), built once per
@@ -145,16 +154,19 @@ function Build-CTest {
     $configInclude = if ($Test.ContainsKey('IncludeDir')) {
         Join-Path $firmwareRoot $Test.IncludeDir
     } else {
-        Join-Path $firmwareRoot "$($Test.Config)\include"
+        Join-Path (Get-UwbNode $Test.Config).Dir 'include'
     }
     $arguments = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-Wshadow', '-O1')
     if ($Test.Role) { $arguments += "-DUWB_ROLE_$($Test.Role)" }
     if ($Test.ContainsKey('Defines')) {
         foreach ($define in $Test.Defines) { $arguments += "-D$define" }
     }
-    foreach ($include in @((Join-Path $firmwareRoot 'common\include'),
-                           $configInclude,
-                           $PSScriptRoot)) {
+    # Node config first (uwb_app_config.h), then every common module, then
+    # tests\ (simulator + Zephyr stubs) - same order as uwb_node.cmake.
+    $includes = @($configInclude) +
+                @($commonModules | ForEach-Object { Join-Path $commonSource $_ }) +
+                @($PSScriptRoot)
+    foreach ($include in $includes) {
         $arguments += @('-I', $include)
     }
     $arguments += (Join-Path $PSScriptRoot "$source.c")
@@ -214,7 +226,7 @@ Invoke-Step -Name 'gui_python_tests' -Body {
 
 if (-not $SkipGateway) {
     Invoke-Step -Name 'gateway_parser' -Body {
-        & (Join-Path $firmwareRoot 'ESP32C3_Gateway\tests\run_host_test.ps1')
+        & (Join-Path $firmwareRoot 'gateway\ESP32C3_Gateway\tests\run_host_test.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'ESP32-C3 gateway parser test failed.' }
     }
 }

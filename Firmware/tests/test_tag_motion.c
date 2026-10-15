@@ -38,7 +38,7 @@
 
 #include "dw1000_sim.h"
 #include "anchor_ranging.h"   /* ANCHOR_REPLY_DELAY_UUS: the anchors' reply rule */
-#include "../common/src/ranging/tag_ranging.c"
+#include "../common/ranging/tag_ranging.c"
 
 /* ========================================================================== */
 /*                     PHYSICAL AND PHY MODEL                                 */

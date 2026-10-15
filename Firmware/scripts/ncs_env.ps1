@@ -47,14 +47,39 @@ function Find-NcsToolchainRoot {
     throw 'The nRF Connect SDK toolchain was not found. Set NCS_TOOLCHAIN_ROOT to the toolchain bundle directory.'
 }
 
+function Find-JLinkRoot {
+    param([string]$RequestedRoot)
+
+    $candidates = @(@($RequestedRoot, $env:JLINK_ROOT, 'E:\software\SEGGER\JLink_V924a') |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+    foreach ($base in @('E:\software\SEGGER', 'C:\Program Files\SEGGER', 'C:\Program Files (x86)\SEGGER')) {
+        if (Test-Path -LiteralPath $base) {
+            $candidates += Get-ChildItem -LiteralPath $base -Directory -Filter 'JLink*' |
+                Sort-Object LastWriteTime -Descending |
+                ForEach-Object { $_.FullName }
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'JLink.exe')) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
 function Initialize-NcsEnvironment {
     param(
         [string]$SdkRoot,
-        [string]$ToolchainRoot
+        [string]$ToolchainRoot,
+        [string]$JLinkRoot
     )
 
     $sdk = Find-NcsSdkRoot -RequestedRoot $SdkRoot
     $toolchain = Find-NcsToolchainRoot -SdkRoot $sdk -RequestedRoot $ToolchainRoot
+    $jlink = Find-JLinkRoot -RequestedRoot $JLinkRoot
     $prependPaths = @(
         $toolchain,
         (Join-Path $toolchain 'mingw64\bin'),
@@ -66,6 +91,9 @@ function Initialize-NcsEnvironment {
         (Join-Path $toolchain 'opt\zephyr-sdk\gnu\arm-zephyr-eabi\bin'),
         (Join-Path $toolchain 'opt\zephyr-sdk\gnu\riscv64-zephyr-elf\bin')
     )
+    if ($null -ne $jlink) {
+        $prependPaths += $jlink
+    }
 
     $env:PATH = (($prependPaths + @($env:PATH)) -join ';')
     $env:PYTHONPATH = @(
@@ -87,6 +115,7 @@ function Initialize-NcsEnvironment {
     return [pscustomobject]@{
         SdkRoot = $sdk
         ToolchainRoot = $toolchain
+        JLinkRoot = $jlink
         West = $west
         Gdb = Join-Path $toolchain 'opt\zephyr-sdk\gnu\arm-zephyr-eabi\bin\arm-zephyr-eabi-gdb.exe'
     }

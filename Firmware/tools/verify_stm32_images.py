@@ -15,6 +15,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from uwb_layout import node_dir
+
 
 FIRMWARE = Path(__file__).resolve().parents[1]
 FLASH_BASE = 0x08000000
@@ -69,9 +71,9 @@ def _integer(text: str) -> int:
 
 def verify_sources(firmware: Path = FIRMWARE) -> None:
     """Guard board/ID assignment and radio-profile parity with A1–A4."""
-    reference = _defines(firmware / "Anchor_1/include/uwb_app_config.h")
+    reference = _defines(node_dir("Anchor_1", firmware) / "include/uwb_app_config.h")
     for anchor_id in ANCHOR_IDS:
-        project = firmware / f"STM32_Anchor_{anchor_id}"
+        project = node_dir(f"STM32_Anchor_{anchor_id}", firmware)
         config = _defines(project / "include/uwb_app_config.h")
         address = config.get("ANCHOR_ADDR", "")
         if address == "((uint16_t)UWB_ANCHOR_ID)":
@@ -177,7 +179,7 @@ def verify_images(firmware: Path = FIRMWARE) -> dict[int, ImageInfo]:
     verify_sources(firmware)
     result = {}
     for anchor_id in ANCHOR_IDS:
-        path = firmware / "stm32_anchor/dist" / f"anchor_{anchor_id}_stm32f103.hex"
+        path = firmware / "release/stm32_anchor" / f"anchor_{anchor_id}_stm32f103.hex"
         result[anchor_id] = parse_hex(path)
     digests = [info.sha256 for info in result.values()]
     if len(set(digests)) != len(digests):

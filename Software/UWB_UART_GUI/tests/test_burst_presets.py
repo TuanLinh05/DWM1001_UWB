@@ -14,7 +14,7 @@ class BurstPresetTests(unittest.TestCase):
         self.assertEqual(preset["period_us"], 4500)
         self.assertGreater(1_000_000 / preset["period_us"], 220)
         # The CLI settings match the high-rate firmware boot profile.
-        config = Path(__file__).resolve().parents[3] / "Firmware/Tag_DevKit/include/uwb_app_config.h"
+        config = Path(__file__).resolve().parents[3] / "Firmware/nodes/tag/Tag_DevKit/include/uwb_app_config.h"
         text = config.read_text(encoding="utf-8")
         for macro, field in (("BASE_UUS", "base_uus"), ("SLOT_UUS", "slot_uus"),
                              ("FINAL_MARGIN_UUS", "final_margin_uus"),

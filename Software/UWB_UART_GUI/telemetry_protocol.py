@@ -59,7 +59,7 @@ BURST_RANGE_NONE = 0xFFFF
 BURST_HEADER_SIZE = 22
 BURST_ENTRY_SIZE = 8
 
-# Host -> TAG commands (Firmware/common/include/uwb_cmd.h).
+# Host -> TAG commands (Firmware/common/services/uwb_cmd.h).
 CMD_PING = 0x01
 CMD_GET_DEVICE_INFO = 0x02
 CMD_PAUSE = 0x03

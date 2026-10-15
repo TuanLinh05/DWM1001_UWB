@@ -4,7 +4,7 @@
 
 #include "dw1000_sim.h"
 #include "uwb_health.h"
-#include "../common/src/ranging/anchor_ranging.c"
+#include "../common/ranging/anchor_ranging.c"
 
 #define CHECK(cond) do { if (!(cond)) { \
     fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \

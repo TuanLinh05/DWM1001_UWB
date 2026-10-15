@@ -13,6 +13,39 @@ nghiệm thu trên board thật.
 
 ## 0. Cập nhật sau bản v2
 
+### 0.6 — 2026-10-03: Tái cấu trúc thư mục Firmware (không đổi mã firmware)
+
+Chỉ di chuyển file và sửa script/test/tài liệu; không đổi logic C. Đường dẫn
+trong các mục cũ bên dưới là đường dẫn của thời điểm đó — bảng ánh xạ:
+
+| Cũ | Mới |
+|---|---|
+| `common/include/*.h`, `common/src/<dir>/*.c` | `common/<module>/` (.c và .h cạnh nhau): `app`, `drivers`, `platform`, `ranging`, `filters`, `telemetry`, `services`, `config` |
+| `common/src/app/uwb_cmd.c`, `uwb_settings.c`, `uwb_health.c` | `common/services/` (`app/` chỉ còn `main_*.c`) |
+| `common/include/uwb_calibration.h` | `common/config/uwb_calibration.h` |
+| `Tag/`, `Tag_DevKit/` | `nodes/tag/Tag/`, `nodes/tag/Tag_DevKit/` |
+| `Anchor_1..8/` | `nodes/anchors/nrf/Anchor_1..8/` |
+| `STM32_Anchor_5..8/`, `stm32_anchor/README.md` | `nodes/anchors/stm32/` |
+| `Sniffer_DevKit/` | `nodes/sniffer/Sniffer_DevKit/` |
+| `ESP32C3_Gateway/` | `gateway/ESP32C3_Gateway/` |
+| `anchor_8_dist/`, `stm32_anchor/dist/`, `highrate_200_dist/` | `release/anchor_8/`, `release/stm32_anchor/`, `release/highrate_200/` |
+| `*_CHECKLIST.md`, `ANCHOR_DEPLOYMENT.md`, `DEPLOYMENT_MANIFEST.md`, `HARDWARE_COMPATIBILITY.md` | `docs/` |
+
+- `scripts/uwb_nodes.ps1`: registry duy nhất tên node → đường dẫn/board/cách
+  flash, cùng helper map ổ `U:` và `west build` (trước đây copy trong ~20 script).
+  `tools/uwb_layout.py` là bản Python tương ứng; `test_node_projects.py` kiểm
+  hai registry khớp nhau và khớp thư mục.
+- `scripts/node.ps1 -Project <tên> -Action Build|Flash`; `scripts/build.ps1` /
+  `flash.ps1` của từng node chỉ còn là wrapper (task VS Code không đổi).
+- Gộp ba bản `ncs_env.ps1` thành `scripts/ncs_env.ps1` (thêm dò J-Link).
+- Project `Tag` (PCB) nay tự nạp môi trường NCS như các node khác, không cần
+  `west` có sẵn trong PATH.
+- Hash cấu hình của bản high-rate thay đổi vì đường dẫn nguồn nằm trong dữ liệu
+  hash; HEX trong `release/highrate_200/` không bị build lại.
+- Dọn: thư mục `build*/`, `__pycache__`, log build tạm, `build_staging_*`,
+  `build_attempt1_20261002.txt` và bản `previous_20260930_spim_init_fault`
+  (đã đánh dấu DO_NOT_FLASH).
+
 ### 0.5 — 2026-09-26: Burst DS-TWR một-nhiều (~220 Hz cho cả 8 anchor)
 
 Thay đổi RF và giao thức **có chủ đích**, áp cho mọi node. Chưa nạp lên phần

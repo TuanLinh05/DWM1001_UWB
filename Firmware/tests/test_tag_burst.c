@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include "dw1000_sim.h"
-#include "../common/src/ranging/tag_ranging.c"
+#include "../common/ranging/tag_ranging.c"
 
 #define CHECK(cond) do { if (!(cond)) { \
     fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \

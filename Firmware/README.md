@@ -12,36 +12,75 @@ PAC 8. Chi tiết:
 `CHANGELOG.md` §0.5.
 
 > **Phần cứng hiện có (xác nhận 2026-09-23):** A1–A4 là DWM1001C; A5–A8 là
-> STM32F103 + DW1000. A5–A8 nay có project Zephyr `STM32_Anchor_5..8` dùng
-> giao thức v2 và HEX cho ST-LINK Utility. Các project `Anchor_5..Anchor_8`
+> STM32F103 + DW1000. A5–A8 dùng project Zephyr `nodes/anchors/stm32/STM32_Anchor_5..8`
+> (giao thức v2, HEX cho ST-LINK Utility). Các project `nodes/anchors/nrf/Anchor_5..8`
 > cũ vẫn là target nRF52832. Bản STM32 đã build và kiểm file; còn cần thử
-> trên board thật. Xem `stm32_anchor/README.md`.
+> trên board thật. Xem `nodes/anchors/stm32/README.md`.
 
 ## 1. Bố cục
 
 ```
 Firmware/
-├── common/                  ← toàn bộ mã dùng chung (nguồn duy nhất)
-│   ├── include/             ← header chung
-│   ├── src/                 ← drivers, ranging, app, telemetry, filters, platform
-│   └── cmake/uwb_node.cmake ← uwb_node_setup(TAG|ANCHOR|SNIFFER) + build id
-├── Tag/                     ← DWM1001C trên PCB RangingSystemClassic
-├── Tag_DevKit/              ← cùng vai trò TAG, chạy trên DWM1001-DEV (J-Link)
-├── Anchor_1 … Anchor_8/     ← tám responder, short address 0x0001..0x0008
-├── STM32_Anchor_5 … 8/      ← bốn responder cho board STM32F103 vật lý
-├── stm32_anchor/dist/       ← HEX STM32 A5–A8 đã kiểm tra
-├── anchor_8_dist/           ← bộ tám HEX theo đúng board vật lý + manifest
-├── Sniffer_DevKit/          ← chỉ nghe, đẩy mọi frame kèm timestamp DW1000
-├── ESP32C3_Gateway/         ← ESP-IDF gateway UART ↔ USB
-├── tests/                   ← test host (gcc + mô phỏng thanh ghi DW1000)
-├── tools/uwb_sniffer.py     ← dựng timeline khe thời gian từ sniffer
-└── scripts/                 ← build_all, build_stm32_anchors, package_8_anchors
+├── common/                      ← toàn bộ mã dùng chung (nguồn duy nhất), chia theo module;
+│   │                              mỗi module chứa .c và .h của nó ngay cạnh nhau
+│   ├── app/                     ← điểm vào: main_tag.c, main_anchor.c, main_sniffer.c
+│   ├── drivers/                 ← driver thanh ghi DW1000 (dw1000.c, dw1000_hw.h)
+│   ├── platform/                ← lớp Zephyr: SPI, GPIO, IRQ, thời gian
+│   ├── ranging/                 ← máy trạng thái TAG/anchor, khung UWB (uwb_frame)
+│   ├── filters/                 ← bộ lọc range (range_filter)
+│   ├── telemetry/               ← khung nhị phân UART + uart_tx
+│   ├── services/                ← kênh lệnh (uwb_cmd), NVS (uwb_settings), health
+│   ├── config/                  ← bảng calibration dùng chung (uwb_calibration.h)
+│   └── cmake/uwb_node.cmake     ← uwb_node_setup(TAG|ANCHOR|SNIFFER) + build id
+├── nodes/                       ← mỗi node chỉ giữ cấu hình, không giữ mã nguồn
+│   ├── tag/Tag/                 ← TAG trên PCB RangingSystemClassic
+│   ├── tag/Tag_DevKit/          ← cùng vai trò TAG, chạy trên DWM1001-DEV (J-Link)
+│   ├── anchors/nrf/Anchor_1…8/  ← responder DWM1001C, short address 0x0001..0x0008
+│   ├── anchors/stm32/STM32_Anchor_5…8/ ← responder cho board STM32F103 vật lý
+│   └── sniffer/Sniffer_DevKit/  ← chỉ nghe, đẩy mọi frame kèm timestamp DW1000
+├── gateway/ESP32C3_Gateway/     ← ESP-IDF gateway UART ↔ USB
+├── profiles/                    ← overlay/conf bổ sung cho bản high-rate
+├── release/                     ← HEX đã đóng gói để nạp
+│   ├── anchor_8/                ← bộ tám HEX theo đúng board vật lý + manifest
+│   ├── stm32_anchor/            ← HEX STM32 A5–A8 đã kiểm tra
+│   └── highrate_200/            ← bộ thử nghiệm ≥200 Hz (TAG + 8 anchor)
+├── docs/                        ← checklist, triển khai, tương thích phần cứng
+├── scripts/                     ← build/flash (xem bảng dưới)
+├── tests/                       ← test host (gcc + mô phỏng thanh ghi DW1000)
+├── tools/                       ← uwb_sniffer.py, verify_*.py, uwb_layout.py
+└── CHANGELOG.md
 ```
 
-Mỗi project nRF node chỉ còn `CMakeLists.txt`, `prj.conf`, `app.overlay`,
-`include/uwb_app_config.h` và `scripts/`. Bốn project STM32 giữ bốn file
-cấu hình tương ứng và cũng dùng mã ở `common/`. Các project nRF không giữ
-bản sao mã nguồn chung — `tests/test_node_projects.py` sẽ báo lỗi nếu có.
+Mỗi project node chỉ còn `CMakeLists.txt`, `prj.conf`, `app.overlay`,
+`include/uwb_app_config.h` (node nRF có thêm `scripts/` và `.vscode/`). Không
+node nào giữ bản sao mã nguồn chung — `tests/test_node_projects.py` sẽ báo lỗi
+nếu có, hoặc nếu một file `.c/.h` trong `common/` nằm ngoài thư mục module.
+
+### Debug nhanh: lỗi ở đâu thì mở thư mục nào
+
+| Triệu chứng | Xem trước |
+|---|---|
+| Không đọc được Device ID, SPI/IRQ lỗi | `common/drivers/`, `common/platform/`, `app.overlay` của node |
+| Sai khoảng cách, timeout, slot burst | `common/ranging/` (+ `tests/test_tag_*.c`, `test_anchor_*.c`) |
+| Range nhảy/nhiễu | `common/filters/`, `common/config/uwb_calibration.h` |
+| GUI không giải mã được / CRC lỗi | `common/telemetry/` |
+| Lệnh từ host không có tác dụng, NVS | `common/services/` |
+| Hành vi khác nhau giữa các node | `nodes/<...>/include/uwb_app_config.h`, `prj.conf` |
+
+### Script
+
+| Script | Việc |
+|---|---|
+| `scripts/uwb_nodes.ps1` | **registry duy nhất** tên node → đường dẫn/board/cách flash, + helper map ổ `U:` |
+| `scripts/node.ps1 -Project <tên> -Action Build\|Flash` | build/flash một node (script `scripts/*.ps1` trong từng node gọi vào đây) |
+| `scripts/build_all.ps1` | build nhiều node |
+| `scripts/build_stm32_anchors.ps1` | build A5–A8 STM32 → `release/stm32_anchor/` |
+| `scripts/package_8_anchors.ps1` | gom 8 HEX anchor → `release/anchor_8/` |
+| `scripts/build_highrate.ps1`, `flash_highrate.ps1` | bản high-rate → `release/highrate_200/` |
+| `scripts/ncs_env.ps1` | tìm NCS SDK/toolchain, J-Link, OpenOCD (dùng chung) |
+
+Thêm/di chuyển node: sửa `scripts/uwb_nodes.ps1` **và** `tools/uwb_layout.py`
+(test sẽ báo nếu hai file lệch nhau).
 
 ## 2. Build
 
@@ -49,22 +88,24 @@ Bản tối ưu ngày **2026-10-02**, mục tiêu ≥200 kết quả DS/s trên 
 được build riêng bằng `scripts/build_highrate.ps1` cho TAG + tám anchor đúng
 board vật lý. Period 4500 µs (~222 Hz danh định), anchor auto RX,
 STM32 SPI trực tiếp 16 MHz, nRF FPU. Cần nạp lại đủ chín image và đo log để
-xác nhận tần số thực tế. Xem [hướng dẫn highrate](highrate_200_dist/README.md).
+xác nhận tần số thực tế. Xem [hướng dẫn highrate](release/highrate_200/README.md).
 
 Yêu cầu nRF Connect SDK v3.4.0, board Zephyr `decawave_dwm1001_dev/nrf52832`.
 
 ```powershell
 Set-Location .\Firmware
-.\scripts\build_all.ps1                       # cả 11 project
+.\scripts\build_all.ps1                         # 11 project nRF
 .\scripts\build_all.ps1 -Projects Tag,Anchor_1  # chỉ một phần
+.\scripts\node.ps1 -Project Tag_DevKit -Action Build
 ```
 
-File để flash: `<Project>/build/zephyr/zephyr.hex`.
-Mỗi project cũng có `scripts/build.ps1` và `scripts/flash.ps1` riêng.
+File để flash: `nodes/<...>/<Project>/build/zephyr/zephyr.hex`.
+Mỗi project nRF cũng có `scripts/build.ps1` và `scripts/flash.ps1` riêng (dùng
+bởi task VS Code khi mở thư mục node).
 
 Với bốn board STM32 vật lý, chạy `scripts/build_stm32_anchors.ps1`, sau đó
 `python tools/verify_stm32_images.py`. Chạy `scripts/package_8_anchors.ps1`
-để chép tám ảnh tương ứng board vật lý vào `anchor_8_dist/` cùng SHA-256.
+để chép tám ảnh tương ứng board vật lý vào `release/anchor_8/` cùng SHA-256.
 A1–A4 nạp qua ST-LINK/OpenOCD theo cấu hình VS Code của từng project;
 A5–A8 nạp qua ST-LINK Utility.
 
@@ -97,7 +138,7 @@ Cần `gcc` (MinGW-w64) và Python 3. 13 nhóm test, không cần phần cứng:
 | `test_cmd_executor` | ACK, quy tắc LOCK/PAUSE, tác động lên radio |
 | `test_settings` | snapshot NVS nguyên khối, CRC, PARTID/profile binding, lỗi factory reset |
 | `test_telemetry_golden` (C + Python) | bộ mã hoá C đối chiếu chéo bộ giải mã Python |
-| `test_node_projects.py` | cấu trúc 11 project, địa chỉ anchor, mask fail-closed |
+| `test_node_projects.py` | cấu trúc 15 project + module `common/`, registry node, địa chỉ anchor, mask fail-closed |
 | `test_sniffer_tool.py` | công cụ sniffer giải mã đúng timeline |
 | `gui_python_tests` | 48 test của GUI/giao thức, gồm heartbeat host→TAG |
 | `gateway_parser` | bộ phân tích khung của gateway ESP32-C3 |
@@ -107,8 +148,8 @@ ghi), nên máy trạng thái và công thức DS-TWR được kiểm chứng tr
 
 ## 4. Cấu hình 8 Anchor
 
-Bảng dưới là cấu hình của tám **project nRF/Zephyr** cũ. Trên phần cứng hiện
-tại chỉ A1–A4 dùng các project này; A5–A8 dùng `STM32_Anchor_5..8`.
+Bảng dưới là cấu hình của tám **project nRF/Zephyr** (`nodes/anchors/nrf/`). Trên phần cứng hiện
+tại chỉ A1–A4 dùng các project này; A5–A8 dùng `nodes/anchors/stm32/STM32_Anchor_5..8`.
 
 | Project | Short address | Nhịp cập nhật |
 |---|---:|---:|
@@ -180,7 +221,7 @@ py -3.12 uwb_command.py --port COM7 set-cal 1 12.5 --save
 | `UWB_DS_CALIBRATED_MASK` | `0` | chỉ mở sau khi hiệu chuẩn từng anchor |
 
 Đổi bất kỳ cờ nào ở ba dòng đầu đều làm lệch bias ⇒ phải hiệu chuẩn lại.
-Quy trình A/B và tiêu chí nghiệm thu: `HARDWARE_AB_CHECKLIST.md`.
+Quy trình A/B và tiêu chí nghiệm thu: `docs/HARDWARE_AB_CHECKLIST.md`.
 
 ## 7. Tương thích phần cứng
 
@@ -199,7 +240,7 @@ Quy trình A/B và tiêu chí nghiệm thu: `HARDWARE_AB_CHECKLIST.md`.
   `tools/uwb_sniffer.py` giải mã khung v3 và báo offset RESP từng anchor.
   Chưa kiểm trên phần cứng.
 
-Chi tiết chân và quyết định thiết kế: `HARDWARE_COMPATIBILITY.md`.
+Chi tiết chân và quyết định thiết kế: `docs/HARDWARE_COMPATIBILITY.md`.
 
 ## 8. Calibration — vẫn fail-closed
 
@@ -211,17 +252,17 @@ lưu vào NVS, không cần build lại. Ba key schema cũ (`uwb/radio`, `uwb/ca
 `uwb/tag`) bị bỏ qua fail-closed; `FACTORY_RESET` sẽ dọn cả schema cũ và mới.
 
 Không bật mask và không đưa range vào bộ điều khiển bay trước khi hoàn tất
-`HARDWARE_AB_CHECKLIST.md`.
+`docs/HARDWARE_AB_CHECKLIST.md`.
 
 ## 9. Tài liệu liên quan
 
 | File | Nội dung |
 |---|---|
-| `highrate_200_dist/README.md` | bộ thử nghiệm mục tiêu ≥ 200 Hz/tám anchor, SPI trực tiếp, DS-only và hướng dẫn bench |
+| `release/highrate_200/README.md` | bộ thử nghiệm mục tiêu ≥ 200 Hz/tám anchor, SPI trực tiếp, DS-only và hướng dẫn bench |
 | `CHANGELOG.md` | nội dung bản nâng cấp v2, thứ tự flash, tương thích |
-| `HARDWARE_AB_CHECKLIST.md` | quy trình A/B trên board thật và tiêu chí nghiệm thu |
-| `ANCHOR_DEPLOYMENT.md` | gán module, flash, kiểm tra địa chỉ, calibration |
-| `DEPLOYMENT_MANIFEST.md` | bảng truy vết module ↔ vai trò ↔ firmware đang nạp |
-| `HARDWARE_COMPATIBILITY.md` | sơ đồ chân, quyết định thiết kế |
-| `FIRMWARE_REVIEW_2026-09-15.md` | rà soát trước nâng cấp (F1–F10) |
+| `docs/HARDWARE_AB_CHECKLIST.md` | quy trình A/B trên board thật và tiêu chí nghiệm thu |
+| `docs/ANCHOR_DEPLOYMENT.md` | gán module, flash, kiểm tra địa chỉ, calibration |
+| `docs/DEPLOYMENT_MANIFEST.md` | bảng truy vết module ↔ vai trò ↔ firmware đang nạp |
+| `docs/HARDWARE_COMPATIBILITY.md` | sơ đồ chân, quyết định thiết kế |
+| `docs/FIRMWARE_TEST_CHECKLIST.md` | checklist kiểm thử firmware trên bench |
 | `../Plan/KE_HOACH_NANG_CAP_TOAN_DIEN_FIRMWARE_DWM1001.md` | kế hoạch GĐ0–GĐ6 |

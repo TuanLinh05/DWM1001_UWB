@@ -36,13 +36,15 @@ nằm trong `Firmware/`; mã dùng chung nằm trong `Firmware/common/`.
 
 | Đường dẫn | Vai trò |
 |---|---|
-| `Firmware/common/` | Driver DW1000, ranging, command, settings, telemetry dùng chung |
-| `Firmware/Tag/` | TAG trên carrier tùy chỉnh |
-| `Firmware/Tag_DevKit/` | TAG trên DWM1001-DEV |
-| `Firmware/Anchor_1/` … `Anchor_8/` | Tám ảnh Anchor, địa chỉ 1…8 |
-| `Firmware/Sniffer_DevKit/` | Sniffer thụ động trên DWM1001-DEV |
+| `Firmware/common/<module>/` | Mã dùng chung theo module: `app`, `drivers`, `platform`, `ranging`, `filters`, `telemetry`, `services`, `config` |
+| `Firmware/nodes/tag/` | `Tag` (carrier tùy chỉnh) và `Tag_DevKit` (DWM1001-DEV) |
+| `Firmware/nodes/anchors/nrf/` | `Anchor_1` … `Anchor_8` trên DWM1001C, địa chỉ 1…8 |
+| `Firmware/nodes/anchors/stm32/` | `STM32_Anchor_5` … `8` cho board STM32F103 + DW1000 |
+| `Firmware/nodes/sniffer/` | `Sniffer_DevKit`, sniffer thụ động trên DWM1001-DEV |
+| `Firmware/release/` | HEX đã đóng gói (8 anchor, STM32, high-rate) |
+| `Firmware/docs/` | Checklist, triển khai, tương thích phần cứng |
 | `Firmware/tests/` | Host test C/Python và simulator thanh ghi DW1000 |
-| `Firmware/ESP32C3_Gateway/` | Gateway ESP-IDF tùy chọn |
+| `Firmware/gateway/ESP32C3_Gateway/` | Gateway ESP-IDF tùy chọn |
 | `Software/UWB_UART_GUI/` | Decoder, GUI, recorder và test Python |
 | `Plan/` | Kế hoạch, ADR và trạng thái triển khai |
 
@@ -61,7 +63,7 @@ Yêu cầu nRF Connect SDK v3.4.0. Từ thư mục gốc:
 .\Firmware\scripts\build_all.ps1 -Projects Tag,Anchor_1,Sniffer_DevKit
 ```
 
-Mỗi node tạo `Firmware/<project>/build/zephyr/zephyr.hex`. Build nhúng:
+Mỗi node tạo `Firmware/nodes/<...>/<project>/build/zephyr/zephyr.hex`. Build nhúng:
 
 - Git hash;
 - cờ dirty, bao gồm cả file untracked;
@@ -82,15 +84,12 @@ Flash theo thứ tự bắt buộc:
 Ví dụ:
 
 ```powershell
-Set-Location .\Firmware\Anchor_1
-.\scripts\flash.ps1
-
-Set-Location ..\Tag
-.\scripts\flash.ps1
+.\Firmware\scripts\node.ps1 -Project Anchor_1 -Action Flash
+.\Firmware\scripts\node.ps1 -Project Tag -Action Flash
 ```
 
 Không tráo binary Anchor. Ghi serial/PARTID/LOTID, project, hash source và hash
-cấu hình vào `Firmware/DEPLOYMENT_MANIFEST.md` ngay khi flash.
+cấu hình vào `Firmware/docs/DEPLOYMENT_MANIFEST.md` ngay khi flash.
 
 ## Settings và calibration
 
@@ -142,11 +141,11 @@ viễn: `uwb_command.py --port COMx set-telemetry --snapshot --meas --diag --sav
 
 - [`Firmware/README.md`](Firmware/README.md): build, protocol và cấu hình.
 - [`Firmware/CHANGELOG.md`](Firmware/CHANGELOG.md): thay đổi firmware v2.
-- [`Firmware/HARDWARE_AB_CHECKLIST.md`](Firmware/HARDWARE_AB_CHECKLIST.md): A/B
+- [`Firmware/docs/HARDWARE_AB_CHECKLIST.md`](Firmware/docs/HARDWARE_AB_CHECKLIST.md): A/B
   RF, timing, calibration và soak.
-- [`Firmware/ANCHOR_DEPLOYMENT.md`](Firmware/ANCHOR_DEPLOYMENT.md): gán module,
+- [`Firmware/docs/ANCHOR_DEPLOYMENT.md`](Firmware/docs/ANCHOR_DEPLOYMENT.md): gán module,
   địa chỉ, thứ tự flash và trạng thái từng Anchor.
-- [`Firmware/DEPLOYMENT_MANIFEST.md`](Firmware/DEPLOYMENT_MANIFEST.md): truy vết
+- [`Firmware/docs/DEPLOYMENT_MANIFEST.md`](Firmware/docs/DEPLOYMENT_MANIFEST.md): truy vết
   binary ↔ module ↔ vai trò.
 
 Build/test thành công không thay thế việc đo RF thật, kiểm tra nguồn/antenna,

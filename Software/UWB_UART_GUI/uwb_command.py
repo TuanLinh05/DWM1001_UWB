@@ -1,4 +1,4 @@
-"""Command-line client for the TAG command channel (Firmware/common/include/uwb_cmd.h).
+"""Command-line client for the TAG command channel (Firmware/common/services/uwb_cmd.h).
 
 Examples (PowerShell):
     py -3.12 uwb_command.py --port COM7 ping
