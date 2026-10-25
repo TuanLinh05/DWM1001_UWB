@@ -16,13 +16,15 @@ param(
     [ValidatePattern('^[0-9]+$')]
     [string]$JLinkSerial,
     [string]$OpenOcdPath,
-    [string]$OpenOcdScripts
+    [string]$OpenOcdScripts,
+    [ValidateSet(200, 300)]
+    [int]$Rate = 300
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'uwb_nodes.ps1')
 $firmwareRoot = $script:UwbFirmwareRoot
-$packageRoot = Join-Path $firmwareRoot 'release\highrate_200'
+$packageRoot = Join-Path $firmwareRoot "release\highrate_$Rate"
 $Node = $Node.ToUpperInvariant()
 $fileName = if ($Node -eq 'TAG') { 'TAG_DWM1001_DEV.hex' } else { "${Node}_DWM1001C_nRF52832.hex" }
 $hexPath = (Resolve-Path -LiteralPath (Join-Path $packageRoot $fileName)).Path

@@ -1,0 +1,26 @@
+{
+  "status": "PASS",
+  "firmware_package_verification": "PASS",
+  "firmware_images": 9,
+  "tag_config_id": "0x84e6c9b9",
+  "host_test_groups": 25,
+  "gui_tests_in_host_suite": 86,
+  "gui_tests_skipped": 2,
+  "tracker_tests_after_final_gap_limit_change": 11,
+  "gui_exe": "D:\\Drone Project\\Github Clone UWB Test\\Software\\UWB_UART_GUI\\Output\\DWM1001_UWB_Ground_Control_rx_gap_fix.exe",
+  "gui_exe_bytes": 40946909,
+  "gui_exe_sha256": "ab954929d7edd9a38cde61fa16b752a7e8422a4176a7da3a220418be1b3b2f65",
+  "gui_exe_hidden_demo_smoke_exit_code": 0,
+  "hardware_flashed": false,
+  "hardware_frequency_verified": false,
+  "baseline_log": "20261019_132235_COM14",
+  "source_sha256": {
+    "Firmware/common/drivers/dw1000.c": "642314ef1894b7d42d79d5d771b8d7725e86603fa4d7ee293d0d05eed0d9bba0",
+    "Firmware/common/drivers/dw1000_hw.h": "82442c4341c6ca6645bd6968739e30810e31fbc33380317fedb46abc26d5fe14",
+    "Firmware/common/ranging/tag_ranging.c": "bb47fbd7a0c383ebf41b51e85f80a0c9e60ca1160931025dab22cd3d1c369e1d",
+    "Firmware/nodes/tag/Tag_DevKit/include/uwb_app_config.h": "859eab29d7dad62b302697e1a6b0eeb99bc22ad093deb05532aa01bb44b644e0",
+    "Software/UWB_UART_GUI/meas_tracker.py": "c2ab223f76aa7843d7178116cf195b097d65040efb492838c1e469ff8c155165",
+    "Software/UWB_UART_GUI/gui_views.py": "37267ce7abe63a1913161cb777771c3c148d71aca25f6f74901b2ff12a99cbe7",
+    "Software/UWB_UART_GUI/uwb_uart_gui.py": "ded344431445a074759cedd996c6a13c07dce556e75f2c9b16e3cc6d0ab5f6fc"
+  }
+}

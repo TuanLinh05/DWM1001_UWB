@@ -28,6 +28,7 @@
 
 volatile uint8_t dw1000_spi_mhz = DW_SPI_INIT_MHZ;
 volatile uint32_t dw1000_spi_error_count;
+static uint8_t s_rx_double_buffer;
 
 DW1000_RadioConfig_t dw1000_radio_config = {
     .tx_ant_dly = UWB_TX_ANT_DLY,
@@ -246,6 +247,7 @@ static void dw_read_otp_info(void)
  */
 int DW1000_Init(void)
 {
+    s_rx_double_buffer = 0U;
     if (DW1000_GPIO_Init() != 0)
         return -2;
 
@@ -316,7 +318,9 @@ uint32_t DW1000_TxPowerRegisterValue(void)
 
 uint32_t DW1000_ExpectedSysCfg(void)
 {
-    uint32_t sys_cfg = DW_SYS_CFG_HIRQ_POL | DW_SYS_CFG_DIS_DRXB;
+    uint32_t sys_cfg = DW_SYS_CFG_HIRQ_POL;
+    if (!s_rx_double_buffer)
+        sys_cfg |= DW_SYS_CFG_DIS_DRXB;
 
     if (dw1000_radio_config.tx_power_mode != UWB_TX_POWER_SMART)
         sys_cfg |= DW_SYS_CFG_DIS_STXP;
@@ -633,6 +637,47 @@ void DW1000_StartRx(void)
     DW1000_WriteReg(DW_REG_SYS_CTRL, buf, 2);
 }
 
+void DW1000_SetDoubleRxBuffer(uint8_t enabled)
+{
+    /* Caller must have stopped RX. RXAUTR stays off: manually restart RX
+     * before reading the completed buffer, as in Decawave's RX callback. */
+    s_rx_double_buffer = enabled ? 1U : 0U;
+    uint8_t cfg[4];
+    write_le32(cfg, DW1000_ExpectedSysCfg());
+    DW1000_WriteReg(DW_REG_SYS_CFG, cfg, sizeof(cfg));
+}
+
+uint8_t DW1000_DoubleRxBufferEnabled(void)
+{
+    return s_rx_double_buffer;
+}
+
+void DW1000_ReleaseRxBuffer(void)
+{
+    /* SYS_CTRL.HRBPT, bit 24. Never synchronize pointers while a completed
+     * buffer is still being read: RX_TIME/FQUAL/FINFO belong to that buffer. */
+    write_sub8(DW_REG_SYS_CTRL, 3U, 1U);
+}
+
+void DW1000_SyncRxBuffers(void)
+{
+    if (s_rx_double_buffer)
+    {
+        const uint64_t status = DW1000_ReadStatus();
+        if (((status >> 30) & 1U) != ((status >> 31) & 1U))
+            DW1000_ReleaseRxBuffer();
+    }
+}
+
+void DW1000_ClearRxGoodStatus(void)
+{
+    const uint32_t good = DW_RXPRD_BIT | DW_RXSFDD_BIT | DW_LDEDONE_BIT
+                        | DW_RXPHD_BIT | DW_RXDFR_BIT | DW_RXFCG_BIT;
+    uint8_t flags[4];
+    write_le32(flags, good);
+    DW1000_WriteReg(DW_REG_SYS_STATUS, flags, sizeof(flags));
+}
+
 int DW1000_StartRxDelayed(uint64_t rx_time)
 {
     uint8_t dx[5];
@@ -730,7 +775,7 @@ void DW1000_ReadSignalDiag(DW1000_SignalDiag_t *diag)
     diag->fp_ampl1 = (uint16_t)(buf[2] | ((uint16_t)buf[3] << 8));
 }
 
-static void read_rx_timestamp_quality(const uint8_t finfo[4],
+static void read_rx_timestamp_quality(uint32_t finfo,
                                        uint8_t ts[5], DW1000_SignalDiag_t *diag)
 {
     uint8_t time[9] = {0};
@@ -738,7 +783,7 @@ static void read_rx_timestamp_quality(const uint8_t finfo[4],
     DW1000_ReadReg(DW_REG_RX_TIME, time, sizeof(time));
     DW1000_ReadReg(DW_REG_RX_FQUAL, quality, sizeof(quality));
     memcpy(ts, time, 5U);
-    diag->rxpacc = (uint16_t)((read_le32(finfo) >> 20) & 0x0FFFU);
+    diag->rxpacc = (uint16_t)((finfo >> 20) & 0x0FFFU);
     diag->fp_index = (uint16_t)(time[5] | ((uint16_t)time[6] << 8));
     diag->fp_ampl1 = (uint16_t)(time[7] | ((uint16_t)time[8] << 8));
     diag->std_noise = (uint16_t)(quality[0] | ((uint16_t)quality[1] << 8));
@@ -752,15 +797,33 @@ uint16_t DW1000_ReadRxFrame(uint8_t *data, uint16_t max_len,
 {
     if (data == NULL || ts == NULL || diag == NULL)
         return 0U;
+    uint32_t finfo;
+    const uint16_t length = DW1000_ReadRxPayload(data, max_len, &finfo);
+    return length != 0U && DW1000_ReadRxMetadata(finfo, ts, diag) ? length : 0U;
+}
+
+uint16_t DW1000_ReadRxPayload(uint8_t *data, uint16_t max_len, uint32_t *finfo_out)
+{
+    if (data == NULL || finfo_out == NULL)
+        return 0U;
     uint8_t finfo[4] = {0};
     const uint32_t errors = dw1000_spi_error_count;
     DW1000_ReadReg(DW_REG_RX_FINFO, finfo, sizeof(finfo));
-    const uint16_t length = finfo[0] & 0x7FU;
+    const uint16_t length = (uint16_t)(read_le32(finfo) & 0x3FFU);
     if (length < 2U || length > max_len)
         return 0U;
-    read_rx_timestamp_quality(finfo, ts, diag);
     DW1000_ReadReg(DW_REG_RX_BUFFER, data, length);
+    *finfo_out = read_le32(finfo);
     return dw1000_spi_error_count == errors ? length : 0U;
+}
+
+uint8_t DW1000_ReadRxMetadata(uint32_t finfo, uint8_t ts[5], DW1000_SignalDiag_t *diag)
+{
+    if (ts == NULL || diag == NULL)
+        return 0U;
+    const uint32_t errors = dw1000_spi_error_count;
+    read_rx_timestamp_quality(finfo, ts, diag);
+    return dw1000_spi_error_count == errors ? 1U : 0U;
 }
 
 uint16_t DW1000_PeekRxPrefix(uint8_t *data, uint16_t prefix_len)
@@ -781,7 +844,7 @@ void DW1000_ReadRxTimestampDiag(uint8_t ts[5], DW1000_SignalDiag_t *diag)
 {
     uint8_t finfo[4] = {0};
     DW1000_ReadReg(DW_REG_RX_FINFO, finfo, sizeof(finfo));
-    read_rx_timestamp_quality(finfo, ts, diag);
+    read_rx_timestamp_quality(read_le32(finfo), ts, diag);
 }
 
 static float signal_log10f(float value)
@@ -855,14 +918,13 @@ int32_t DW1000_ReadCarrierIntegrator(void)
 
 int32_t DW1000_CarrierIntegratorToPpmX100(int32_t carrier_integrator)
 {
-    /* UWB_CLOCK_OFFSET_MULT is the ratio per CI unit; ×1e6 → ppm, ×100. */
-    const double ppm_x100 = (double)carrier_integrator * UWB_CLOCK_OFFSET_MULT * 1.0e8;
-
-    if (ppm_x100 > (double)INT32_MAX)
-        return INT32_MAX;
-    if (ppm_x100 < (double)INT32_MIN)
-        return INT32_MIN;
-    return (int32_t)lround(ppm_x100);
+    /* UWB_CLOCK_OFFSET_MULT * 1e8 = -0.057312 = -1791/31250.
+     * Diagnostic-only conversion: exact rational, ties away from zero.
+     * Full int32 inputs fit both the int64 product and int32 result.
+     * DS timestamp math and SS clock correction remain unchanged. */
+    const int64_t scaled = -(int64_t)carrier_integrator * 1791;
+    return (int32_t)(scaled < 0 ? -((-scaled + 15625) / 31250)
+                               : (scaled + 15625) / 31250);
 }
 
 /* ========================================================================== */

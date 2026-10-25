@@ -23,6 +23,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #endif
 #if UWB_DIRECT_SPIM
+#include <hal/nrf_gpio.h>
 #include <hal/nrf_spim.h>
 #if !defined(CONFIG_SOC_NRF52832)
 #error "Direct SPIM backend is qualified only for nRF52832"
@@ -66,6 +67,10 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_BUS(DW1000_NODE), disabled),
              "Direct SPIM requires the DW1000 SPI bus disabled in devicetree");
 BUILD_ASSERT(DT_REG_ADDR(DT_BUS(DW1000_NODE)) == 0x40023000UL,
              "Direct SPIM requires the DWM1001 internal SPIM2 bus");
+BUILD_ASSERT(DT_SAME_NODE(DT_SPI_DEV_CS_GPIOS_CTLR(DW1000_NODE), DT_NODELABEL(gpio0)),
+             "Direct SPIM chip select must be on nRF52832 P0");
+BUILD_ASSERT((DT_SPI_DEV_CS_GPIOS_FLAGS(DW1000_NODE) & GPIO_ACTIVE_LOW) != 0,
+             "DW1000 chip select must be active low");
 PINCTRL_DT_DEFINE(DT_BUS(DW1000_NODE));
 static NRF_SPIM_Type *const s_spim =
     (NRF_SPIM_Type *)DT_REG_ADDR(DT_BUS(DW1000_NODE));
@@ -353,9 +358,12 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
     s_spim->RXD.MAXCNT = total;
     __DMB();
     const uint32_t started = uwb_platform_cycle_now();
+    const uint32_t timeout_cycles = s_timing_cycles_per_us * 1000U;
     s_spim->TASKS_START = 1U;
     while (s_spim->EVENTS_END == 0U) {
-        if (uwb_platform_elapsed_us(started) > 1000U) {
+        /* Compare raw DWT cycles in the byte-transfer hot loop. Keep the
+         * same wrap-safe 1 ms timeout without a timing call/divide per poll. */
+        if ((uint32_t)(uwb_platform_cycle_now() - started) > timeout_cycles) {
             s_spim->TASKS_STOP = 1U;
             const uint32_t stopping = uwb_platform_cycle_now();
             while (s_spim->EVENTS_STOPPED == 0U
@@ -410,7 +418,14 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
 
 void uwb_platform_cs_set(bool active)
 {
+#if UWB_DIRECT_SPIM
+    /* GPIO is configured once by Zephyr during init. In the short burst
+     * RX window every SPI register needs two CS transitions; avoid a GPIO
+     * vtable call and generic pin checks for each transition on P0. */
+    nrf_gpio_pin_write(DT_SPI_DEV_CS_GPIOS_PIN(DW1000_NODE), active ? 0U : 1U);
+#else
     (void)gpio_pin_set_dt(&s_cs, active ? 1 : 0);
+#endif
 }
 
 void uwb_platform_reset_radio(void)

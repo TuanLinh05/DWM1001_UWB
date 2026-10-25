@@ -162,6 +162,11 @@ int main(int argc, char **argv)
         .anchor_id = 1U, .status = TAG_ST_OK, .range_mm = 4321U,
         .flags = TAG_BURST_REC_RADIO_OK | TAG_BURST_REC_CAL_OK | TAG_BURST_REC_VALID,
         .fp_cdbm = -8212, .rx_cdbm = -7650, .ci_ppm_x100 = -1837,
+        .diag_flags = TAG_BURST_DIAG_RESP_VALID | TAG_BURST_DIAG_FINAL_VALID,
+        .rx_diag = { .rxpacc=63U, .fp_ampl1=101U, .fp_ampl2=202U,
+                     .fp_ampl3=303U, .cir_pwr=404U, .std_noise=35U, .fp_index=0x2A40U },
+        .carrier_integrator = 32051,
+        .anchor_fp_cdbm = -8312, .anchor_rx_cdbm = -7713,
     };
     burst.anchor[1] = (TagBurstAnchor_t){
         .anchor_id = 5U, .status = TAG_ST_DS_FALLBACK, .range_mm = 12345U,
@@ -174,6 +179,7 @@ int main(int argc, char **argv)
         .fp_cdbm = INT16_MIN, .rx_cdbm = INT16_MIN, .ci_ppm_x100 = INT16_MIN,
     };
     Telem_SendRangeBurst(&burst);
+    Telem_SendRxQuality(&burst);
     burst.period_us = 70000U;                /* saturates at 65535 */
     burst.count = 0U;
     burst.cycle_seq = 5001U;

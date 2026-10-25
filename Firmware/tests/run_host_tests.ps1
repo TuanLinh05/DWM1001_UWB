@@ -40,11 +40,11 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $gcc = (Get-Command gcc -ErrorAction SilentlyContinue)
 if ($null -eq $gcc) { throw 'gcc was not found on PATH (install MinGW-w64).' }
 
-$pythonCommand = Get-Command py -ErrorAction SilentlyContinue
-$pythonPrefix = @('-3')
+$pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+$pythonPrefix = @()
 if ($null -eq $pythonCommand) {
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    $pythonPrefix = @()
+    $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
+    $pythonPrefix = @('-3')
 }
 if ($null -eq $pythonCommand) { throw 'Python 3 was not found on PATH.' }
 
@@ -127,6 +127,10 @@ $cTests = @(
        Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c',
                    'services\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c')
        Arguments = @((Join-Path $outputDirectory 'golden.bin')) }
+    @{ Name = 'test_telemetry_periodic'; Role = ''; Config = 'Tag_DevKit'
+       Defines = @('UWB_HIGH_RATE_300=1', 'UWB_HIGH_RATE=1', 'UWB_PHY_PREAMBLE=64U', 'UWB_BURST_REQUIRE_DS=1')
+       Sources = @('sim', 'drivers\dw1000.c', 'ranging\uwb_frame.c', 'filters\range_filter.c',
+                   'services\uwb_cmd.c', 'telemetry\telemetry.c', 'telemetry\telemetry_frame.c') }
     # Motion: the real TAG pipeline against a radio-channel model (trajectory,
     # drifting 40-bit clocks, NLOS, dropouts, 8-anchor flight), built once per
     # range conditioner. The TAG DevKit default (MEDIAN_GATE) and CV_KALMAN_V2

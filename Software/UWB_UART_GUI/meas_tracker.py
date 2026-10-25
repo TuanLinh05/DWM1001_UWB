@@ -9,6 +9,7 @@ Pure logic without Tk, so the GUI view stays thin and this is unit-tested.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 import math
 import statistics
@@ -65,6 +66,43 @@ class MeasPoint:
     nlos_db: float | None
 
 
+def prepare_plot_points(
+    points: Sequence[MeasPoint], max_points: int
+) -> tuple[list[MeasPoint], set[int]]:
+    """Thin a plot while carrying real measurement gaps across skipped points.
+
+    A gap exceeds three ordinary intervals and at least 20 ms. Estimate the
+    ordinary interval from the lower quartile BEFORE thinning, so dropouts
+    cannot make the plot tolerate longer and longer blank periods. At 50 Hz
+    the threshold is 60 ms; at 300 Hz it is 20 ms. Indexes in the returned set
+    start a new line. A 60 s view must not invent gaps just because we thin it.
+    """
+    if max_points < 2:
+        raise ValueError("max_points must be at least two")
+    if len(points) < 2:
+        return list(points), set()
+    intervals = sorted(b.tag_time_s - a.tag_time_s for a, b in zip(points, points[1:])
+                       if b.tag_time_s > a.tag_time_s)
+    ordinary_s = intervals[len(intervals) // 4] if intervals else 0.0
+    gap_s = min(0.5, max(0.020, 3.0 * ordinary_s))
+    step = max(1, math.ceil((len(points) - 1) / (max_points - 1)))
+    indexes = sorted({0, *range(len(points) - 1, -1, -step)})
+    selected = []
+    breaks = set()
+    cursor = 1
+    for index in indexes:
+        broken = False
+        while cursor <= index:
+            dt = points[cursor].tag_time_s - points[cursor - 1].tag_time_s
+            if dt <= 0.0 or dt > gap_s + 1e-9:
+                broken = True
+            cursor += 1
+        if broken:
+            breaks.add(len(selected))
+        selected.append(points[index])
+    return selected, breaks
+
+
 @dataclass(frozen=True)
 class MeasAnchorSummary:
     anchor_id: int
@@ -95,6 +133,7 @@ class RangeMeasTracker:
         self.lost = 0            # records missing from the meas_seq sequence
         self.restarts = 0        # TAG reboots seen through boot_id
         self.boot_id: int | None = None
+        self.latest_tag_time_s = 0.0
         self._last_sequence: int | None = None
 
     def restart_sequence(self) -> None:
@@ -102,14 +141,20 @@ class RangeMeasTracker:
         is off, so re-enabling it must not be reported as lost records."""
         self._last_sequence = None
 
-    def ingest(self, message: RangeMeasMessage, received_s: float) -> None:
-        if self.boot_id is not None and message.boot_id != self.boot_id:
+    def advance_clock(self, boot_id: int, tag_time_us: int) -> None:
+        """Advance even for a RANGE_BURST with no successful anchor results."""
+        if self.boot_id is not None and boot_id != self.boot_id:
             # A new TAG boot restarts meas_seq and the TAG clock.
             self.restarts += 1
             self._last_sequence = None
             for history in self.history.values():
                 history.clear()
-        self.boot_id = message.boot_id
+            self.latest_tag_time_s = 0.0
+        self.boot_id = boot_id
+        self.latest_tag_time_s = max(self.latest_tag_time_s, tag_time_us / 1e6)
+
+    def ingest(self, message: RangeMeasMessage, received_s: float) -> None:
+        self.advance_clock(message.boot_id, message.meas_time_us)
 
         # meas_seq is one counter over all anchors: a gap is a record dropped
         # by the TAG queue (DIAG meas_queue_drops) or lost on the UART.
@@ -174,7 +219,7 @@ class RangeMeasTracker:
         history = self.history.get(anchor_id)
         if not history:
             return []
-        start = history[-1].tag_time_s - span_s
+        start = self.latest_tag_time_s - span_s
         points = []
         for point in reversed(history):
             if point.tag_time_s < start:

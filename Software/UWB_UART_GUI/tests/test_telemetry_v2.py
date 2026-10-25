@@ -12,6 +12,7 @@ from telemetry_protocol import (  # noqa: E402
     CMD_SET_DS_CAL,
     GatewayHealthMessage,
     TYPE_GATEWAY_HEALTH,
+    TYPE_DIAG_SYSTEM,
     CmdAckMessage,
     INFO_FLAG_FPP_CORRECTED,
     ProtocolError,
@@ -41,6 +42,21 @@ def _decode(frame_type: int, payload: bytes, sequence: int = 1):
 
 
 class TelemetryV2Tests(unittest.TestCase):
+    def test_diag_performance_tail_and_legacy_prefix(self) -> None:
+        prefix = bytearray(168)
+        prefix[0] = 1
+        old = _decode(TYPE_DIAG_SYSTEM, bytes(prefix))
+        self.assertIsNone(old.spi_backend)
+        self.assertEqual(old.burst_maintenance_grants, 0)
+        v1 = bytes(prefix) + struct.pack('<4BII', 1, 1, 1, 0, 177, 560)
+        old = _decode(TYPE_DIAG_SYSTEM, v1)
+        self.assertEqual((old.burst_rx_service_max_us, old.burst_publish_max_us), (177, 560))
+        self.assertEqual(old.burst_publish_step_max_us, 0)
+        full = _decode(TYPE_DIAG_SYSTEM, v1 + struct.pack('<4I', 77, 230, 120, 0x12345678))
+        self.assertEqual((full.burst_publish_step_max_us, full.burst_post_final_max_us,
+                          full.burst_telemetry_max_us, full.burst_maintenance_grants),
+                         (77, 230, 120, 0x12345678))
+
     def test_range_meas(self) -> None:
         payload = struct.pack(
             "<BHIQHBBHBiiihhhhHHhH", 1, 0x1234, 9, 5_000_000, 2, 0x10, 0, 0x0003, 0,

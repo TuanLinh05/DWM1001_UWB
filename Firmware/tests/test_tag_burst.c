@@ -53,6 +53,32 @@ typedef struct {
 static SimAnchor g_anchor[TAG_NUM_ANCHORS];
 static double g_t1 = 1.0e10;            /* TAG clock of the next POLL */
 static int g_inject_foreign_before_last;
+static int g_overlap;
+static int g_overlap_queued;
+static const CycleSeen *g_overlap_cycle;
+static uint64_t g_overlap_poll_done;
+static int g_publish_before_final;
+static int g_stuck_final;
+static unsigned g_publish_clock_reads;
+static uint64_t g_work_final_ts;
+static int g_final_budget_stress;
+static uint64_t g_final_arm_deadline_us;
+
+static void check_delayed_tx_budget(uint8_t reg, uint16_t sub, uint8_t writing)
+{
+    /* Only the FINAL is started in this hook's lifetime. Simulate a missed
+     * delayed-TX deadline, including time to transmit the FINAL preamble. */
+    if (writing && reg == DW_REG_SYS_CTRL && sub == 0U
+        && sim_us > g_final_arm_deadline_us)
+        sim_force_hpdwarn = 1;
+}
+
+static void complete_final_during_publish(void)
+{
+    sim_us += 80U;
+    if (++g_publish_clock_reads == 2U)
+        sim_complete_tx(g_work_final_ts);
+}
 
 static double tof_of(const SimAnchor *a)
 {
@@ -129,10 +155,14 @@ static int fresh_tag(void)
     default_anchors();
     g_t1 = 1.0e10;
     g_inject_foreign_before_last = 0;
+    g_overlap = g_overlap_queued = 0;
+    g_publish_before_final = 0;
+    g_stuck_final = 0;
+    g_final_budget_stress = 0;
     return 0;
 }
 
-static void deliver_resp(SimAnchor *a, uint16_t id, uint8_t rank, const CycleSeen *cs,
+static void queue_resp(SimAnchor *a, uint16_t id, uint8_t rank, const CycleSeen *cs,
                          uint64_t poll_done_us, const uint8_t *tlv, uint8_t tlv_len)
 {
     const double tof = tof_of(a);
@@ -166,7 +196,24 @@ static void deliver_resp(SimAnchor *a, uint16_t id, uint8_t rank, const CycleSee
     set_carrier_integrator(a->ppm);
     sim_set_rx_quality(900U, 6000U, 5000U, 4000U, 3000U, 40U);
     sim_deliver_rx(f, len, t4, 0U);
+}
+
+static void deliver_resp(SimAnchor *a, uint16_t id, uint8_t rank, const CycleSeen *cs,
+                         uint64_t poll_done_us, const uint8_t *tlv, uint8_t tlv_len)
+{
+    queue_resp(a, id, rank, cs, poll_done_us, tlv, tlv_len);
     Tag_Task();
+}
+
+static void overlap_next_resp(uint8_t reg, uint16_t sub, uint8_t writing)
+{
+    (void)sub;
+    if (!writing && reg == DW_REG_RX_BUFFER)
+    {
+        sim_spi_hook = NULL;
+        queue_resp(&g_anchor[1], 2U, 1U, g_overlap_cycle, g_overlap_poll_done, NULL, 0U);
+        g_overlap_queued = 1;
+    }
 }
 
 static int parse_final_tx(CycleSeen *cs);
@@ -202,10 +249,11 @@ static int run_cycle(CycleSeen *cs)
     uint8_t info_tlv[UWB_RESP_V3_TLV_MAX];
     uint8_t info_len = 0U;
     for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
+        g_anchor[idx].open = 0;
+    for (uint8_t idx = 0U; idx < TAG_NUM_ANCHORS; idx++)
     {
         SimAnchor *a = &g_anchor[idx];
         const int rank = uwb_frame_burst_slot(cs->mask, (uint16_t)(idx + 1U));
-        a->open = 0;
         if (rank < 0)
         {
             a->prev_valid = 0;                         /* left out: drops Rb */
@@ -236,6 +284,32 @@ static int run_cycle(CycleSeen *cs)
             Tag_Task();
             CHECK(s_state == TAG_STATE_BURST_RX && sim_tx_count == before_tx);
             CHECK(s_burst_received == 7U);
+            if (DW1000_DoubleRxBufferEnabled())
+            {
+                const uint32_t resets = sim_rx_soft_resets;
+                sim_deliver_rx(frame, duplicate, 123456793ULL, DW_RXOVRR_BIT);
+                Tag_Task();
+                CHECK(sim_rx_soft_resets == resets + 1U);
+                CHECK(((sim_status >> 30) & 1U) == ((sim_status >> 31) & 1U));
+                CHECK(s_state == TAG_STATE_BURST_RX && s_burst_received == 7U);
+            }
+            /* A valid last-slot header is insufficient: a corrupt TLV
+             * length or stale transaction must not close RX/arm FINAL. */
+            uint16_t bad_len = uwb_frame_build_resp(frame, 0U, DW_PAN_ID,
+                                                   TAG_ADDR, 8U, &foreign);
+            frame[26] = 1U;  /* advertises a TLV byte that is absent */
+            sim_deliver_rx(frame, bad_len, 123456791ULL, 0U);
+            Tag_Task();
+            CHECK(s_state == TAG_STATE_BURST_RX && sim_tx_count == before_tx);
+            CHECK(s_burst_received == 7U);
+            UwbResp_t stale = foreign;
+            stale.txn--;
+            bad_len = uwb_frame_build_resp(frame, 0U, DW_PAN_ID,
+                                           TAG_ADDR, 8U, &stale);
+            sim_deliver_rx(frame, bad_len, 123456792ULL, 0U);
+            Tag_Task();
+            CHECK(s_state == TAG_STATE_BURST_RX && sim_tx_count == before_tx);
+            CHECK(s_burst_received == 7U);
         }
         info_len = 0U;
         if (cs->info_id == idx + 1U)
@@ -249,8 +323,37 @@ static int run_cycle(CycleSeen *cs)
             info_len = 14U;
         }
         const uint32_t rx_enables = sim_rx_enable_count;
-        deliver_resp(a, (uint16_t)(idx + 1U), (uint8_t)rank, cs, poll_done_us,
-                     info_tlv, info_len);
+        if (g_final_budget_stress && ((uint32_t)cs->mask >> (idx + 1U)) == 0U)
+        {
+            g_final_arm_deadline_us = poll_done_us
+                + uus_to_us(cs->final - DW_PHY_PREAMBLE_UUS);
+            sim_spi_overhead_us = 18U;
+            sim_spi_byte_us = 1U; /* 8 MHz wire, conservative per-call overhead */
+            sim_spi_hook = check_delayed_tx_budget;
+        }
+        if (g_overlap && idx == 0U)
+        {
+            g_overlap_cycle = cs;
+            g_overlap_poll_done = poll_done_us;
+            sim_spi_hook = overlap_next_resp;
+            g_overlap_queued = 0;
+        }
+        if (g_overlap && idx == 1U && g_overlap_queued)
+            Tag_Task(); /* second IRQ was preserved while first buffer was read */
+        else
+            deliver_resp(a, (uint16_t)(idx + 1U), (uint8_t)rank, cs, poll_done_us,
+                         info_tlv, info_len);
+        if (g_final_budget_stress)
+        {
+            sim_spi_overhead_us = sim_spi_byte_us = 0U;
+            sim_spi_hook = NULL;
+            sim_force_hpdwarn = 0;
+        }
+        /* A missing earlier anchor must not make us read/rearm the final
+         * scheduled slot before arming FINAL. The 300 Hz margin cannot
+         * accommodate both the full metadata capture and the TX setup. */
+        if (((uint32_t)cs->mask >> (idx + 1U)) == 0U)
+            CHECK(s_state != TAG_STATE_BURST_RX);
         /* IDLE: the last RESP came in and the FINAL could not keep its time. */
         CHECK(s_state == TAG_STATE_BURST_RX || s_state == TAG_STATE_BURST_TX_FINAL
               || s_state == TAG_STATE_IDLE);
@@ -262,8 +365,8 @@ static int run_cycle(CycleSeen *cs)
         {
             /* Last RESP: FINAL scheduled in the same pass, no re-arm, and the
              * RESP still read out after it. */
-            CHECK(sim_rx_enable_count == rx_enables);
-            CHECK(s_bc[s_bc_cur].resp[idx].present);
+            CHECK(sim_rx_enable_count == rx_enables + DW1000_DoubleRxBufferEnabled());
+            CHECK(s_bc[s_bc_cur ^ (s_state == TAG_STATE_IDLE)].resp[idx].present);
             if (s_state == TAG_STATE_BURST_TX_FINAL)
                 CHECK(sim_last_ctrl() == (DW_TXSTRT_BIT | DW_TXDLYS_BIT));
         }
@@ -276,7 +379,18 @@ static int run_cycle(CycleSeen *cs)
         Tag_Task();
         CHECK(s_state == TAG_STATE_BURST_RX);
         sim_us += 10U;
+        if (g_final_budget_stress)
+        {
+            g_final_arm_deadline_us = poll_done_us
+                + uus_to_us(cs->final - DW_PHY_PREAMBLE_UUS);
+            sim_spi_overhead_us = 18U;
+            sim_spi_byte_us = 1U;
+            sim_spi_hook = check_delayed_tx_budget;
+        }
         Tag_Task();
+        sim_spi_overhead_us = sim_spi_byte_us = 0U;
+        sim_spi_hook = NULL;
+        sim_force_hpdwarn = 0;
     }
     if (s_state == TAG_STATE_IDLE)
     {
@@ -289,8 +403,51 @@ static int run_cycle(CycleSeen *cs)
 
     /* FINAL leaves at DX_TIME (+ TX antenna delay). */
     const uint64_t t5 = (cs->dx_final + (uint64_t)ANT_DLY) & MASK40;
-    sim_complete_tx(t5);
-    Tag_Task();
+    if (g_stuck_final)
+    {
+        for (unsigned k = 0U; k < TAG_NUM_ANCHORS + 1U; k++)
+            Tag_Task(); /* all prior results may finish, but TX has no IRQ */
+        CHECK(s_state == TAG_STATE_BURST_TX_FINAL && !Tag_TelemetryWindow());
+        sim_us += s_burst_final_timeout_us + 1U;
+        Tag_Task();
+        CHECK(s_state == TAG_STATE_IDLE);
+        g_t1 += 4.5e-3 / UWB_DWT_TIME_UNIT_S;
+        return 0;
+    }
+    uint8_t completed_during_work = 0U;
+    if (g_publish_before_final && s_bc[s_bc_cur ^ 1U].seq != 0U)
+    {
+        g_work_final_ts = t5;
+        g_publish_clock_reads = 0U;
+        sim_cycle_hook = complete_final_during_publish;
+        Tag_Task();
+        sim_cycle_hook = NULL;
+        CHECK(g_publish_clock_reads >= 2U && s_state == TAG_STATE_IDLE);
+        CHECK(sim_us - s_burst_final_done_us >= 80U); /* gap overlaps CPU work */
+        completed_during_work = 1U;
+    }
+    else if (g_publish_before_final)
+    {
+        Tag_Task(); /* previous-cycle Rb is ready, current FINAL not done yet */
+        CHECK(!s_bc[s_bc_cur].final_sent);
+        CHECK(Tag_TelemetryWindow() == 0U);
+        CHECK(s_burst_publish_next <= 1U);
+    }
+    if (!completed_during_work)
+    {
+        sim_complete_tx(t5);
+        Tag_Task();
+    }
+    const uint64_t final_observed_us = s_burst_final_done_us;
+    for (uint8_t work = 0U; s_state == TAG_STATE_BURST_TX_FINAL && work < TAG_NUM_ANCHORS; work++)
+    {
+        CHECK(Tag_TelemetryWindow() == 0U); /* never send an unfinished record */
+        if (g_publish_before_final)
+            sim_us += 80U; /* CPU/loop delay must not restart recovery gap */
+        Tag_Task();
+    }
+    if (g_publish_before_final)
+        CHECK(s_burst_final_done_us == final_observed_us);
     CHECK(s_state == TAG_STATE_IDLE);
     CHECK(Tag_TelemetryWindow() == 1U);
 
@@ -375,6 +532,11 @@ static int test_eight_anchors_one_cycle_late(void)
             return 1;
         }
         CHECK(e->fp_cdbm != INT16_MIN && e->rx_cdbm != INT16_MIN);
+        CHECK(e->diag_flags == (TAG_BURST_DIAG_RESP_VALID | TAG_BURST_DIAG_FINAL_VALID));
+        CHECK(e->rx_diag.rxpacc == 900U && e->rx_diag.fp_ampl1 == 6000U
+              && e->rx_diag.fp_ampl2 == 5000U && e->rx_diag.fp_ampl3 == 4000U
+              && e->rx_diag.cir_pwr == 3000U && e->rx_diag.std_noise == 40U);
+        CHECK(e->anchor_fp_cdbm == -8200 && e->anchor_rx_cdbm == -7700);
         /* Clock offset read from the carrier integrator: 0.01 ppm units. */
         CHECK(abs(e->ci_ppm_x100 - (int)lround(g_anchor[idx].ppm * 100.0)) <= 2);
         CHECK(anchor_ds_ok_count[idx] >= 1U);
@@ -474,6 +636,65 @@ static int test_missing_resp_and_offline_probe(void)
     return 0;
 }
 
+static int test_unpowered_middle_anchor_keeps_final_on_time(void)
+{
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    CHECK(fresh_tag() == 0);
+    g_anchor[2].answers = 0;  /* Actual 2026-10-19 setup: A3 has no power. */
+    for (unsigned k = 0U; k < UWB_BURST_OFFLINE_AFTER + 2U * UWB_BURST_PROBE_CYCLES; k++)
+    {
+        CHECK(run_cycle(&cs) == 0);
+        CHECK(tag_burst_final_late_count == 0U);
+        if (k == 0U)
+            continue;
+        CHECK(pop_record(&rec) == 0);
+        for (uint8_t id = 1U; id <= TAG_NUM_ANCHORS; id++)
+        {
+            const TagBurstAnchor_t *e = entry_for(&rec, id);
+            if (id == 3U)
+            {
+                CHECK(e == NULL || e->status == TAG_ST_TIMEOUT);
+                continue;
+            }
+            CHECK(e != NULL && (e->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
+            CHECK(abs((int)e->range_mm - true_mm(&g_anchor[id - 1U])) <= 5);
+        }
+    }
+    CHECK(Tag_AnchorBackedOff(2U) == 1U);
+    CHECK(anchor_probe_count[2] > 0U);
+    return 0;
+}
+
+static int test_next_resp_arrives_while_previous_buffer_is_being_read(void)
+{
+    CHECK(fresh_tag() == 0);
+    if (!DW1000_DoubleRxBufferEnabled())
+        return 0; /* only the 300 Hz profile selects this receive path */
+    g_overlap = 1;
+    g_anchor[2].answers = 0;
+    for (unsigned k = 0U; k < UWB_BURST_OFFLINE_AFTER + 2U * UWB_BURST_PROBE_CYCLES; k++)
+    {
+        CycleSeen cs;
+        CHECK(run_cycle(&cs) == 0);
+        CHECK(g_overlap_queued);
+        CHECK(tag_burst_final_late_count == 0U);
+        if (k == 0U)
+            continue;
+        TagBurstRecord_t rec;
+        CHECK(pop_record(&rec) == 0);
+        for (uint8_t id = 1U; id <= TAG_NUM_ANCHORS; id++)
+        {
+            if (id == 3U)
+                continue;
+            const TagBurstAnchor_t *e = entry_for(&rec, id);
+            CHECK(e != NULL && (e->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
+            CHECK(abs((int)e->range_mm - true_mm(&g_anchor[id - 1U])) <= 5);
+        }
+    }
+    return 0;
+}
+
 static int test_reenable_anchor_clears_offline_backoff(void)
 {
     CycleSeen cs;
@@ -532,13 +753,13 @@ static int test_late_final_and_timing_command(void)
     /* New timing is validated, then used from the next cycle on. */
     const TagBurstTiming_t bad = { 100U, 350U, 450U, 500U, 0U };
     CHECK(Tag_SetBurstTiming(&bad) == -1);
-    const TagBurstTiming_t good = { 600U, 300U, 400U, 300U, 5000U };
+    const TagBurstTiming_t good = { 600U, 300U, 450U, 300U, 5000U };
     CHECK(Tag_SetBurstTiming(&good) == 0);
     TagBurstTiming_t now;
     Tag_GetBurstTiming(&now);
     CHECK(now.base_uus == 600U && now.slot_uus == 300U && now.period_us == 5000U);
     CHECK(run_cycle(&cs) == 0);
-    CHECK(cs.base == 600U && cs.slot == 300U && cs.final == 600U + 7U * 300U + 400U);
+    CHECK(cs.base == 600U && cs.slot == 300U && cs.final == 600U + 7U * 300U + 450U);
     CHECK(run_cycle(&cs) == 0);
     CHECK(pop_record(&rec) == 0);
     CHECK(abs((int)entry_for(&rec, 8U)->range_mm - true_mm(&g_anchor[7])) <= 2);
@@ -556,9 +777,115 @@ static int test_switch_back_to_sequential(void)
     sim_us += (uint64_t)TAG_CYCLE_MS * 1000U + 1000U;
     Tag_Task();                               /* switches while idle */
     CHECK(Tag_BurstMode() == 0U && Tag_FrameVersion() == UWB_TAG_FRAME_VERSION);
+    CHECK(!DW1000_DoubleRxBufferEnabled());
     CHECK(s_state == TAG_STATE_TX_POLL);      /* first unicast POLL of v2 */
     CHECK(sim_tx_frame[10] == UWB_FRAME_V2);
     CHECK(Tag_SetBurstMode(1U) == 0);
+    return 0;
+}
+
+static int test_300_schedule_keeps_final_setup_budget(void)
+{
+#if defined(UWB_HIGH_RATE_300) && UWB_HIGH_RATE_300
+    CHECK(fresh_tag() == 0);
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    /* Reproduce the released 250/350 profile under SPI budget stress.
+     * Direct assignment deliberately bypasses command validation. */
+    s_burst_timing.slot_uus = 250U;
+    s_burst_timing.final_margin_uus = 350U;
+    g_final_budget_stress = 1;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(tag_burst_final_late_count == 1U);
+
+    CHECK(fresh_tag() == 0);
+    CHECK(UWB_BURST_SLOT_UUS >= 275U && UWB_BURST_FINAL_MARGIN_UUS >= 450U);
+    const TagBurstTiming_t defaults = s_burst_timing;
+    TagBurstTiming_t unsafe = defaults, actual;
+    unsafe.final_margin_uus = 350U;
+    CHECK(Tag_SetBurstTiming(&unsafe) == -1);
+    unsafe = defaults;
+    unsafe.slot_uus = 250U;
+    CHECK(Tag_SetBurstTiming(&unsafe) == -1);
+    Tag_GetBurstTiming(&actual);
+    CHECK(actual.slot_uus == defaults.slot_uus
+          && actual.final_margin_uus == defaults.final_margin_uus);
+    g_final_budget_stress = 1;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(tag_burst_final_late_count == 0U);
+    CHECK(pop_record(&rec) == 0);
+    CHECK(rec.count == 8U);
+    for (uint8_t id = 1U; id <= 8U; id++)
+        CHECK((entry_for(&rec, id)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_DS);
+    CHECK(fresh_tag() == 0);
+    g_anchor[2].answers = 0; /* missing middle slot must not delay FINAL */
+    g_final_budget_stress = 1;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(tag_burst_final_late_count == 0U);
+    /* A full info cycle has a wider slot but still needs its FINAL margin. */
+    sim_us += (uint64_t)UWB_BURST_INFO_PERIOD_MS * 1000U;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(cs.info_id != 0U && tag_burst_final_late_count == 0U);
+    CHECK(fresh_tag() == 0);
+    g_anchor[7].answers = 0; /* timeout path still needs TX setup headroom */
+    g_final_budget_stress = 1;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(tag_burst_final_late_count == 0U);
+#endif
+    return 0;
+}
+
+static int test_pipelined_publish_and_bounded_maintenance(void)
+{
+#if defined(UWB_BURST_PIPELINED_PUBLISH) && UWB_BURST_PIPELINED_PUBLISH
+    CHECK(fresh_tag() == 0);
+    CHECK(!Tag_ClaimMaintenanceSlot(0U));
+    CHECK(!Tag_ClaimMaintenanceSlot(601U));
+    g_publish_before_final = 1;
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(pop_record(&rec) == 0);
+    CHECK(rec.count == 8U && rec.meas_seq_first + 8U == s_meas_seq);
+    CHECK(!Tag_PopBurst(&rec)); /* one record, despite eight publish slices */
+    sim_us += UWB_BURST_PERIOD_US; /* emulate a CPU-overloaded floor */
+    CHECK(Tag_IdleBudgetUs() == 0U);
+    CHECK(Tag_ClaimMaintenanceSlot(400U));
+    CHECK(Tag_IdleBudgetUs() == 400U);
+    CHECK(!Tag_ClaimMaintenanceSlot(400U));
+    const uint32_t polls = sim_tx_count;
+    sim_us += 399U;
+    Tag_Task();
+    CHECK(s_state == TAG_STATE_IDLE && sim_tx_count == polls);
+    sim_us++;
+    Tag_Task();
+    CHECK(s_state == TAG_STATE_BURST_TX_POLL && sim_tx_count == polls + 1U);
+    CHECK(!Tag_ClaimMaintenanceSlot(400U)); /* no work in a radio window */
+#endif
+    return 0;
+}
+
+static int test_publish_does_not_turn_a_stuck_final_into_success(void)
+{
+    CHECK(fresh_tag() == 0);
+    CycleSeen cs;
+    TagBurstRecord_t rec;
+    CHECK(run_cycle(&cs) == 0);
+    g_stuck_final = 1;
+    const uint32_t timeouts = ds_final_tx_timeout_count;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(ds_final_tx_timeout_count == timeouts + 1U);
+    CHECK(pop_record(&rec) == 0);
+    CHECK(entry_for(&rec, 1U)->flags & TAG_BURST_REC_RADIO_OK); /* prior cycle valid */
+    CHECK(!Tag_PopBurst(&rec));
+    g_stuck_final = 0;
+    CHECK(run_cycle(&cs) == 0);
+    CHECK(pop_record(&rec) == 0);
+#if UWB_BURST_REQUIRE_DS
+    CHECK((entry_for(&rec, 1U)->flags & TAG_BURST_REC_MODE_MASK) == TAG_MEAS_MODE_NONE);
+#endif
     return 0;
 }
 
@@ -619,11 +946,16 @@ int main(void)
         || test_calibrated_ranges_and_snapshot()
         || test_missing_final_falls_back_to_corrected_ss()
         || test_missing_resp_and_offline_probe()
+        || test_unpowered_middle_anchor_keeps_final_on_time()
+        || test_next_resp_arrives_while_previous_buffer_is_being_read()
         || test_reenable_anchor_clears_offline_backoff()
         || test_info_tlv_widens_its_cycle()
         || test_late_final_and_timing_command()
+        || test_300_schedule_keeps_final_setup_budget()
         || test_foreign_frame_before_last_response()
         || test_long_run_txn_wrap_no_duplicate_records()
+        || test_pipelined_publish_and_bounded_maintenance()
+        || test_publish_does_not_turn_a_stuck_final_into_success()
         || test_switch_back_to_sequential())
     {
         return 1;

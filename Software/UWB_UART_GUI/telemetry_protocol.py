@@ -29,6 +29,7 @@ TYPE_DIAG_SYSTEM = 0x15
 TYPE_DEVICE_INFO = 0x16
 TYPE_GATEWAY_HEALTH = 0x17
 TYPE_RANGE_BURST = 0x18
+TYPE_RX_QUALITY = 0x19
 TYPE_CMD = 0x20
 
 INFO_FLAG_HW_ANTENNA_DELAY = 0x01
@@ -58,6 +59,10 @@ BURST_FLAG_RADIO_OK = 0x20
 BURST_RANGE_NONE = 0xFFFF
 BURST_HEADER_SIZE = 22
 BURST_ENTRY_SIZE = 8
+QUALITY_HEADER_FORMAT = "<BHIQBBBhHIHBB"
+QUALITY_ENTRY_FORMAT = "<BB7Hihhhh"
+QUALITY_HEADER_SIZE = struct.calcsize(QUALITY_HEADER_FORMAT)
+QUALITY_ENTRY_SIZE = struct.calcsize(QUALITY_ENTRY_FORMAT)
 
 # Host -> TAG commands (Firmware/common/services/uwb_cmd.h).
 CMD_PING = 0x01
@@ -302,6 +307,50 @@ class RangeBurstMessage:
 
 
 @dataclass(frozen=True)
+class RxQualityAnchor:
+    anchor_id: int
+    flags: int
+    rxpacc: int
+    fp_ampl1: int
+    fp_ampl2: int
+    fp_ampl3: int
+    cir_pwr: int
+    std_noise: int
+    fp_index: int
+    carrier_integrator: int
+    fp_cdbm: int
+    rx_cdbm: int
+    anchor_fp_cdbm: int
+    anchor_rx_cdbm: int
+
+    @property
+    def resp_valid(self) -> bool:
+        return bool(self.flags & 1)
+
+    @property
+    def final_valid(self) -> bool:
+        return bool(self.flags & 2)
+
+
+@dataclass(frozen=True)
+class RxQualityMessage:
+    sequence: int
+    time_ms: int
+    boot_id: int
+    cycle_seq: int
+    t_us: int
+    prf_mhz: int
+    env_flags: int
+    temperature_c: float | None
+    vbat_v: float | None
+    env_age_ms: int | None
+    sample_period_ms: int
+    temp_raw: int
+    vbat_raw: int
+    anchors: tuple[RxQualityAnchor, ...]
+
+
+@dataclass(frozen=True)
 class DiagAnchorMessage:
     sequence: int
     time_ms: int
@@ -426,6 +475,13 @@ class DiagSystemMessage:
     strict_ds: bool | None = None
     burst_rx_service_max_us: int = 0
     burst_publish_max_us: int = 0
+    burst_publish_step_max_us: int = 0
+    burst_post_final_max_us: int = 0
+    burst_telemetry_max_us: int = 0
+    burst_maintenance_grants: int = 0
+    quality_frames: int = 0
+    quality_deferred: int = 0
+    quality_pack_max_us: int = 0
 
 
 @dataclass(frozen=True)
@@ -493,7 +549,7 @@ DecodedMessage = Union[
     GatewayHealthMessage,
     InfoMessage, RangeMessage, StatsMessage, RangeMeasMessage, DiagAnchorMessage,
     AnchorInfoMessage, CmdAckMessage, SnifferFrameMessage, DiagSystemMessage,
-    DeviceInfoMessage, RangeBurstMessage,
+    DeviceInfoMessage, RangeBurstMessage, RxQualityMessage,
 ]
 
 RX_ERROR_FIELDS = (
@@ -718,6 +774,24 @@ def encode_range_burst_payload(message: RangeBurstMessage) -> bytes:
     return bytes(payload)
 
 
+def decode_rx_quality(frame: Frame) -> RxQualityMessage:
+    _require_schema(frame, QUALITY_HEADER_SIZE, "RX_QUALITY")
+    (_, boot, cycle, t_us, prf, count, flags, temp, vbat, age,
+     period, temp_raw, vbat_raw) = struct.unpack_from(QUALITY_HEADER_FORMAT, frame.payload)
+    if (count > 8 or len(frame.payload) != QUALITY_HEADER_SIZE + QUALITY_ENTRY_SIZE * count
+            or prf not in (16, 64) or flags & ~3):
+        raise ProtocolError("invalid RX_QUALITY layout/PRF/environment flags")
+    anchors = tuple(RxQualityAnchor(*struct.unpack_from(QUALITY_ENTRY_FORMAT, frame.payload, off))
+                    for off in range(QUALITY_HEADER_SIZE, len(frame.payload), QUALITY_ENTRY_SIZE))
+    if (len({a.anchor_id for a in anchors}) != count
+            or any(not 1 <= a.anchor_id <= 8 or a.flags & ~3 for a in anchors)):
+        raise ProtocolError("invalid RX_QUALITY anchor/flags")
+    return RxQualityMessage(frame.sequence, frame.time_ms, boot, cycle, t_us, prf, flags,
+        temp / 100 if flags & 1 and temp != INT16_MIN else None,
+        vbat / 1000 if flags & 2 and vbat else None,
+        None if age == 0xFFFFFFFF else age, period, temp_raw, vbat_raw, anchors)
+
+
 def decode_diag_anchor(frame: Frame) -> DiagAnchorMessage:
     _require_schema(frame, 73, "DIAG_ANCHOR")
     v = struct.unpack_from("<BHBB11IHH5I", frame.payload)
@@ -777,6 +851,14 @@ def decode_diag_system(frame: Frame) -> DiagSystemMessage:
             "<4BII", frame.payload, 168)
         burst.update(spi_backend=backend, strict_ds=bool(strict),
                      burst_rx_service_max_us=rx_us, burst_publish_max_us=publish_us)
+        if len(frame.payload) >= 196:
+            step_us, post_us, telemetry_us, grants = struct.unpack_from("<4I", frame.payload, 180)
+            burst.update(burst_publish_step_max_us=step_us, burst_post_final_max_us=post_us,
+                         burst_telemetry_max_us=telemetry_us, burst_maintenance_grants=grants)
+        if len(frame.payload) >= 208:
+            sent, deferred, pack_us = struct.unpack_from("<3I", frame.payload, 196)
+            burst.update(quality_frames=sent, quality_deferred=deferred,
+                         quality_pack_max_us=pack_us)
     return DiagSystemMessage(
         frame.sequence, frame.time_ms,
         boot_id=v[1], boot_count=v[2], reset_cause=v[3], uptime_ms=v[4],
@@ -925,6 +1007,7 @@ _DECODERS = {
     TYPE_DEVICE_INFO: decode_device_info,
     TYPE_GATEWAY_HEALTH: decode_gateway_health,
     TYPE_RANGE_BURST: decode_range_burst,
+    TYPE_RX_QUALITY: decode_rx_quality,
 }
 
 

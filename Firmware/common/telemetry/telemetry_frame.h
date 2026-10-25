@@ -40,6 +40,7 @@ extern "C" {
 #define TELEM_TYPE_DEVICE_INFO   0x16
 #define TELEM_TYPE_GATEWAY_HEALTH 0x17   /* emitted by the ESP32-C3 gateway */
 #define TELEM_TYPE_RANGE_BURST   0x18   /* one burst cycle, every anchor */
+#define TELEM_TYPE_RX_QUALITY    0x19   /* sampled raw RESP diagnostics + TAG env */
 #define TELEM_TYPE_CMD           0x20
 
 uint16_t telem_crc16_ccitt(const uint8_t *data, uint16_t length);

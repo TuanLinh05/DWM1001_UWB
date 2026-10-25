@@ -23,6 +23,22 @@ int      sim_force_pll_unlock;
 int      sim_pll_lock_event_enabled;
 uint32_t sim_pll_failures_remaining;
 uint32_t sim_spi_calls;
+uint32_t sim_spi_overhead_us, sim_spi_byte_us;
+uint32_t sim_rx_buffer_releases;
+void (*sim_spi_hook)(uint8_t reg, uint16_t sub, uint8_t writing);
+void (*sim_cycle_hook)(void);
+
+typedef struct {
+    uint8_t finfo[4], payload[128], quality[8], time[14];
+} SimRxBank;
+static SimRxBank s_rx_banks[2];
+static uint8_t s_host_rx, s_ic_rx, s_double_rx;
+
+static void update_rx_pointers(void)
+{
+    sim_status = (sim_status & ~(3ULL << 30))
+        | ((uint64_t)s_host_rx << 30) | ((uint64_t)s_ic_rx << 31);
+}
 
 static uint8_t s_last_softreset;
 
@@ -55,6 +71,12 @@ void sim_reset(void)
     sim_pll_lock_event_enabled = 1;
     sim_pll_failures_remaining = 0U;
     sim_spi_calls = 0U;
+    sim_spi_overhead_us = sim_spi_byte_us = 0U;
+    sim_rx_buffer_releases = 0U;
+    sim_spi_hook = NULL;
+    sim_cycle_hook = NULL;
+    s_host_rx = s_ic_rx = s_double_rx = 0U;
+    memset(s_rx_banks, 0, sizeof(s_rx_banks));
     s_last_softreset = 0U;
     const uint8_t dev_id[4] = { 0x30, 0x01, 0xCA, 0xDE };
     sim_write_bytes(DW_REG_DEV_ID, 0, dev_id, 4);
@@ -110,6 +132,16 @@ void sim_deliver_rx(const uint8_t *frame, uint16_t len, uint64_t rx_ts,
                      (uint8_t)(finfo >> 24) };
     sim_write_bytes(DW_REG_RX_FINFO, 0, b, 4);
     put_ts(DW_REG_RX_TIME, rx_ts);
+    if (s_double_rx)
+    {
+        SimRxBank *bank = &s_rx_banks[s_ic_rx];
+        memcpy(bank->finfo, sim_reg[DW_REG_RX_FINFO], sizeof(bank->finfo));
+        memcpy(bank->payload, sim_reg[DW_REG_RX_BUFFER], sizeof(bank->payload));
+        memcpy(bank->quality, sim_reg[DW_REG_RX_FQUAL], sizeof(bank->quality));
+        memcpy(bank->time, sim_reg[DW_REG_RX_TIME], sizeof(bank->time));
+        s_ic_rx ^= 1U;
+        update_rx_pointers();
+    }
     sim_status |= DW_RXDFR_BIT | DW_RXFCG_BIT | DW_LDEDONE_BIT | extra_status;
     dw1000_irq_flag = 1U;
 }
@@ -123,11 +155,17 @@ static void handle_write(uint8_t reg, uint16_t sub, const uint8_t *data, uint16_
     if (reg == DW_REG_SYS_STATUS)
     {
         for (uint16_t i = 0; i < len && (sub + i) < 5U; i++)
-            sim_status &= ~((uint64_t)data[i] << (8U * (sub + i)));
+            sim_status &= ~(((uint64_t)data[i] << (8U * (sub + i))) & ~(3ULL << 30));
         return;
     }
     if (reg == DW_REG_SYS_CTRL)
     {
+        if (sub == 3U && len == 1U && (data[0] & 1U))
+        {
+            s_host_rx ^= 1U;
+            sim_rx_buffer_releases++;
+            update_rx_pointers();
+        }
         if (sub == 0U && len >= 1U)
         {
             sim_ctrl_log[sim_ctrl_count % SIM_CTRL_LOG] = data[0];
@@ -145,6 +183,8 @@ static void handle_write(uint8_t reg, uint16_t sub, const uint8_t *data, uint16_
             sim_rx_enable_count++;
         return;
     }
+    if (reg == DW_REG_SYS_CFG && sub == 0U && len == 4U)
+        s_double_rx = (data[1] & 0x10U) == 0U;
     if (reg == DW_REG_TX_BUFFER)
     {
         memcpy(&sim_tx_frame[sub], data, len);
@@ -190,6 +230,7 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
         return -EINVAL;
 
     const uint8_t is_write = (header[0] & 0x80U) != 0U;
+    sim_us += sim_spi_overhead_us + sim_spi_byte_us * (header_length + length);
     const uint8_t reg = header[0] & 0x3FU;
     uint16_t sub = 0U;
     if (header[0] & 0x40U)
@@ -198,6 +239,9 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
         if ((header[1] & 0x80U) && header_length >= 3U)
             sub = (uint16_t)(sub | ((uint16_t)header[2] << 7));
     }
+
+    if (sim_spi_hook != NULL)
+        sim_spi_hook(reg, sub, is_write);
 
     if (is_write)
     {
@@ -213,6 +257,19 @@ int uwb_platform_spi_xfer(const uint8_t *header, size_t header_length,
         for (size_t i = 0; i < length; i++)
             rx[i] = (uint8_t)(sim_status >> (8U * (sub + i)));
         return 0;
+    }
+    if (s_double_rx)
+    {
+        const SimRxBank *bank = &s_rx_banks[s_host_rx];
+        const uint8_t *source = reg == DW_REG_RX_FINFO ? bank->finfo
+            : reg == DW_REG_RX_BUFFER ? bank->payload
+            : reg == DW_REG_RX_FQUAL ? bank->quality
+            : reg == DW_REG_RX_TIME ? bank->time : NULL;
+        if (source != NULL)
+        {
+            memcpy(rx, source + sub, length);
+            return 0;
+        }
     }
     memcpy(rx, &sim_reg[reg][sub], length);
     return 0;
@@ -230,7 +287,12 @@ bool uwb_platform_irq_active(void)
 void uwb_platform_delay_ms(uint32_t ms) { sim_us += (uint64_t)ms * 1000U; }
 void uwb_platform_delay_us(uint32_t us) { sim_us += us; }
 uint32_t uwb_platform_time_ms(void) { return (uint32_t)(sim_us / 1000U); }
-uint32_t uwb_platform_cycle_now(void) { return (uint32_t)sim_us; }
+uint32_t uwb_platform_cycle_now(void)
+{
+    if (sim_cycle_hook != NULL)
+        sim_cycle_hook();
+    return (uint32_t)sim_us;
+}
 uint32_t uwb_platform_elapsed_us(uint32_t start) { return (uint32_t)sim_us - start; }
 uint64_t uwb_platform_time_us64(void) { return sim_us; }
 void uwb_platform_led_toggle(void) {}

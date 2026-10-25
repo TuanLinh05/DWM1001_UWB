@@ -1,0 +1,289 @@
+diff --git a/uwb_calib.py b/uwb_calib.py
+index 265be4c..0c92173 100644
+--- a/uwb_calib.py
++++ b/uwb_calib.py
+@@ -33,7 +33,16 @@ def read_bag(uri):
+         a = {x['anchor_id']: x for x in b['anchors']}
+         T.append(b['tag_time_us'])
+         R.append([a[i]['range_mm'] if i in a and a[i]['range_mm'] is not None else np.nan for i in range(1, 9)])
+-        C.append([a[i].get('ci', np.nan) if i in a else np.nan for i in range(1, 9)])  # old bursts: no ci
++        # New firmware supplies signed CI with explicit ppm units. Prefer
++        # the separately timestamped 10 Hz raw sample, then compact 0.25 ppm.
++        def ci_value(x):
++            q=x.get('quality') or {}
++            ppm=q.get('ci_ppm') if q.get('resp_valid') and q.get('age_ms',9999)<=500 else None
++            if ppm is None: ppm=x.get('ci_ppm')
++            if ppm is not None: return ppm*1000
++            legacy=x.get('ci')
++            return np.nan if legacy is None else legacy
++        C.append([ci_value(a[i]) if i in a else np.nan for i in range(1, 9)])
+     t = np.unwrap(np.array(T, float), period=2 ** 32) * 1e-6  # u32 us wraps every 71.6 min
+     return t - t[0], np.array(R, float) / 1000, np.array(C, float)
+ 
+diff --git a/uwb_gui/CMakeLists.txt b/uwb_gui/CMakeLists.txt
+index a1628be..1a8500b 100644
+--- a/uwb_gui/CMakeLists.txt
++++ b/uwb_gui/CMakeLists.txt
+@@ -50,7 +50,10 @@ endif()
+ add_executable(uwb_gui src/main.cpp)
+ # ponytail: scripts (bringup.launch.py, uwb_calib.py) are found via the source tree, not installed
+ set(DRONE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "dir holding bringup.launch.py, uwb_calib.py, anchors_rig40.txt")
++set(UART_BRIDGE "${CMAKE_CURRENT_SOURCE_DIR}/../../uart_bridge/ros2/vcom_node.py" CACHE FILEPATH
++    "Direct UART telemetry adapter; optional alternative to full drone bring-up")
+ target_compile_definitions(uwb_gui PRIVATE DRONE_DIR="${DRONE_DIR}")
++target_compile_definitions(uwb_gui PRIVATE UART_BRIDGE="${UART_BRIDGE}")
+ target_link_libraries(uwb_gui imgui_all nlohmann_json::nlohmann_json Threads::Threads)
+ ament_target_dependencies(uwb_gui rclcpp std_msgs geometry_msgs)
+ target_compile_options(uwb_gui PRIVATE -Wall -Wextra -Wshadow)
+diff --git a/uwb_gui/src/main.cpp b/uwb_gui/src/main.cpp
+index 818f85c..f3b095c 100644
+--- a/uwb_gui/src/main.cpp
++++ b/uwb_gui/src/main.cpp
+@@ -45,9 +45,61 @@ static volatile std::sig_atomic_t g_quit = 0;   // Ctrl+C in the terminal -> lea
+ static double now_s() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return double(ts.tv_sec) + double(ts.tv_nsec) * 1e-9; }
+ 
+ // ---------------------------------------------------------------- messages (POD, SI) ----------
+-struct Burst { double rx_s; std::uint32_t cycle_seq, tag_us; float range_m[kN], fp_dbm[kN]; };
++struct Quality {
++  bool present = false;
++  float age_ms = kNaN, fp = kNaN, rx = kNaN, anchor_fp = kNaN, anchor_rx = kNaN;
++  std::uint16_t f1=0, f2=0, f3=0, cir=0, rxpacc=0, noise=0, fp_index=0;
++  std::int32_t carrier=0;
++};
++struct Burst {
++  double rx_s; std::uint32_t cycle_seq; std::uint64_t tag_us; std::uint16_t boot_id = 0;
++  float range_m[kN], fp_dbm[kN], rx_dbm[kN], nlos_db[kN], ci_ppm[kN];
++  float temperature=kNaN, vbat=kNaN, env_age_ms=kNaN;
++  Quality quality[kN];
++};
+ struct Pos   { double rx_s; float x, y, z, sx, sy, sz; };
+ 
++static float number(const nlohmann::json& j, const char* key) {
++  const auto it = j.find(key);
++  return it != j.end() && it->is_number() ? it->get<float>() : kNaN;
++}
++
++static bool parse_burst(const std::string& s, Burst& b) {
++  b = Burst{}; b.rx_s = now_s();
++  for (auto* values : {b.range_m,b.fp_dbm,b.rx_dbm,b.nlos_db,b.ci_ppm})
++    std::fill_n(values,kN,kNaN);
++  try {
++    const auto j = nlohmann::json::parse(s);
++    b.cycle_seq=j.at("cycle_seq").get<std::uint32_t>();
++    b.tag_us=j.at("tag_time_us").get<std::uint64_t>();
++    b.boot_id=j.value("boot_id",std::uint16_t(0));
++    b.temperature=number(j,"temperature_c"); b.vbat=number(j,"vbat_v");
++    b.env_age_ms=number(j,"env_age_ms");
++    for (const auto& a : j.at("anchors")) {
++      const int i=a.at("anchor_id").get<int>()-1;
++      if (i<0 || i>=kN) continue;
++      b.range_m[i]=number(a,"range_mm")/1000.f;
++      b.fp_dbm[i]=number(a,"fp_dbm"); b.rx_dbm[i]=number(a,"rx_dbm");
++      b.nlos_db[i]=number(a,"nlos_db"); b.ci_ppm[i]=number(a,"ci_ppm");
++      const auto it=a.find("quality");
++      if (it!=a.end() && it->is_object()) {
++        const auto& q=*it; auto& out=b.quality[i];
++        out.age_ms=number(q,"age_ms");
++        out.present=q.value("resp_valid",false) && out.age_ms<=500.f;
++        out.fp=number(q,"fp_dbm"); out.rx=number(q,"rx_dbm");
++        out.anchor_fp=number(q,"anchor_fp_dbm"); out.anchor_rx=number(q,"anchor_rx_dbm");
++        if (out.present) {
++          out.f1=q.at("fp_ampl1").get<std::uint16_t>(); out.f2=q.at("fp_ampl2").get<std::uint16_t>();
++          out.f3=q.at("fp_ampl3").get<std::uint16_t>(); out.cir=q.at("cir_pwr").get<std::uint16_t>();
++          out.rxpacc=q.at("rxpacc").get<std::uint16_t>(); out.noise=q.at("std_noise").get<std::uint16_t>();
++          out.fp_index=q.at("fp_index").get<std::uint16_t>(); out.carrier=q.at("carrier_integrator").get<std::int32_t>();
++        }
++      }
++    }
++    return true;
++  } catch (const nlohmann::json::exception&) { return false; }
++}
++
+ struct Links {
+   rt::SpscQueue<Burst> burst{1 << 13};          // ~37 s at 220 Hz of slack
+   rt::Latest<Pos> pos;
+@@ -69,19 +121,8 @@ class Bridge : public rclcpp::Node {
+   }
+  private:
+   void onBurst(const std::string& s) {
+-    Burst b{now_s(), 0, 0, {}, {}};
+-    std::fill_n(b.range_m, kN, kNaN); std::fill_n(b.fp_dbm, kN, kNaN);
+-    try {  // serial data turned JSON: a malformed burst is counted, never fatal
+-      const auto j = nlohmann::json::parse(s);
+-      b.cycle_seq = j.at("cycle_seq").get<std::uint32_t>();
+-      b.tag_us = j.at("tag_time_us").get<std::uint32_t>();
+-      for (const auto& a : j.at("anchors")) {
+-        const int i = a.at("anchor_id").get<int>() - 1;
+-        if (i < 0 || i >= kN) continue;
+-        if (!a.at("range_mm").is_null()) b.range_m[i] = a["range_mm"].get<float>() / 1000.0f;
+-        if (!a.at("fp_dbm").is_null()) b.fp_dbm[i] = a["fp_dbm"].get<float>();
+-      }
+-    } catch (const nlohmann::json::exception&) { L_.bad_json.fetch_add(1); return; }
++    Burst b;
++    if (!parse_burst(s,b)) { L_.bad_json.fetch_add(1); return; }
+     L_.burst.try_push(b);
+   }
+   Links& L_;
+@@ -167,35 +208,48 @@ struct Ui {
+   // live
+   std::vector<Scrolling> r = std::vector<Scrolling>(kN, Scrolling(8192));
+   Pos pos{}; double t0 = now_s(), last_rx = -1; float t_latest = 0;
+-  float fp_last[kN]{}, hz = 0, ok_pct[kN]{}; int n_sec = 0, ok_sec[kN]{}; double sec_start = now_s();
+-  std::uint32_t last_cycle = 0, last_tag_us = 0; bool have_cycle = false; std::uint64_t lost = 0, bursts = 0;
++  float fp_last[kN]{}, rx_last[kN]{}, nlos_last[kN]{}, ci_last[kN]{};
++  float temperature=kNaN, vbat=kNaN, env_age_ms=kNaN;
++  Quality quality[kN];
++  float hz = 0, ok_pct[kN]{}; int n_sec = 0, ok_sec[kN]{}; double sec_start = now_s();
++  std::uint32_t last_cycle = 0; std::uint64_t last_tag_us = 0; std::uint16_t boot_id=0;
++  bool have_cycle = false; std::uint64_t lost = 0, bursts = 0;
+   bool still = false; std::vector<float> tmp;
+   float window_s = 20;
+   // session
+   std::string port = "/dev/ttyACM0", anchors = kDir + "/anchors_rig40.txt", name = "spots", plan = "";
+   std::string bag, spots_file;
+-  bool ref_set = false; std::uint32_t ref_us = 0;      // tag time of the first burst after the recorder started
++  bool ref_set = false; std::uint64_t ref_us = 0;      // full 64-bit POLL time
+   double rec_started = 0;
+   std::vector<Spot> spots; int cur = 0; float hold_s = 60;
+   bool holding = false; double hold_t0 = 0;
+ 
+-  explicit Ui(Links& l) : L(l) {}
++  explicit Ui(Links& l) : L(l) {
++    for (auto* values : {fp_last,rx_last,nlos_last,ci_last}) std::fill_n(values,kN,kNaN);
++  }
+   bool stale() const { return last_rx < 0 || now_s() - last_rx > 0.5; }
+-  double tag_rel() const { return double(std::uint32_t(last_tag_us - ref_us)) * 1e-6; }  // u32 wrap-safe
++  double tag_rel() const { return last_tag_us>=ref_us ? double(last_tag_us-ref_us)*1e-6 : 0; }
+ 
+   void ingest() {
+     Burst b; int budget = 8192;
+     while (budget-- && L.burst.try_pop(b)) {
+       last_rx = b.rx_s; ++bursts;
++      if (have_cycle && b.boot_id!=boot_id) {
++        have_cycle=false; ref_set=false; holding=false;
++        log.add("[link] TAG restarted; hold aborted and time reference reset");
++      }
++      boot_id=b.boot_id;
+       if (have_cycle && b.cycle_seq > last_cycle + 1 && b.cycle_seq - last_cycle < 100000) lost += b.cycle_seq - last_cycle - 1;
+       last_cycle = b.cycle_seq; have_cycle = true; last_tag_us = b.tag_us;
+       if (rec.running() && !ref_set) { ref_set = true; ref_us = b.tag_us; }
+       t_latest = float(b.rx_s - t0);
++      temperature=b.temperature; vbat=b.vbat; env_age_ms=b.env_age_ms;
+       ++n_sec;
+       for (int i = 0; i < kN; ++i) {
+         r[i].push(t_latest, b.range_m[i]);
+         if (!std::isnan(b.range_m[i])) ++ok_sec[i];
+-        if (!std::isnan(b.fp_dbm[i])) fp_last[i] = b.fp_dbm[i];
++        fp_last[i]=b.fp_dbm[i]; rx_last[i]=b.rx_dbm[i];
++        nlos_last[i]=b.nlos_db[i]; ci_last[i]=b.ci_ppm[i]; quality[i]=b.quality[i];
+       }
+     }
+     L.pos.read(pos);
+@@ -222,6 +276,9 @@ struct Ui {
+     bringup.start({"ros2", "launch", kDir + "/bringup.launch.py", "camera:=false", "vslam:=false", "fc:=false",
+                    "uwb:=true", "uwb_port:=" + port, "anchors:=" + anchors}, log);
+   }
++  void start_uart() {
++    bringup.start({"/usr/bin/python3",UART_BRIDGE,"--port",port,"--baud","460800"},log);
++  }
+   void start_record() {
+     char ts[32]; const std::time_t t = std::time(nullptr); std::strftime(ts, sizeof ts, "%m%d_%H%M%S", std::localtime(&t));
+     bag = std::string(std::getenv("HOME")) + "/bags/" + name + "_" + ts;
+@@ -282,7 +339,13 @@ static void panel_session(Ui& ui) {
+   ImGui::InputText("tag port", &ui.port);
+   ImGui::InputText("anchors file", &ui.anchors);
+   ImGui::EndDisabled();
+-  if (!ui.bringup.running()) { if (ImGui::Button("Start vcom_node + uwb_pos")) ui.start_bringup(); }
++  if (!ui.bringup.running()) {
++    if (ImGui::Button("Start vcom_node + uwb_pos")) ui.start_bringup();
++    ImGui::SameLine();
++    ImGui::BeginDisabled(!std::filesystem::exists(UART_BRIDGE));
++    if (ImGui::Button("Start UART telemetry")) ui.start_uart();
++    ImGui::EndDisabled();
++  }
+   else if (ImGui::Button("Stop bring-up")) ui.bringup.stop();
+   ImGui::SameLine(); proc_row("", ui.bringup);
+ 
+@@ -376,9 +439,19 @@ static void panel_link(Ui& ui) {
+   ImGui::TextColored(ui.stale() ? kBad : kOk, ui.stale() ? "LINK STALE" : "LINK OK");
+   ImGui::SameLine(); ImGui::Text("| %.0f bursts/s | lost cycles %llu | bad json %d | gui drop %llu", ui.hz,
+                                  (unsigned long long)ui.lost, ui.L.bad_json.load(), (unsigned long long)ui.L.burst.dropped());
+-  if (ImGui::BeginTable("anchors", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
++  if (std::isfinite(ui.temperature)) ImGui::Text("TAG %.2f C",ui.temperature);
++  else ImGui::TextDisabled("TAG temperature: -");
++  ImGui::SameLine();
++  if (std::isfinite(ui.vbat)) ImGui::Text("| %.3f V",ui.vbat);
++  else ImGui::TextDisabled("| supply: -");
++  ImGui::SameLine();
++  if (std::isfinite(ui.env_age_ms)) ImGui::Text("| environment age %.0f ms%s",ui.env_age_ms,
++      ui.env_age_ms>2500 ? " [stale]" : "");
++  else ImGui::TextDisabled("| environment age: -");
++  if (ImGui::BeginTable("anchors", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
+     ImGui::TableSetupColumn("anchor"); ImGui::TableSetupColumn("range [m]");
+     ImGui::TableSetupColumn("answered [%]"); ImGui::TableSetupColumn("fp [dBm]"); ImGui::TableSetupColumn("1 s spread [cm]");
++    ImGui::TableSetupColumn("RX [dBm]"); ImGui::TableSetupColumn("RX-FP [dB]"); ImGui::TableSetupColumn("CI [ppm]");
+     ImGui::TableHeadersRow();
+     for (int i = 0; i < kN; ++i) {
+       const Scrolling& s = ui.r[size_t(i)];
+@@ -389,11 +462,35 @@ static void panel_link(Ui& ui) {
+       ImGui::TableNextColumn(); ImGui::Text("%d", i + 1);
+       ImGui::TableNextColumn(); if (std::isnan(last)) ImGui::TextColored(kBad, "timeout"); else ImGui::Text("%.3f", last);
+       ImGui::TableNextColumn(); ImGui::TextColored(ui.ok_pct[i] > 95 ? kOk : ui.ok_pct[i] > 70 ? kWarn : kBad, "%.0f", ui.ok_pct[i]);
+-      ImGui::TableNextColumn(); ImGui::Text("%.1f", ui.fp_last[i]);
++      ImGui::TableNextColumn(); if (std::isnan(ui.fp_last[i])) ImGui::TextDisabled("-"); else ImGui::Text("%.1f", ui.fp_last[i]);
+       ImGui::TableNextColumn(); if (hi >= lo) ImGui::Text("%.1f", 100 * (hi - lo)); else ImGui::TextDisabled("-");
++      for (const float value : {ui.rx_last[i],ui.nlos_last[i],ui.ci_last[i]}) {
++        ImGui::TableNextColumn(); if (std::isnan(value)) ImGui::TextDisabled("-"); else ImGui::Text("%.2f",value);
++      }
+     }
+     ImGui::EndTable();
+   }
++  if (ImGui::TreeNode("Raw RESP quality (sampled 10 Hz; same-cycle ID/time in JSON)")) {
++    if (ImGui::BeginTable("raw_quality",14,ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX)) {
++      for (const char* name : {"A","F1","F2","F3","CIR_PWR","RXPACC","Noise","FP index",
++                              "CI raw","FP precise","RX precise","Anchor FP","Anchor RX","Age ms"})
++        ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,85);
++      ImGui::TableHeadersRow();
++      for (int i=0;i<kN;i++) {
++        const auto& q=ui.quality[i];
++        ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%d",i+1);
++        for (const auto value : {q.f1,q.f2,q.f3,q.cir,q.rxpacc,q.noise,q.fp_index}) {
++          ImGui::TableNextColumn(); if (q.present && !ui.stale()) ImGui::Text("%u",unsigned(value)); else ImGui::TextDisabled("-");
++        }
++        ImGui::TableNextColumn(); if (q.present && !ui.stale()) ImGui::Text("%d",q.carrier); else ImGui::TextDisabled("-");
++        for (const float value : {q.fp,q.rx,q.anchor_fp,q.anchor_rx,q.age_ms}) {
++          ImGui::TableNextColumn(); if (q.present && !ui.stale() && !std::isnan(value)) ImGui::Text("%.2f",value); else ImGui::TextDisabled("-");
++        }
++      }
++      ImGui::EndTable();
++    }
++    ImGui::TreePop();
++  }
+   const bool pos_fresh = now_s() - ui.pos.rx_s < 0.5;
+   ImGui::TextColored(pos_fresh ? kOk : ImVec4(0.6f, 0.6f, 0.6f, 1), "uwb/pos  x %.3f  y %.3f  z %.3f m   (1σ %.0f %.0f %.0f cm)%s",
+                      ui.pos.x, ui.pos.y, ui.pos.z, 100 * ui.pos.sx, 100 * ui.pos.sy, 100 * ui.pos.sz, pos_fresh ? "" : "  [stale]");
+@@ -472,6 +569,24 @@ static bool headless_step(Ui& ui, int f) {
+ 
+ // ---------------------------------------------------------------- main = GUI thread -----------
+ int main(int argc, char** argv) {
++  if (argc>1 && !std::strcmp(argv[1],"--self-test")) {
++    Burst b;
++    if (!parse_burst(R"({"cycle_seq":2,"boot_id":3,"tag_time_us":987654321012,"anchors":[{"anchor_id":1,"range_mm":1234,"fp_dbm":-84.5}]})",b)
++        || b.tag_us!=987654321012ULL || b.boot_id!=3 || b.range_m[0]!=1.234f
++        || !std::isnan(b.rx_dbm[0]) || b.quality[0].present) return 2;
++    if (!parse_burst(R"({"cycle_seq":3,"tag_time_us":987654322012,"temperature_c":34.4,"vbat_v":3.3,"anchors":[{"anchor_id":1,"range_mm":1234,"fp_dbm":-84.5,"rx_dbm":-76.2,"nlos_db":8.3,"ci_ppm":-20.25,"quality":{"resp_valid":true,"age_ms":25,"fp_ampl1":11,"fp_ampl2":22,"fp_ampl3":33,"cir_pwr":44,"rxpacc":63,"std_noise":5,"fp_index":100,"carrier_integrator":35000,"fp_dbm":-84.41,"rx_dbm":-76.22,"anchor_fp_dbm":null,"anchor_rx_dbm":null}}]})",b)
++        || !b.quality[0].present || b.quality[0].f1!=11 || b.ci_ppm[0]!=-20.25f
++        || std::isnan(b.temperature) || !std::isnan(b.quality[0].anchor_fp)) return 3;
++    if (parse_burst("{broken",b)) return 4;
++    if (argc>2) {
++      std::ifstream input(argv[2]); std::ostringstream buffer; buffer<<input.rdbuf();
++      if (!input || !parse_burst(buffer.str(),b) || !b.quality[0].present
++          || b.quality[0].f1!=101 || b.tag_us<=0xFFFFFFFFULL) return 5;
++      std::puts("Actual C encoder -> ROS JSON -> ImGui parser PASS");
++    }
++    std::puts("ImGui calibration JSON self-test PASS (legacy + quality/env + 64-bit time + missing values)");
++    return 0;
++  }
+   const int ncpu = int(std::thread::hardware_concurrency());
+   int gui_core = ncpu - 1, ros_core = ncpu > 1 ? ncpu - 2 : 0;
+   std::string plan; float hold_s = 60;

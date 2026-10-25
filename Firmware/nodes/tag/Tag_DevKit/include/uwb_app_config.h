@@ -61,16 +61,25 @@
 #ifndef UWB_PHY_PREAMBLE
 #define UWB_PHY_PREAMBLE 64U
 #endif
-/* 300 Hz foundation profile: nominal 322.6 cycles/s (3100 us period), leaving
- * ~7.5% DS/drop headroom above 300 sets/s across all eight anchors.
- * Active air + gap time is 2550 UUS (~2615 us) + 73 us POLL preamble + 25 us
- * FINAL tail + 180 us gap = ~2893 us (3025 us on the 1 Hz info-TLV cycle). */
+/* Recovery profile after the 20261019_143252 bench regression: 250/350
+ * caused delayed FINAL failures despite receiving almost every RESP.
+ * Restore the 275/450 radio schedule measured with stable double RX.
+ * Keep publish overlap and periodic diagnostics; their actual rate needs
+ * another bench measurement. 3100 us is only a minimum POLL period. */
 #define UWB_BURST_BASE_UUS           450U
-#define UWB_BURST_SLOT_UUS           250U
-#define UWB_BURST_FINAL_MARGIN_UUS   350U
+#define UWB_BURST_SLOT_UUS           275U
+#define UWB_BURST_FINAL_MARGIN_UUS   450U
+#define UWB_BURST_MIN_SLOT_UUS       275U
+#define UWB_BURST_MIN_FINAL_MARGIN_UUS 450U
 #define UWB_BURST_GAP_US             180U
 #define UWB_BURST_PERIOD_US          3100U
-#define UWB_BURST_INFO_EXTRA_UUS     32U
+/* Rearm RX into the other hardware buffer before reading the previous RESP.
+ * Timestamp/quality stay attached to their host buffer until HRBPT release. */
+#define UWB_BURST_RX_DOUBLE_BUFFER   1U
+#define UWB_BURST_PIPELINED_PUBLISH  1U
+/* Full info RESP can cross a Reed-Solomon block boundary and also costs
+ * more SPI bytes; keep the 64 UUS extension of the verified 200 Hz path. */
+#define UWB_BURST_INFO_EXTRA_UUS     64U
 #elif defined(UWB_HIGH_RATE) && UWB_HIGH_RATE
 /* Rev 2: nominal 222.2 cycles/s, leaving DS/drop headroom above 200 sets/s.
  * WAIT4RESP anchor RX, fast SPI and CPU profiles must be flashed together.

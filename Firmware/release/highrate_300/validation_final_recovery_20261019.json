@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "scope": "FINAL timing regression recovery after hardware log 20261019_143252_COM14",
+  "tag_config": "0x0b033006",
+  "radio_timing": {
+    "base_uus": 450,
+    "slot_uus": 275,
+    "final_margin_uus": 450,
+    "gap_us": 180,
+    "period_floor_us": 3100
+  },
+  "host_test_groups": 26,
+  "gui_tests": 87,
+  "gui_skipped": 2,
+  "build_nodes": 9,
+  "build_stage": "build_staging_20261019_144049_974",
+  "package_verified_nodes": 9,
+  "flash_dry_run": "PASS, correct packaged TAG image selected; programmer not launched",
+  "hardware_flashed": false,
+  "hardware_frequency_verified": false,
+  "gui_changed": false,
+  "backups": {
+    "previous_20261019_before_final_recovery": {
+      "images_verified": 9,
+      "tag_config": "0x394ce68f"
+    },
+    "previous_20261019_before_pipeline": {
+      "images_verified": 9,
+      "tag_config": "0x84e6c9b9"
+    }
+  },
+  "sha256": {
+    "Firmware/common/ranging/tag_ranging.c": "c4a2598fe52ff624cb5dcf0cc6218c29d691509accb6d1362613218bd6d43eec",
+    "Firmware/common/ranging/tag_ranging.h": "939fdf89ccd18cb677061734627e8eeec5311a1a734fa28d96aca5b734b32882",
+    "Firmware/nodes/tag/Tag_DevKit/include/uwb_app_config.h": "8e809730306edfb99db3e64f7b467286296531d69bab803d60ef00c8b14897e6",
+    "Firmware/tests/dw1000_sim.c": "676eb3768802e819dee57248590f6cbadb95125196e31da7fdef1261ae8bc1d7",
+    "Firmware/tests/dw1000_sim.h": "297a5b5030a7ee594bcdc33356a77a9ca9c3b3052f1ae1cdfd14f76d84175f04",
+    "Firmware/tests/test_tag_burst.c": "9d7fdcb76da9892fff15faa4828cb95c4681b6ee22f4efb8fe6a5d0ef7e3882c",
+    "Firmware/release/highrate_300/manifest.csv": "4ef4baa20a61dc4050d78f0b9c1b5a766223b562b12884fbaaca4b696aa83992",
+    "Firmware/release/highrate_300/package_verification_final_recovery_20261019.json": "3ea5fa7344efc66be98aabc78a6b29411176ec3bda9164d892c71fc72cfa0c72",
+    "Firmware/release/highrate_300/audit_log_20261019_143252.json": "fee28a959dc72763e34c34fd998c0bc63a2a387c22efb1d267fb3249f6df02d7",
+    "Software/UWB_UART_GUI/Output/DWM1001_UWB_Ground_Control_300hz.exe": "37b459f47566576e90dabd5626a1c93ba9319e3e8bb35c71cf5f8f2e6363e90e"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "status": "PASS",
+  "hardware_frequency_verified": false,
+  "nodes": [
+    {
+      "node": "TAG",
+      "project": "Tag_DevKit",
+      "file": "TAG_DWM1001_DEV.hex",
+      "config_id": "0x01e8d392",
+      "sha256": "2c69316bebc1d4db3afca7688a19008464b23909dd9b196173fc7df0029c3e6e",
+      "spi_hz": 8000000,
+      "programmed_bytes": 83012,
+      "flash_limit_bytes": 524288,
+      "last_address": "0x0001446B",
+      "initial_sp": "0x20003D70",
+      "reset_vector": "0x0000C349"
+    },
+    {
+      "node": "A1",
+      "project": "Anchor_1",
+      "file": "A1_DWM1001C_nRF52832.hex",
+      "config_id": "0xb13eab1e",
+      "sha256": "9da013c6c0aa158d94e876ad4729f2e3e7a79ccc07ba26f6b6029f5b4ab8353d",
+      "spi_hz": 8000000,
+      "programmed_bytes": 47560,
+      "flash_limit_bytes": 524288,
+      "last_address": "0x0000B9D3",
+      "initial_sp": "0x20002008",
+      "reset_vector": "0x00004979"
+    },
+    {
+      "node": "A2",
+      "project": "Anchor_2",
+      "file": "A2_DWM1001C_nRF52832.hex",
+      "config_id": "0x25c52b53",
+      "sha256": "d321b851fd9ce701cd1b97f5c89da4e4019a2845acead6889c3c9dd6afc4e2f6",
+      "spi_hz": 8000000,
+      "programmed_bytes": 47564,
+      "flash_limit_bytes": 524288,
+      "last_address": "0x0000B9D3",
+      "initial_sp": "0x20002008",
+      "reset_vector": "0x0000497D"
+    },
+    {
+      "node": "A3",
+      "project": "Anchor_3",
+      "file": "A3_DWM1001C_nRF52832.hex",
+      "config_id": "0x71f8938f",
+      "sha256": "0099ccc2091e9916033766e999f82755afaca18100181ae05829d596122ad1c8",
+      "spi_hz": 8000000,
+      "programmed_bytes": 47556,
+      "flash_limit_bytes": 524288,
+      "last_address": "0x0000B9D3",
+      "initial_sp": "0x20002008",
+      "reset_vector": "0x00004975"
+    },
+    {
+      "node": "A4",
+      "project": "Anchor_4",
+      "file": "A4_DWM1001C_nRF52832.hex",
+      "config_id": "0x841d2177",
+      "sha256": "cb431b57ea60803eeb96cfd3950f5d46f2f8a1ce3b2210b5274731c989cf194c",
+      "spi_hz": 8000000,
+      "programmed_bytes": 47564,
+      "flash_limit_bytes": 524288,
+      "last_address": "0x0000B9D3",
+      "initial_sp": "0x20002008",
+      "reset_vector": "0x0000497D"
+    },
+    {
+      "node": "A5",
+      "project": "STM32_Anchor_5",
+      "file": "A5_STM32F103C8.hex",
+      "config_id": "0x075eef41",
+      "sha256": "823898d8f244f56425aaf7fd086a4d095633e98781f71ad0e0009cb13756ec3a",
+      "spi_hz": 16000000,
+      "programmed_bytes": 32900,
+      "flash_limit_bytes": 65536,
+      "last_address": "0x08008087",
+      "initial_sp": "0x20001E20",
+      "reset_vector": "0x08004895"
+    },
+    {
+      "node": "A6",
+      "project": "STM32_Anchor_6",
+      "file": "A6_STM32F103C8.hex",
+      "config_id": "0xd948bda3",
+      "sha256": "fa439baf02192487272663831246e765c39818e3ee0b1cbcc5bbb9bdeaf0e711",
+      "spi_hz": 16000000,
+      "programmed_bytes": 32900,
+      "flash_limit_bytes": 65536,
+      "last_address": "0x08008087",
+      "initial_sp": "0x20001E20",
+      "reset_vector": "0x08004895"
+    },
+    {
+      "node": "A7",
+      "project": "STM32_Anchor_7",
+      "file": "A7_STM32F103C8.hex",
+      "config_id": "0xe23f1cf2",
+      "sha256": "66baf11b9f2f2e1bc61868320d9d8892fba174fa148e97b755afcd5342d1d754",
+      "spi_hz": 16000000,
+      "programmed_bytes": 32900,
+      "flash_limit_bytes": 65536,
+      "last_address": "0x08008087",
+      "initial_sp": "0x20001E20",
+      "reset_vector": "0x08004895"
+    },
+    {
+      "node": "A8",
+      "project": "STM32_Anchor_8",
+      "file": "A8_STM32F103C8.hex",
+      "config_id": "0x178620a5",
+      "sha256": "7e16675e7ae8c7f873737d8df0245411fb09cc7efad09531e8866aff0a812a04",
+      "spi_hz": 16000000,
+      "programmed_bytes": 32900,
+      "flash_limit_bytes": 65536,
+      "last_address": "0x08008087",
+      "initial_sp": "0x20001E20",
+      "reset_vector": "0x08004895"
+    }
+  ]
+}

@@ -343,6 +343,30 @@ class GuiStateTests(unittest.TestCase):
         ):
             self.assertEqual(application_directory(), executable.parent)
 
+    def test_range_meas_canvas_leaves_a_radio_gap_blank(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = UwbGui(root)
+            panel = app.meas_panel
+            panel.plot_anchor_var.set("A2")
+            for seq, t_us in enumerate([0, 3125, 6250, 137250, 140375, 143500]):
+                panel.ingest(replace(MEAS_A2, meas_seq=seq, meas_time_us=t_us),
+                             time.monotonic())
+            panel.draw()
+            raw_lines = panel.canvas.find_withtag("meas_raw")
+            self.assertEqual(len(raw_lines), 2) # equal ranges do not bridge 131 ms
+            left = panel.canvas.coords(raw_lines[0])[-2]
+            right = panel.canvas.coords(raw_lines[1])[0]
+            self.assertGreater(right, left)
+            old_x = panel.canvas.coords(raw_lines[1])[-2]
+            panel.tracker.advance_clock(MEAS_A2.boot_id, 500_000)
+            panel.draw()
+            new_x = panel.canvas.coords(panel.canvas.find_withtag("meas_raw")[1])[-2]
+            self.assertLess(new_x, old_x) # blank time grows while radio cycles continue
+        finally:
+            self.close_app(root)
+
     def test_serial_worker_encodes_bidirectional_ping(self):
         worker = SerialWorker("COM_TEST", 115200, queue.Queue())
         capture = CaptureSerial()
@@ -435,11 +459,11 @@ class GuiStateTests(unittest.TestCase):
         root.withdraw()
         try:
             app = UwbGui(root)
-            self.assertEqual(len(app.notebook.tabs()), 6)
+            self.assertEqual(len(app.notebook.tabs()), 7)
             tab_labels = [app.notebook.tab(tab_id, "text").strip() for tab_id in app.notebook.tabs()]
             self.assertEqual(
                 tab_labels,
-                ["Live", "Biểu đồ lớn", "RANGE_MEAS", "Bản đồ 2D / 3D", "Phân tích", "Calibration"],
+                ["Live", "Biểu đồ lớn", "RANGE_MEAS", "RX chất lượng", "Bản đồ 2D / 3D", "Phân tích", "Calibration"],
             )
             app.map_panel.layout = DEFAULT_LAYOUT_4
             target = (2.0, 1.5, 0.0)

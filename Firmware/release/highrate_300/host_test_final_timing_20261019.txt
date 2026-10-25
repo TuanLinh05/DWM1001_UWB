@@ -1,0 +1,4 @@
+== test_tag_burst_highrate_300
+
+host tests passed: 1
+  - test_tag_burst_highrate_300

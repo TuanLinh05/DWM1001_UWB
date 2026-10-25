@@ -35,6 +35,14 @@ extern int      sim_force_pll_unlock; /* PLL tune never raises CPLOCK */
 extern int      sim_pll_lock_event_enabled; /* tune write may latch CPLOCK */
 extern uint32_t sim_pll_failures_remaining; /* fail this many PLL tune writes */
 extern uint32_t sim_spi_calls;
+/* Optional timing stress: fixed transaction overhead plus time per wire byte.
+ * Zero by default; this is a budget model, not measured MCU execution time. */
+extern uint32_t sim_spi_overhead_us, sim_spi_byte_us;
+extern uint32_t sim_rx_buffer_releases;
+/* Inject a second radio event during a register read, without recursively
+ * entering SPI or the TAG task. Used to exercise swinging-buffer ownership. */
+extern void (*sim_spi_hook)(uint8_t reg, uint16_t sub, uint8_t writing);
+extern void (*sim_cycle_hook)(void); /* inject TX completion during CPU work */
 
 void sim_reset(void);
 

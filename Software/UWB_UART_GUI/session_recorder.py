@@ -14,6 +14,7 @@ import time
 from typing import TextIO
 
 from anchor_timeline import SUMMARY_COLUMNS, TIMELINE_COLUMNS, AnchorTimeline
+from burst_metadata import quality_values
 from host_range_filter import (
     GATE_MARGIN_DOWN_MM,
     GATE_MARGIN_UP_MM,
@@ -42,6 +43,7 @@ from telemetry_protocol import (
     BURST_FLAG_CAL_OK,
     BURST_FLAG_VALID,
     RangeBurstMessage,
+    RxQualityMessage,
     RangeMeasMessage,
     RangeMessage,
     SnifferFrameMessage,
@@ -385,6 +387,16 @@ class SessionRecorder:
         self._timeline.add_message(message, host_elapsed)
         if isinstance(message, RangeMeasMessage):
             self._write_meas(host_time, host_elapsed, message)
+        elif isinstance(message, RxQualityMessage):
+            for a in message.anchors:
+                self._write_generic_row('rx_quality.csv', {
+                    'host_time_iso': host_time, 'host_elapsed_s': f'{host_elapsed:.6f}',
+                    'boot_id': f'0x{message.boot_id:X}', 'cycle_seq': message.cycle_seq,
+                    't_us': message.t_us, 'anchor_id': a.anchor_id,
+                    'prf_mhz': message.prf_mhz, 'sample_period_ms': message.sample_period_ms,
+                    'temperature_c': message.temperature_c, 'vbat_v': message.vbat_v,
+                    'env_age_ms': message.env_age_ms, 'temp_raw': message.temp_raw,
+                    'vbat_raw': message.vbat_raw, **quality_values(a)})
         elif isinstance(message, RangeMessage):
             for sample in message.samples:
                 self._range_writer.writerow(
@@ -492,6 +504,9 @@ class SessionRecorder:
             "host_elapsed_s": f"{host_elapsed:.6f}",
             **_flatten(message),
         }
+        self._write_generic_row(name, row)
+
+    def _write_generic_row(self, name: str, row: dict) -> None:
         writer = self._generic_writers.get(name)
         if writer is None:
             handle = self._open_text(name)

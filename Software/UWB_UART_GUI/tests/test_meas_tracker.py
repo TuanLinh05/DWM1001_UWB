@@ -15,6 +15,7 @@ from meas_tracker import (  # noqa: E402
     anchor_nlos_db,
     difference_noise_mm,
     power_dbm,
+    prepare_plot_points,
 )
 from telemetry_protocol import (  # noqa: E402
     INT16_MIN,
@@ -129,6 +130,49 @@ class RangeMeasTrackerTests(unittest.TestCase):
         self.assertEqual((points[-2].corrected_mm, points[-2].filtered_mm), (1980, 1985))
         self.assertEqual((points[-1].corrected_mm, points[-1].filtered_mm), (None, None))
         self.assertEqual(tracker.points(7, 2.0), [])
+
+    def test_plot_breaks_a_131ms_radio_gap_even_with_equal_endpoints(self) -> None:
+        tracker = RangeMeasTracker()
+        times_us = [*range(0, 100_000, 3125), *range(227_875, 330_000, 3125)]
+        for seq, t_us in enumerate(times_us):
+            tracker.ingest(meas(seq, meas_time_us=t_us, raw_mm=1260), t_us / 1e6)
+        points, breaks = prepare_plot_points(tracker.points(1, 5.0), 2500)
+        self.assertEqual(breaks, {32})
+        self.assertEqual(points[31].raw_mm, points[32].raw_mm)
+        self.assertAlmostEqual(points[32].tag_time_s - points[31].tag_time_s, .131)
+        # Aggressive thinning still carries the hidden gap to the next point.
+        sampled, breaks = prepare_plot_points(points, 8)
+        self.assertLessEqual(len(sampled), 8)
+        self.assertEqual(len(breaks), 1)
+        k = next(iter(breaks))
+        self.assertLessEqual(sampled[k-1].tag_time_s, points[31].tag_time_s)
+        self.assertGreaterEqual(sampled[k].tag_time_s, points[32].tag_time_s)
+
+    def test_plot_thinning_does_not_create_false_gaps_or_break_50hz(self) -> None:
+        tracker = RangeMeasTracker()
+        for seq in range(16000):
+            tracker.ingest(meas(seq, meas_time_us=seq * 3125), seq * .003125)
+        points, breaks = prepare_plot_points(tracker.points(1, 60), 2500)
+        self.assertLessEqual(len(points), 2500)
+        self.assertFalse(breaks)
+        tracker.reset()
+        for seq in range(60):
+            tracker.ingest(meas(seq), seq * .02)
+        self.assertFalse(prepare_plot_points(tracker.points(1, 5), 2500)[1])
+        sparse = [replace(points[0], tag_time_s=0.0), replace(points[-1], tag_time_s=.8)]
+        self.assertEqual(prepare_plot_points(sparse, 2500)[1], {1})
+
+    def test_plot_clock_advances_while_one_anchor_is_silent(self) -> None:
+        tracker = RangeMeasTracker()
+        tracker.ingest(meas(1, anchor_id=8, meas_time_us=1_000_000), 1.0)
+        tracker.ingest(meas(2, anchor_id=1, meas_time_us=3_000_000), 3.0)
+        self.assertEqual(tracker.latest_tag_time_s, 3.0)
+        self.assertEqual(tracker.points(8, 1.0), [])
+        tracker.advance_clock(tracker.boot_id, 5_000_000)
+        self.assertEqual(tracker.latest_tag_time_s, 5.0)
+        self.assertEqual(tracker.points(1, 1.0), [])
+        tracker.ingest(meas(3, boot_id=0xFFFF, meas_time_us=100_000), 3.1)
+        self.assertEqual(tracker.latest_tag_time_s, .1)
 
 
 if __name__ == "__main__":

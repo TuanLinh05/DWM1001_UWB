@@ -16,7 +16,7 @@
  *   0x01 RANGE       (cycle) snapshot of every anchor, 16-byte records
  *   0x02 STATS       (1 Hz)  global counters and rates
  *   0x10 RANGE_MEAS  (each measurement, optional) — see telemetry.c
- *   0x11 DIAG_ANCHOR (rotating, 2 anchors/s) — per-anchor health
+ *   0x11 DIAG_ANCHOR (rotating, 2 anchors/s; 8/s at 300 Hz) — per-anchor health
  *   0x12 ANCHOR_INFO (when received) — anchor position/build TLVs
  *   0x13 CMD_ACK     reply to a host command (uwb_cmd.h)
  *   0x14 SNIFFER_FRAME (sniffer role only)
@@ -24,6 +24,7 @@
  *   0x16 DEVICE_INFO (boot + every 10 s) — build, OTP, radio config
  *   0x18 RANGE_BURST (each burst cycle, with RANGE_MEAS enabled) — every
  *        anchor of one v3 cycle in one compact frame
+ *   0x19 RX_QUALITY  (10 Hz with DIAG + burst) raw registers + TAG environment
  *   0x20 CMD         host → TAG command (uwb_cmd.h)
  *
  * The payload layouts are documented next to each encoder in telemetry.c
@@ -95,9 +96,26 @@ void Telem_SendRangeCycle(const TagCycleSnapshot_t *snap);
 /** Global counters and measured rates (~1 Hz). */
 void Telem_SendStats(uint16_t cyc_hz, uint16_t ops_hz);
 
+/** Periodic telemetry advances one bounded idle job per burst cycle. */
+typedef struct {
+    uint32_t last_stats_ms, last_cycle_count, last_ok_count;
+    uint8_t phase, anchor;
+} TelemPeriodic_t;
+void Telem_InitPeriodic(TelemPeriodic_t *schedule, uint32_t now_ms);
+void Telem_ServicePeriodic(TelemPeriodic_t *schedule, uint32_t now_ms);
+
 /** Telemetry v2 messages (binary only; no-ops in ASCII mode). */
 void Telem_SendRangeMeas(const TagMeasurement_t *m);
 void Telem_SendRangeBurst(const TagBurstRecord_t *rec);
+/* This optional diagnostic stream never substitutes for a RANGE_BURST.
+ * Zero disables it at compile time; all raw fields keep their sample time. */
+#ifndef UWB_RX_QUALITY_PERIOD_MS
+#define UWB_RX_QUALITY_PERIOD_MS 100U
+#endif
+extern volatile uint32_t telem_quality_frames;
+extern volatile uint32_t telem_quality_deferred;
+extern volatile uint32_t telem_quality_pack_max_us;
+void Telem_SendRxQuality(const TagBurstRecord_t *rec);
 void Telem_SendDiagAnchor(uint8_t anchor_index);
 void Telem_SendDiagSystem(void);
 void Telem_SendDeviceInfo(void);

@@ -44,6 +44,7 @@ from meas_tracker import (
     RangeMeasTracker,
     anchor_nlos_db,
     power_dbm,
+    prepare_plot_points,
 )
 from telemetry_protocol import (
     AnchorSample,
@@ -1845,7 +1846,6 @@ class RangeMeasPanel(ttk.Frame):
     """
 
     PLOT_SPANS_S = ("5", "10", "30", "60")
-    PLOT_GAP_S = 0.5          # a longer pause between records breaks the line
     COLUMNS = (
         "anchor", "rate", "mode", "status", "raw", "corrected", "filtered", "noise_mm",
         "fp", "rx", "nlos", "anchor_nlos", "ci", "std_noise", "slot", "age",
@@ -2139,14 +2139,10 @@ class RangeMeasPanel(ttk.Frame):
             )
             return
 
-        end = points[-1].tag_time_s
+        end = self.tracker.latest_tag_time_s
         start = end - span_s
         total_points = len(points)
-        if total_points > MAX_PLOT_POINTS:
-            # The burst scheme sends ~250 records/s per anchor: plot every
-            # n-th one (always the latest); statistics use all of them.
-            step = -(-total_points // MAX_PLOT_POINTS)
-            points = points[total_points - 1::-step][::-1]
+        points, breaks = prepare_plot_points(points, MAX_PLOT_POINTS)
 
         def x_of(time_s: float) -> float:
             return left + (time_s - start) * (right - left) / span_s
@@ -2162,7 +2158,7 @@ class RangeMeasPanel(ttk.Frame):
         y_range = self._pane(range_box, low - padding, high + padding,
                              lambda value: f"{value / 1000.0:.2f}", "Khoảng cách (m)")
         for name, color, width_px, values in series:
-            self._polyline(points, values, x_of, y_range, color, width_px, f"meas_{name}")
+            self._polyline(points, values, x_of, y_range, color, width_px, f"meas_{name}", breaks)
 
         nlos_values = [point.nlos_db for point in points]
         present = [value for value in nlos_values if value is not None]
@@ -2172,7 +2168,7 @@ class RangeMeasPanel(ttk.Frame):
         for threshold, color in ((NLOS_WARN_DB, "#eab308"), (NLOS_ALERT_DB, "#ef4444")):
             y = y_nlos(threshold)
             canvas.create_line(left, y, right, y, fill=color, dash=(4, 3))
-        self._polyline(points, nlos_values, x_of, y_nlos, "#f472b6", 1.4, "meas_nlos")
+        self._polyline(points, nlos_values, x_of, y_nlos, "#f472b6", 1.4, "meas_nlos", breaks)
 
         legend = (("Raw", "#94a3b8"), ("Corrected", "#f59e0b"), ("FW Filter", "#38bdf8"),
                   ("NLOS Δ", "#f472b6"))
@@ -2229,6 +2225,7 @@ class RangeMeasPanel(ttk.Frame):
         color: str,
         width_px: float,
         tag: str,
+        breaks: set[int],
     ) -> None:
         canvas = self.canvas
         segment: list[float] = []
@@ -2241,13 +2238,10 @@ class RangeMeasPanel(ttk.Frame):
                 canvas.create_oval(x - 1.5, y - 1.5, x + 1.5, y + 1.5,
                                    outline=color, fill=color, tags=(tag,))
 
-        previous_time: float | None = None
-        for point, value in zip(points, values):
-            gap = previous_time is not None and point.tag_time_s - previous_time > self.PLOT_GAP_S
-            if value is None or gap:
+        for index, (point, value) in enumerate(zip(points, values)):
+            if value is None or index in breaks:
                 flush()
                 segment = []
             if value is not None:
                 segment.extend((x_of(point.tag_time_s), y_of(value)))
-            previous_time = point.tag_time_s
         flush()

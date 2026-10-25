@@ -238,6 +238,47 @@ static int test_status_and_reset_helpers(void)
     return 0;
 }
 
+static int test_split_rx_capture_preserves_metadata(void)
+{
+    sim_reset();
+    const uint8_t frame[] = { 0x41U, 0x88U, 0xAAU, 0x55U };
+    const uint64_t expected_ts = 0x123456789AULL;
+    sim_set_rx_quality(321U, 1234U, 2345U, 3456U, 4567U, 89U);
+    sim_deliver_rx(frame, sizeof(frame), expected_ts, 0U);
+    uint8_t data[20], ts[5];
+    uint32_t finfo;
+    DW1000_SignalDiag_t diag;
+    const uint32_t calls = sim_spi_calls;
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), &finfo) == sizeof(frame) + 2U);
+    CHECK(memcmp(data, frame, sizeof(frame)) == 0);
+    CHECK(sim_spi_calls == calls + 2U);
+    /* Arm delayed TX between the two stages, as the last burst slot does. */
+    const uint8_t dx[5] = { 0U, 2U, 3U, 4U, 5U };
+    DW1000_ForceRxOff();
+    DW1000_ClearAllStatus();
+    DW1000_SetDelayedTxTime(dx);
+    CHECK(DW1000_StartTxDelayedEx(0U) == 0);
+    const uint32_t meta_calls = sim_spi_calls;
+    CHECK(DW1000_ReadRxMetadata(finfo, ts, &diag));
+    CHECK(sim_spi_calls == meta_calls + 2U); /* no repeated FINFO read */
+    uint64_t actual_ts = 0U;
+    for (unsigned i = 0U; i < 5U; i++)
+        actual_ts |= (uint64_t)ts[i] << (8U * i);
+    CHECK(actual_ts == expected_ts);
+    CHECK(diag.rxpacc == 321U && diag.fp_ampl1 == 1234U && diag.fp_ampl2 == 2345U);
+    CHECK(diag.fp_ampl3 == 3456U && diag.cir_pwr == 4567U && diag.std_noise == 89U);
+    sim_fail_spi = 1;
+    CHECK(!DW1000_ReadRxMetadata(finfo, ts, &diag));
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), &finfo) == 0U);
+    sim_fail_spi = 0;
+    sim_reg[DW_REG_RX_FINFO][1] |= 1U;  /* extended length must not wrap to 7 bits */
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), &finfo) == 0U);
+    CHECK(DW1000_ReadRxPayload(NULL, sizeof(data), &finfo) == 0U);
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), NULL) == 0U);
+    CHECK(!DW1000_ReadRxMetadata(finfo, NULL, &diag));
+    return 0;
+}
+
 static int test_signal_power_accuracy_sweep(void)
 {
     uint32_t random = 0xC0FFEEU;
@@ -260,6 +301,79 @@ static int test_signal_power_accuracy_sweep(void)
     return 0;
 }
 
+static int test_integer_clock_diagnostic_rounding(void)
+{
+    for (int32_t ci = -1048576; ci < 1048576; ci++)
+    {
+        const double reference = (double)ci * UWB_CLOCK_OFFSET_MULT * 1e8;
+        const int32_t actual = DW1000_CarrierIntegratorToPpmX100(ci);
+        CHECK(fabs((double)actual - reference) <= 0.500001);
+    }
+    CHECK(DW1000_CarrierIntegratorToPpmX100(15625) == -896);
+    CHECK(DW1000_CarrierIntegratorToPpmX100(-15625) == 896);
+    CHECK(DW1000_CarrierIntegratorToPpmX100(INT32_MIN) > 0);
+    CHECK(DW1000_CarrierIntegratorToPpmX100(INT32_MAX) < 0);
+    return 0;
+}
+
+static void inject_second_rx(uint8_t reg, uint16_t sub, uint8_t writing)
+{
+    (void)sub;
+    if (!writing && reg == DW_REG_RX_BUFFER)
+    {
+        sim_spi_hook = NULL;
+        const uint8_t second[] = {0x22U, 0x33U, 0x44U};
+        sim_set_rx_quality(654U, 4444U, 5555U, 6666U, 7777U, 98U);
+        sim_deliver_rx(second, sizeof(second), 0x9988776655ULL, 0U);
+    }
+}
+
+static int test_double_buffer_owns_payload_timestamp_and_quality(void)
+{
+    CHECK(bring_up() == 0);
+    DW1000_SetDoubleRxBuffer(1U);
+    CHECK(DW1000_DoubleRxBufferEnabled());
+    CHECK((sim_read_u32(DW_REG_SYS_CFG, 0) & (1UL << 12)) == 0U);
+    CHECK((sim_read_u32(DW_REG_SYS_CFG, 0) & (1UL << 29)) == 0U); /* no RXAUTR */
+    CHECK(DW1000_VerifyConfig() == 0U);
+    const uint8_t first[] = {0x11U, 0xAAU};
+    sim_set_rx_quality(321U, 1234U, 2345U, 3456U, 4567U, 89U);
+    sim_deliver_rx(first, sizeof(first), 0x123456789AULL, 0U);
+    DW1000_ClearRxGoodStatus();
+    DW1000_StartRx();
+    sim_spi_hook = inject_second_rx; /* arrives BEFORE reading first payload */
+    uint8_t data[20], ts[5];
+    uint32_t finfo;
+    DW1000_SignalDiag_t diag;
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), &finfo) == sizeof(first) + 2U);
+    CHECK(memcmp(data, first, sizeof(first)) == 0);
+    CHECK(DW1000_ReadRxMetadata(finfo, ts, &diag));
+    const uint8_t first_ts[] = {0x9AU,0x78U,0x56U,0x34U,0x12U};
+    CHECK(memcmp(ts, first_ts, sizeof(ts)) == 0);
+    CHECK(diag.rxpacc == 321U && diag.fp_ampl1 == 1234U && diag.cir_pwr == 4567U);
+    CHECK(DW1000_ClassifyRx(DW1000_ReadStatus()) == DW_RX_EVENT_GOOD);
+    DW1000_ReleaseRxBuffer();
+    /* Releasing the first buffer must not clear the second event. */
+    CHECK(DW1000_ClassifyRx(DW1000_ReadStatus()) == DW_RX_EVENT_GOOD);
+    CHECK(DW1000_ReadRxPayload(data, sizeof(data), &finfo) == 5U && data[0] == 0x22U);
+    CHECK(DW1000_ReadRxMetadata(finfo, ts, &diag));
+    CHECK(ts[0] == 0x55U && ts[4] == 0x99U);
+    CHECK(diag.rxpacc == 654U && diag.fp_ampl1 == 4444U && diag.cir_pwr == 7777U);
+    DW1000_ClearRxGoodStatus();
+    DW1000_ReleaseRxBuffer();
+    CHECK(sim_rx_buffer_releases == 2U);
+    CHECK(((sim_status >> 30) & 1U) == ((sim_status >> 31) & 1U));
+    sim_deliver_rx(first, sizeof(first), 123U, 0U);
+    DW1000_ForceRxOff();
+    DW1000_SyncRxBuffers(); /* abandon pending frame at a cycle/error boundary */
+    CHECK(sim_rx_buffer_releases == 3U);
+    CHECK(((sim_status >> 30) & 1U) == ((sim_status >> 31) & 1U));
+    DW1000_SetDoubleRxBuffer(0U);
+    CHECK(!DW1000_DoubleRxBufferEnabled());
+    CHECK(DW1000_VerifyConfig() == 0U);
+    return 0;
+}
+
 int main(void)
 {
     s_default_cfg = dw1000_radio_config;
@@ -271,6 +385,9 @@ int main(void)
         || test_tx_power_modes()
         || test_pll_lock_and_calibration_profile()
         || test_signal_diagnostics()
+        || test_split_rx_capture_preserves_metadata()
+        || test_double_buffer_owns_payload_timestamp_and_quality()
+        || test_integer_clock_diagnostic_rounding()
         || test_status_and_reset_helpers() || test_signal_power_accuracy_sweep())
     {
         return 1;

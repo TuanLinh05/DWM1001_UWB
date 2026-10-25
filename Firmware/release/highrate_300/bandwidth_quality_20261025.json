@@ -1,0 +1,21 @@
+{
+  "uart_baud": 460800,
+  "uart_payload_capacity_bytes_s": 46080.0,
+  "baseline_tag_clock_span_s": 135.699108,
+  "baseline_observed_bytes_s": 30101.207444930296,
+  "baseline_capacity_percent": 65.32380087875498,
+  "quality_full8_frame_bytes": 270,
+  "quality_max_hz": 10,
+  "additional_quality_bytes_s": 2700,
+  "additional_diag_bytes_s": 12,
+  "new_estimated_bytes_s": 32813.207444930296,
+  "new_estimated_capacity_percent": 71.20921754542165,
+  "incremental_capacity_percentage_points": 5.885416666666667,
+  "quality_serialization_ms": 5.859375,
+  "baseline_tag_ram_bytes": 15892,
+  "new_tag_ram_bytes": 16876,
+  "ram_increase_bytes": 984,
+  "baseline_tag_flash_bytes": 83916,
+  "new_tag_flash_bytes": 85020,
+  "hardware_frequency_verified": false
+}

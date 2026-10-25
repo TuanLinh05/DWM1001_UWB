@@ -1,0 +1,4 @@
+# Release checksums cover the exact bytes produced by the build/package tools.
+/Firmware/release/highrate_300/*.hex -text -diff
+/Software/UWB_UART_GUI/releases/*.zip -text
+/Software/UWB_UART_GUI/ros2/*.patch text eol=lf -whitespace

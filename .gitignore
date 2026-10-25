@@ -62,6 +62,12 @@ dist/
 # Flashable eight-anchor release images are intentional artifacts.
 !/Firmware/release/stm32_anchor/*.hex
 !/Firmware/release/anchor_8/*.hex
+!/Firmware/release/highrate_300/*.hex
+
+# Local build transcripts, previous images and downloaded driver references.
+/Firmware/release/highrate_300/build_*.txt
+/Firmware/release/highrate_300/previous_*/
+/Firmware/release/highrate_300/reference_rx_buffer/
 
 # Runtime captures, logs and local GUI state
 *.log

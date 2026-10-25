@@ -38,6 +38,7 @@ from telemetry_protocol import (
     ParserCounters,
     ProtocolError,
     RangeBurstMessage,
+    RxQualityMessage,
     RangeMeasMessage,
     RangeMessage,
     StatsMessage,
@@ -69,6 +70,7 @@ from session_recorder import SessionRecorder
 from host_range_filter import HostRangeFilter
 from gui_analysis import MAX_ANCHORS, TelemetryPoint, save_layout
 from gui_views import AnalysisPanel, AnchorMapPanel, CalibrationPanel, RangeMeasPanel
+from rx_quality_panel import RxQualityPanel
 
 
 APP_TITLE = "DWM1001 UWB Ground Control"
@@ -677,6 +679,8 @@ class UwbGui:
 
         self.meas_panel = RangeMeasPanel(self.notebook, self._request_range_meas)
         self.notebook.add(self.meas_panel, text="  RANGE_MEAS  ")
+        self.quality_panel = RxQualityPanel(self.notebook)
+        self.notebook.add(self.quality_panel, text="  RX chất lượng  ")
 
         app_directory = application_directory()
         self.map_panel = AnchorMapPanel(self.notebook, app_directory)
@@ -780,6 +784,7 @@ class UwbGui:
         self.analysis_panel.reset_session()
         self.calibration_panel.discard_capture()
         self.meas_panel.reset_session()
+        self.quality_panel.reset_session()
         if self.recorder is not None:
             self._record_telemetry_pending = True
         self.connect_button.configure(text="Ngắt kết nối")
@@ -981,6 +986,7 @@ class UwbGui:
                     # One burst cycle carries every anchor: the tabs and meas.csv
                     # see it as RANGE_MEAS records, burst.csv as one row.
                     if isinstance(payload, RangeBurstMessage):
+                        self.meas_panel.tracker.advance_clock(payload.boot_id, payload.t_us)
                         records = payload.to_range_meas(self.info_offsets_um)
                         if self.recorder is not None:
                             self.recorder.record_burst(payload, records)
@@ -994,6 +1000,8 @@ class UwbGui:
                     # RANGE_MEAS is the most frequent message (one per measurement).
                     if isinstance(payload, RangeMeasMessage):
                         self.meas_panel.ingest(payload, time.monotonic())
+                    elif isinstance(payload, RxQualityMessage):
+                        self.quality_panel.ingest(payload, time.monotonic())
                     elif isinstance(payload, InfoMessage):
                         self._update_info(payload)
                     elif isinstance(payload, StatsMessage):
@@ -1025,6 +1033,7 @@ class UwbGui:
         if ((self.worker is not None or self.meas_panel.tracker.total)
                 and now - self.last_meas_refresh >= MEAS_REFRESH_S):
             self.meas_panel.refresh(now)
+            self.quality_panel.refresh(now)
             self.last_meas_refresh = now
         self._refresh_recording_status()
 

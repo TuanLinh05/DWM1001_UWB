@@ -481,6 +481,16 @@ extern volatile uint32_t tag_meas_queue_drops;
 #ifndef UWB_BURST_FINAL_MARGIN_UUS
 #define UWB_BURST_FINAL_MARGIN_UUS  450U   /* last RESP -> FINAL: tail, TAG work, FINAL preamble */
 #endif
+#ifndef UWB_BURST_MIN_SLOT_UUS
+#define UWB_BURST_MIN_SLOT_UUS       150U
+#endif
+#ifndef UWB_BURST_MIN_FINAL_MARGIN_UUS
+#define UWB_BURST_MIN_FINAL_MARGIN_UUS 150U
+#endif
+#if UWB_BURST_SLOT_UUS < UWB_BURST_MIN_SLOT_UUS \
+    || UWB_BURST_FINAL_MARGIN_UUS < UWB_BURST_MIN_FINAL_MARGIN_UUS
+#error "Default burst timing is below this profile's qualified minimum"
+#endif
 #ifndef UWB_BURST_GAP_US
 #define UWB_BURST_GAP_US            500U   /* FINAL sent -> next POLL: anchors back in RX */
 #endif
@@ -538,8 +548,15 @@ uint8_t Tag_FrameVersion(void);
 uint8_t Tag_TelemetryWindow(void);
 /** Time until the next burst deadline; UINT32_MAX when paused/sequential. */
 uint32_t Tag_IdleBudgetUs(void);
+/** One bounded maintenance job per burst cycle, only while radio is idle.
+ * Extends the next POLL deadline if needed; budget_us must be 1..600. */
+uint8_t Tag_ClaimMaintenanceSlot(uint16_t budget_us);
 extern volatile uint32_t tag_burst_rx_service_max_us;
 extern volatile uint32_t tag_burst_publish_max_us;
+extern volatile uint32_t tag_burst_publish_step_max_us;
+extern volatile uint32_t tag_burst_post_final_max_us;
+extern volatile uint32_t tag_burst_maintenance_grants;
+extern volatile uint32_t tag_burst_telemetry_max_us;
 
 /** 1 when the anchor is currently backed off (offline, probed periodically). */
 uint8_t Tag_AnchorBackedOff(uint8_t anchor_index);
@@ -551,6 +568,8 @@ uint8_t Tag_AnchorBackedOff(uint8_t anchor_index);
 #define TAG_BURST_REC_VALID         0x08U  /* accepted by the TAG conditioner */
 #define TAG_BURST_REC_ANCHOR_LATE   0x10U  /* anchor reported a missed slot */
 #define TAG_BURST_REC_RADIO_OK      0x20U  /* exchange complete, range computed */
+#define TAG_BURST_DIAG_RESP_VALID   0x01U
+#define TAG_BURST_DIAG_FINAL_VALID  0x02U
 
 /** One anchor of one burst cycle. */
 typedef struct {
@@ -561,6 +580,13 @@ typedef struct {
     int16_t  fp_cdbm;      /* RESP first-path power at the TAG, INT16_MIN = unknown */
     int16_t  rx_cdbm;      /* RESP receive power at the TAG */
     int16_t  ci_ppm_x100;  /* anchor clock vs TAG, 0.01 ppm, INT16_MIN = unknown */
+    /* Uncompressed diagnostics belong to this record's cycle, not the newest
+     * radio buffer. Copied from already captured registers, with no extra SPI. */
+    uint8_t  diag_flags;
+    DW1000_SignalDiag_t rx_diag;
+    int32_t  carrier_integrator;
+    int16_t  anchor_fp_cdbm;
+    int16_t  anchor_rx_cdbm;
 } TagBurstAnchor_t;
 
 /** Every anchor of one burst cycle, published one cycle later. */

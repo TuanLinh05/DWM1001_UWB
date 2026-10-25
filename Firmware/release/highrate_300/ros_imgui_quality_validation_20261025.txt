@@ -1,0 +1,4 @@
+Actual C encoder -> ROS JSON -> ImGui parser PASS
+ImGui calibration JSON self-test PASS (legacy + quality/env + 64-bit time + missing values)
+ok
+ROS Humble bridge PASS (C golden -> decoder -> sampled quality + JSON; no synthetic/duplicate ranges)

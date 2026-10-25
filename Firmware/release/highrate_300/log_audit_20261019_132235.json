@@ -1,0 +1,189 @@
+{
+  "source": "D:\\Drone Project\\Github Clone UWB Test\\Software\\UWB_UART_GUI\\Output\\data_logs\\20261019_132235_COM14",
+  "tag_window_s": 37.55434,
+  "observed_burst_cycles": 11894,
+  "expected_cycles_in_inclusive_tag_window": 11901,
+  "observed_cycles_hz": 316.68776498268903,
+  "generated_cycles_hz": 316.8741615483057,
+  "per_anchor": [
+    {
+      "anchor_id": 1,
+      "ds_samples": 11847,
+      "ds_hz_over_common_tag_window": 315.46287326577965,
+      "gaps_over_20ms": 0,
+      "gaps_over_500ms": 0,
+      "max_gap_ms": 12.915,
+      "max_gap_start_elapsed_s": 2.376238,
+      "max_gap_range_endpoints_mm": [
+        1477,
+        1536
+      ]
+    },
+    {
+      "anchor_id": 2,
+      "ds_samples": 8034,
+      "ds_hz_over_common_tag_window": 213.93000116630992,
+      "gaps_over_20ms": 152,
+      "gaps_over_500ms": 0,
+      "max_gap_ms": 365.279,
+      "max_gap_start_elapsed_s": 18.628215,
+      "max_gap_range_endpoints_mm": [
+        444,
+        416
+      ]
+    },
+    {
+      "anchor_id": 3,
+      "ds_samples": 0,
+      "ds_hz_over_common_tag_window": 0.0,
+      "gaps_over_20ms": 0,
+      "gaps_over_500ms": 0,
+      "max_gap_ms": null
+    },
+    {
+      "anchor_id": 4,
+      "ds_samples": 1734,
+      "ds_hz_over_common_tag_window": 46.17309211132454,
+      "gaps_over_20ms": 229,
+      "gaps_over_500ms": 8,
+      "max_gap_ms": 835.6909999999999,
+      "max_gap_start_elapsed_s": 31.317179,
+      "max_gap_range_endpoints_mm": [
+        1076,
+        1088
+      ]
+    },
+    {
+      "anchor_id": 5,
+      "ds_samples": 4445,
+      "ds_hz_over_common_tag_window": 118.36181916657301,
+      "gaps_over_20ms": 235,
+      "gaps_over_500ms": 1,
+      "max_gap_ms": 502.225,
+      "max_gap_start_elapsed_s": 32.827392,
+      "max_gap_range_endpoints_mm": [
+        1451,
+        1430
+      ]
+    },
+    {
+      "anchor_id": 6,
+      "ds_samples": 6879,
+      "ds_hz_over_common_tag_window": 183.1745678395626,
+      "gaps_over_20ms": 175,
+      "gaps_over_500ms": 0,
+      "max_gap_ms": 480.351,
+      "max_gap_start_elapsed_s": 18.787774,
+      "max_gap_range_endpoints_mm": [
+        890,
+        878
+      ]
+    },
+    {
+      "anchor_id": 7,
+      "ds_samples": 3803,
+      "ds_hz_over_common_tag_window": 101.26659129144593,
+      "gaps_over_20ms": 351,
+      "gaps_over_500ms": 1,
+      "max_gap_ms": 518.011,
+      "max_gap_start_elapsed_s": 15.205361,
+      "max_gap_range_endpoints_mm": [
+        949,
+        997
+      ]
+    },
+    {
+      "anchor_id": 8,
+      "ds_samples": 7027,
+      "ds_hz_over_common_tag_window": 187.11552379831463,
+      "gaps_over_20ms": 191,
+      "gaps_over_500ms": 0,
+      "max_gap_ms": 364.911,
+      "max_gap_start_elapsed_s": 28.905634,
+      "max_gap_range_endpoints_mm": [
+        1254,
+        1248
+      ]
+    }
+  ],
+  "horizontal_line_example": {
+    "anchor_id": 8,
+    "start_elapsed_s": 0.409056,
+    "end_elapsed_s": 0.540058,
+    "gap_ms": 131.002,
+    "both_endpoints_mm": 1260,
+    "start_cycle_seq": 9093,
+    "end_cycle_seq": 9135,
+    "missing_cycles": 41,
+    "observed_burst_cycles_inside_gap": 41,
+    "observed_successful_a1_inside_gap": 41
+  },
+  "diagnostics_first_last": [
+    {
+      "time_ms": 28813,
+      "cycle_count": 9065,
+      "cycle_us": 3113,
+      "cycle_max_us": 3675,
+      "cycle_overruns": 1702,
+      "spi_errors": 0,
+      "radio_recoveries": 0,
+      "config_mismatches": 0,
+      "meas_queue_drops": 0,
+      "rx_errors": {
+        "phy_header": 58,
+        "fcs": 5,
+        "sync_loss": 59,
+        "frame_timeout": 0,
+        "lde": 0,
+        "overrun": 0,
+        "preamble_timeout": 0,
+        "sfd_timeout": 5,
+        "filtered": 0,
+        "incomplete": 0,
+        "soft_resets": 127
+      },
+      "burst_final_late": 0,
+      "burst_record_drops": 0,
+      "burst_rx_service_max_us": 177,
+      "burst_publish_max_us": 323
+    },
+    {
+      "time_ms": 65635,
+      "cycle_count": 20811,
+      "cycle_us": 3123,
+      "cycle_max_us": 3686,
+      "cycle_overruns": 4708,
+      "spi_errors": 0,
+      "radio_recoveries": 0,
+      "config_mismatches": 0,
+      "meas_queue_drops": 0,
+      "rx_errors": {
+        "phy_header": 385,
+        "fcs": 13,
+        "sync_loss": 395,
+        "frame_timeout": 0,
+        "lde": 0,
+        "overrun": 0,
+        "preamble_timeout": 0,
+        "sfd_timeout": 24,
+        "filtered": 0,
+        "incomplete": 0,
+        "soft_resets": 817
+      },
+      "burst_final_late": 0,
+      "burst_record_drops": 0,
+      "burst_rx_service_max_us": 177,
+      "burst_publish_max_us": 337
+    }
+  ],
+  "uart_session_counters": {
+    "uart_crc_errors": 6,
+    "uart_discarded_pct": 0.05,
+    "meas_delivered_pct": 99.95,
+    "burst_delivered_pct": 99.94,
+    "queue_drops": 0
+  },
+  "plot_gap_threshold_s": 0.5,
+  "calibration": "All recorded DS measurements are CAL_MISSING. Counts above mean successful uncalibrated radio DS exchanges, not calibrated valid ranges.",
+  "interpretation": "Frequent missing UWB DS results and backoff, while other anchors and burst telemetry continue. Plot connects consecutive successful points across gaps <=500 ms. Not proof of anchor power loss; UART loss is too small to explain most gaps. Root cause of UWB failures still needs hardware validation."
+}

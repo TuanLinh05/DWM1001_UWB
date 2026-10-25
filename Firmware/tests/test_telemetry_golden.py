@@ -26,7 +26,7 @@ def main(path: str) -> int:
     check(parser.counters.crc_errors == 0, "CRC errors in golden stream")
     messages = [tp.decode_frame(frame) for frame in frames]
     by_type = {type(message).__name__: message for message in messages}
-    check(len(messages) == 11, f"expected 11 frames, got {len(messages)}")
+    check(len(messages) == 12, f"expected 12 frames, got {len(messages)}")
 
     info = by_type["InfoMessage"]
     check(info.flags & tp.INFO_FLAG_FPP_CORRECTED, "INFO must flag corrected FPP")
@@ -108,7 +108,8 @@ def main(path: str) -> int:
     check((a5.range_mm, a5.fp_cdbm, a5.rx_cdbm, a5.ci_ppm_x100)
           == (12345, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN), "A5 unknown quality")
     check(not a8.radio_ok and a8.range_mm is None and a8.mode_name == "NONE", "A8 timeout")
-    check(tp.encode_range_burst_payload(burst) == frames[-2].payload, "RANGE_BURST re-encode")
+    check(tp.encode_range_burst_payload(burst) == next(f.payload for f in frames
+          if f.type == tp.TYPE_RANGE_BURST), "RANGE_BURST re-encode")
     meas = burst.to_range_meas({1: 123456})
     check([(m.anchor_id, m.meas_seq) for m in meas] == [(1, 900), (5, 901)],
           "RANGE_BURST -> RANGE_MEAS numbering")
@@ -120,7 +121,17 @@ def main(path: str) -> int:
           "uncalibrated fallback")
     check(empty.period_us == 0xFFFF and empty.anchors == (), "empty RANGE_BURST")
 
-    print("telemetry golden decode passed (10 frame types, C encoder == Python decoder)")
+    quality = by_type['RxQualityMessage']
+    check((quality.boot_id, quality.cycle_seq, quality.t_us, quality.prf_mhz,
+           quality.sample_period_ms) == (0xBEEF, 5000, 987654321012, 16, 100), 'quality sample identity')
+    q = quality.anchors[0]
+    check((q.rxpacc,q.fp_ampl1,q.fp_ampl2,q.fp_ampl3,q.cir_pwr,q.std_noise,q.fp_index,
+           q.carrier_integrator) == (63,101,202,303,404,35,0x2A40,32051), 'raw RX registers')
+    check((q.fp_cdbm,q.rx_cdbm,q.anchor_fp_cdbm,q.anchor_rx_cdbm)
+          == (-8212,-7650,-8312,-7713), 'uncompressed powers')
+    check(q.resp_valid and q.final_valid and quality.env_flags == 3, 'quality validity')
+    check(quality.temperature_c == 34.4 and quality.vbat_v == 3.3, 'quality TAG env')
+    print("telemetry golden decode passed (11 frame types, C encoder == Python decoder)")
     return 0
 
 

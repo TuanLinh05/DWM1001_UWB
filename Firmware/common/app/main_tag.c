@@ -20,10 +20,8 @@
 
 #include <zephyr/kernel.h>
 
-#define TAG_STATS_PERIOD_MS        1000U
 #define TAG_DEVICE_INFO_PERIOD_MS  10000U
-#define TAG_ENV_PERIOD_CHECKS      10U    /* temperature every 10 config checks */
-#define TAG_DIAG_ANCHORS_PER_SEC   2U
+#define TAG_ENV_PERIOD_MS          1000U  /* independent of the radio config poll */
 #define TAG_MEAS_PER_LOOP          4U
 #define TAG_FAULT_BLINK_MS         150U
 #define TAG_LINK_HOLD_MS           1000U
@@ -84,18 +82,16 @@ int main(void)
 
     uint32_t spi_errors_seen = dw1000_spi_error_count;
     uint32_t last_cycle_seen = tag_cycle_count;
-    uint32_t last_stats_ms = uwb_platform_time_ms();
-    uint32_t last_device_info_ms = last_stats_ms;
-    uint32_t last_blink_ms = last_stats_ms;
-    uint32_t last_cycle_count = tag_cycle_count;
-    uint32_t last_ok_count = response_ok_count;
+    const uint32_t started_ms = uwb_platform_time_ms();
+    uint32_t last_device_info_ms = started_ms;
+    uint32_t last_blink_ms = started_ms;
     uint32_t link_ok_seen = response_ok_count;
-    uint32_t last_link_ms = last_stats_ms;
+    uint32_t last_link_ms = started_ms;
     uint32_t host_frames_seen = uwb_cmd_stats.frames_ok;
-    uint32_t last_host_ms = last_stats_ms;
-    uint32_t config_checks = 0U;
-    uint8_t diag_anchor = 0U;
-    uint8_t stats_phase = 0U;
+    uint32_t last_host_ms = started_ms;
+    uint32_t last_environment_ms = started_ms - TAG_ENV_PERIOD_MS;
+    TelemPeriodic_t periodic;
+    Telem_InitPeriodic(&periodic, started_ms);
     uint8_t environment_pending = 0U;
     uint64_t environment_started_us = 0U;
 
@@ -118,18 +114,14 @@ int main(void)
                 radio_ok = recover(UWB_FAULT_SPI);
                 environment_pending = 0U;
                 spi_errors_seen = dw1000_spi_error_count;
-            } else if (Tag_IsIdle() && Tag_IdleBudgetUs() >= 180U
-                       && uwb_health_config_check_due()) {
+            } else if (uwb_health_config_check_due()
+                       && Tag_ClaimMaintenanceSlot(500U)) {
                 /* Brown-out/reset of the DW1000 restores register defaults. */
                 const uint32_t mismatch = DW1000_VerifyConfig();
                 uwb_health_note_config_check(mismatch);
                 if (mismatch != 0U) {
                     radio_ok = recover(UWB_FAULT_CONFIG);
                     environment_pending = 0U;
-                } else if ((++config_checks % TAG_ENV_PERIOD_CHECKS) == 0U) {
-                    DW1000_BeginTempVbat();
-                    environment_started_us = uwb_platform_time_us64();
-                    environment_pending = 1U;
                 }
                 if (dw1000_spi_error_count != spi_errors_seen && mismatch == 0U) {
                     radio_ok = recover(UWB_FAULT_SPI);
@@ -137,9 +129,17 @@ int main(void)
                 }
                 spi_errors_seen = dw1000_spi_error_count;
             }
-            if (radio_ok && environment_pending && Tag_IsIdle()
-                && Tag_IdleBudgetUs() >= 150U
-                && uwb_platform_time_us64() - environment_started_us >= 1000U) {
+            if (radio_ok && !environment_pending
+                && (uint32_t)(now - last_environment_ms) >= TAG_ENV_PERIOD_MS
+                && Tag_ClaimMaintenanceSlot(200U)) {
+                DW1000_BeginTempVbat();
+                environment_started_us = uwb_platform_time_us64();
+                environment_pending = 1U;
+                last_environment_ms = now;
+            }
+            if (radio_ok && environment_pending
+                && uwb_platform_time_us64() - environment_started_us >= 1000U
+                && Tag_ClaimMaintenanceSlot(200U)) {
                 uint8_t temp_raw = 0U;
                 uint8_t vbat_raw = 0U;
                 DW1000_FinishTempVbat(&temp_raw, &vbat_raw);
@@ -183,6 +183,7 @@ int main(void)
          * Always open in the sequential scheme. */
         const uint8_t window = Tag_TelemetryWindow();
         const uint8_t features = Telem_GetFeatures();
+        const McuCycleStamp_t telemetry_started = MCU_CycleNow();
 
         if (window && tag_cycle_ready != 0U) {
             tag_cycle_ready = 0U;
@@ -202,6 +203,7 @@ int main(void)
         TagBurstRecord_t burst;
         if (window && Tag_PopBurst(&burst)) {
             Telem_SendRangeBurst(&burst);
+            Telem_SendRxQuality(&burst);
         }
 
         TagAnchorInfo_t anchor_info;
@@ -209,41 +211,13 @@ int main(void)
             Telem_SendAnchorInfo(&anchor_info);
         }
 
-        /* Stagger 1 Hz stats/diagnostics across consecutive idle windows so
-         * high-rate (200-300 Hz) cycles never dump ~500 bytes in a single gap
-         * or starve when the per-cycle idle budget is <300 us. */
-        if (stats_phase == 0U && (uint32_t)(now - last_stats_ms) >= TAG_STATS_PERIOD_MS) {
-            stats_phase = 1U;
-        }
-        if (window && stats_phase != 0U && Tag_IdleBudgetUs() >= 120U) {
-            if (stats_phase == 1U) {
-                const uint32_t elapsed = (now > last_stats_ms) ? (now - last_stats_ms) : 1U;
-                const uint32_t cycles = tag_cycle_count - last_cycle_count;
-                const uint32_t successes = response_ok_count - last_ok_count;
+        /* At most one maintenance job per burst cycle. Reserve bounded time
+         * even with no normal idle slack, so stats/health cannot starve. */
+        if (window)
+            Telem_ServicePeriodic(&periodic, now);
 
-                Telem_SendStats((uint16_t)((cycles * 1000U) / elapsed),
-                                (uint16_t)((successes * 1000U) / elapsed));
-                Telem_SendInfo();
-                last_stats_ms = now;
-                last_cycle_count = tag_cycle_count;
-                last_ok_count = response_ok_count;
-                stats_phase = ((features & TELEM_FEATURE_DIAG) != 0U) ? 2U : 0U;
-            } else if (stats_phase == 2U) {
-                Telem_SendDiagSystem();
-                stats_phase = 3U;
-            } else {
-                Telem_SendDiagAnchor(diag_anchor);
-                diag_anchor = (uint8_t)((diag_anchor + 1U) % TAG_NUM_ANCHORS);
-                if (stats_phase >= (uint8_t)(2U + TAG_DIAG_ANCHORS_PER_SEC)) {
-                    stats_phase = 0U;
-                } else {
-                    stats_phase++;
-                }
-            }
-        }
-
-        if (window && Tag_IdleBudgetUs() >= 140U
-            && (uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS) {
+        if (window && (uint32_t)(now - last_device_info_ms) >= TAG_DEVICE_INFO_PERIOD_MS
+            && Tag_ClaimMaintenanceSlot(300U)) {
             Telem_SendDeviceInfo();
             last_device_info_ms = now;
         }
@@ -253,6 +227,9 @@ int main(void)
          * slower SET_BURST command. Commands already require an idle window. */
         if (window) {
             uwb_cmd_poll();
+            const uint32_t telemetry_us = MCU_ElapsedUs(telemetry_started);
+            if (telemetry_us > tag_burst_telemetry_max_us)
+                tag_burst_telemetry_max_us = telemetry_us;
         }
 
         /* On the DevKit the blue LED proves a bidirectional GUI link. The GUI

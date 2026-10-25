@@ -92,7 +92,8 @@ function(uwb_read_config_id role out_hash)
         ranging/uwb_frame.h platform/uwb_platform.h services/uwb_health.h
         ranging/uwb_frame.c filters/range_filter.c
         services/uwb_cmd.c services/uwb_health.c services/uwb_settings.c
-        telemetry/telemetry.c telemetry/telemetry_frame.c
+        telemetry/telemetry.c telemetry/telemetry.h
+        telemetry/telemetry_frame.c telemetry/telemetry_frame.h telemetry/uart_tx.h
         telemetry/uart_tx_zephyr.c)
       file(SHA256 "${UWB_COMMON_DIR}/${relative}" source_hash)
       string(APPEND material "${relative}=${source_hash}\n")

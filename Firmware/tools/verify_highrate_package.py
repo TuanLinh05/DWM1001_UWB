@@ -83,7 +83,9 @@ def verify(firmware: Path, package: Path) -> list[dict]:
         row = next(r for r in manifest if r["File"] == filename)
         require(digest == row["SHA256"].lower() and path.stat().st_size == int(row["Bytes"]),
                 f"{node}: manifest mismatch")
-        build = node_dir(project, firmware) / "build_highrate"
+        is_300 = package.name == "highrate_300"
+        build_dir_name = "build_highrate_300" if is_300 else "build_highrate"
+        build = node_dir(project, firmware) / build_dir_name
         require(path.read_bytes() == (build / "zephyr/zephyr.hex").read_bytes(),
                 f"{node}: package differs from build")
         ninja = (build / "build.ninja").read_text(encoding="utf-8")
@@ -92,7 +94,10 @@ def verify(firmware: Path, package: Path) -> list[dict]:
         require(config_ids == {row["ConfigID"]}, f"{node}: config identity mismatch")
         for option in ("PINCTRL", "SPEED_OPTIMIZATIONS", "WATCHDOG", "TIMING_FUNCTIONS"):
             require(f"CONFIG_{option}=y" in config, f"{node}: {option} disabled")
-        for define in ("UWB_HIGH_RATE=1", "UWB_BURST_REQUIRE_DS=1"):
+        required_defines = ["UWB_HIGH_RATE=1", "UWB_BURST_REQUIRE_DS=1"]
+        if is_300:
+            required_defines += ["UWB_HIGH_RATE_300=1", "UWB_PHY_PREAMBLE=64U"]
+        for define in required_defines:
             require(define in ninja, f"{node}: {define} absent")
         require("-ffast-math" not in ninja, f"{node}: unsafe fast-math")
         speed = 16000000 if stm32 else 8000000

@@ -42,6 +42,8 @@
 
 _Static_assert(TELEM_MAX_FRAME <= UART_TX_BUF_SIZE,
                "Telemetry packet exceeds UART TX ring capacity");
+_Static_assert(2U * TELEM_MAX_FRAME < UART_TX_BUF_SIZE,
+               "Periodic telemetry needs headroom for its two-frame job");
 _Static_assert((1000U % TAG_CYCLE_MS) == 0U,
                "TAG cycle period must produce an integer telemetry rate");
 _Static_assert(
@@ -54,6 +56,73 @@ static uint32_t s_frame_seq;
 static uint8_t  s_temp_raw;
 static uint8_t  s_vbat_raw;
 static uint8_t  s_env_valid;
+static uint32_t s_env_time_ms;
+#if !TELEM_ASCII && UWB_RX_QUALITY_PERIOD_MS > 0
+static uint64_t s_quality_last_us;
+static uint16_t s_quality_boot_id;
+static uint8_t s_quality_sent;
+#endif
+volatile uint32_t telem_quality_frames;
+volatile uint32_t telem_quality_deferred;
+volatile uint32_t telem_quality_pack_max_us;
+
+#define TELEM_QUALITY_HEADER_LEN 30U
+#define TELEM_QUALITY_RECORD_LEN 28U
+_Static_assert(TELEM_QUALITY_HEADER_LEN + TAG_NUM_ANCHORS * TELEM_QUALITY_RECORD_LEN
+               <= TELEM_MAX_PAYLOAD, "RX_QUALITY exceeds the gateway payload limit");
+_Static_assert(UWB_RX_QUALITY_PERIOD_MS <= UINT16_MAX,
+               "RX_QUALITY sample period must fit its wire field");
+
+void Telem_InitPeriodic(TelemPeriodic_t *s, uint32_t now_ms)
+{
+    s->last_stats_ms = now_ms;
+    s->last_cycle_count = tag_cycle_count;
+    s->last_ok_count = response_ok_count;
+    s->phase = s->anchor = 0U;
+}
+
+void Telem_ServicePeriodic(TelemPeriodic_t *s, uint32_t now_ms)
+{
+    if (s->phase > 1U && (s_features & TELEM_FEATURE_DIAG) == 0U)
+        s->phase = 0U;
+    if (s->phase == 0U && (uint32_t)(now_ms - s->last_stats_ms) >= 1000U)
+        s->phase = 1U;
+    /* Keep room for the largest periodic job (STATS + INFO). Also paces a
+     * full DIAG round while PAUSED, when no radio cycles limit the sender. */
+    if (s->phase == 0U || UART_TX_Pending() > UART_TX_BUF_SIZE - 2U * TELEM_MAX_FRAME
+        || !Tag_ClaimMaintenanceSlot(400U))
+        return;
+    if (s->phase == 1U)
+    {
+        const uint32_t delta_ms = (uint32_t)(now_ms - s->last_stats_ms);
+        const uint32_t elapsed = delta_ms != 0U ? delta_ms : 1U;
+        const uint32_t cycles = tag_cycle_count - s->last_cycle_count;
+        const uint32_t successes = response_ok_count - s->last_ok_count;
+        Telem_SendStats((uint16_t)((cycles * 1000U) / elapsed),
+                        (uint16_t)((successes * 1000U) / elapsed));
+        Telem_SendInfo();
+        s->last_stats_ms = now_ms;
+        s->last_cycle_count = tag_cycle_count;
+        s->last_ok_count = response_ok_count;
+        s->phase = (s_features & TELEM_FEATURE_DIAG) != 0U ? 2U : 0U;
+    }
+    else if (s->phase == 2U)
+    {
+        Telem_SendDiagSystem();
+        s->phase = 3U;
+    }
+    else
+    {
+        Telem_SendDiagAnchor(s->anchor);
+        s->anchor = (uint8_t)((s->anchor + 1U) % TAG_NUM_ANCHORS);
+#if defined(UWB_HIGH_RATE_300) && UWB_HIGH_RATE_300
+        const uint8_t anchors_per_sec = TAG_NUM_ANCHORS;
+#else
+        const uint8_t anchors_per_sec = 2U;
+#endif
+        s->phase = s->phase >= (uint8_t)(2U + anchors_per_sec) ? 0U : (uint8_t)(s->phase + 1U);
+    }
+}
 
 uint32_t Telem_UartBaud(void)
 {
@@ -89,6 +158,7 @@ void Telem_SetEnvironment(uint8_t temp_raw, uint8_t vbat_raw)
     s_temp_raw = temp_raw;
     s_vbat_raw = vbat_raw;
     s_env_valid = 1U;
+    s_env_time_ms = uwb_platform_time_ms();
 }
 
 static void send_frame(uint8_t *buf, uint8_t type, uint32_t seq, uint16_t payload_len)
@@ -392,6 +462,93 @@ void Telem_SendRangeBurst(const TagBurstRecord_t *rec)
 #endif
 }
 
+/* 0x19 schema1 header: schema u8, boot u16, cycle u32, POLL t_us u64,
+ * PRF MHz u8, count u8, env_flags u8 (bit0 temp, bit1 supply), temp_centi i16,
+ * vbat_mV u16, env_age_ms u32, sample_period_ms u16, temp_raw u8, vbat_raw u8.
+ * Each record: id u8, diag_flags u8 (RESP/FINAL validity), RXPACC/F1/F2/F3/
+ * CIR_PWR/STD_NOISE/FP_INDEX u16, carrier_integrator i32, FP/RX/anchor_FP/
+ * anchor_RX i16 in 0.01 dBm. No additional radio reads or log10 calls.
+ * Full8: 254-byte payload / 270-byte frame; <=10 frames/s by sample clock.
+ * Optional quality defers first under UART load, reserving one max frame
+ * for the existing stream. t_us/cycle_seq identify the exact sampled range. */
+void Telem_SendRxQuality(const TagBurstRecord_t *rec)
+{
+#if !TELEM_ASCII && UWB_RX_QUALITY_PERIOD_MS > 0
+    if ((Telem_GetFeatures() & TELEM_FEATURE_DIAG) == 0U || rec == NULL)
+        return;
+    if (s_quality_sent && s_quality_boot_id == uwb_health.boot_id
+        && rec->t_us >= s_quality_last_us
+        && rec->t_us - s_quality_last_us < (uint64_t)UWB_RX_QUALITY_PERIOD_MS * 1000U)
+        return;
+    const uint8_t count = rec->count > TAG_NUM_ANCHORS ? TAG_NUM_ANCHORS : rec->count;
+    const uint16_t total = TELEM_HDR_LEN + TELEM_QUALITY_HEADER_LEN
+                            + count * TELEM_QUALITY_RECORD_LEN + TELEM_CRC_LEN;
+    if (UART_TX_Pending() > UART_TX_BUF_SIZE - TELEM_MAX_FRAME - total)
+    {
+        telem_quality_deferred++;
+        return;
+    }
+    const McuCycleStamp_t started = MCU_CycleNow();
+    uint8_t buf[TELEM_MAX_FRAME];
+    uint16_t off = TELEM_HDR_LEN;
+    const int16_t temp = s_env_valid ? DW1000_TemperatureCentiDeg(s_temp_raw) : INT16_MIN;
+    const uint16_t vbat = s_env_valid ? DW1000_VoltageMilliVolt(s_vbat_raw) : 0U;
+    buf[off++] = 1U;
+    off += telem_put_u16(&buf[off], uwb_health.boot_id);
+    off += telem_put_u32(&buf[off], rec->cycle_seq);
+    off += telem_put_u64(&buf[off], rec->t_us);
+    buf[off++] = 16U; /* current DW1000 air profile uses PRF16 on every node */
+    buf[off++] = count;
+    buf[off++] = (uint8_t)((temp != INT16_MIN ? 1U : 0U) | (vbat != 0U ? 2U : 0U));
+    off += telem_put_u16(&buf[off], (uint16_t)temp);
+    off += telem_put_u16(&buf[off], vbat);
+    off += telem_put_u32(&buf[off], s_env_valid
+        ? (uint32_t)(uwb_platform_time_ms() - s_env_time_ms) : UINT32_MAX);
+    off += telem_put_u16(&buf[off], UWB_RX_QUALITY_PERIOD_MS);
+    buf[off++] = s_env_valid ? s_temp_raw : 0U;
+    buf[off++] = s_env_valid ? s_vbat_raw : 0U;
+    for (uint8_t k = 0U; k < count; k++)
+    {
+        const TagBurstAnchor_t *a = &rec->anchor[k];
+        const DW1000_SignalDiag_t *d = &a->rx_diag;
+        buf[off++] = a->anchor_id;
+        buf[off++] = a->diag_flags;
+        off += telem_put_u16(&buf[off], d->rxpacc);
+        off += telem_put_u16(&buf[off], d->fp_ampl1);
+        off += telem_put_u16(&buf[off], d->fp_ampl2);
+        off += telem_put_u16(&buf[off], d->fp_ampl3);
+        off += telem_put_u16(&buf[off], d->cir_pwr);
+        off += telem_put_u16(&buf[off], d->std_noise);
+        off += telem_put_u16(&buf[off], d->fp_index);
+        off += telem_put_u32(&buf[off], (uint32_t)a->carrier_integrator);
+        const uint8_t power_valid = (a->diag_flags & TAG_BURST_DIAG_RESP_VALID) && d->rxpacc;
+        const int16_t fp = power_valid && (d->fp_ampl1 || d->fp_ampl2 || d->fp_ampl3)
+            ? a->fp_cdbm : INT16_MIN;
+        const int16_t rx = power_valid && d->cir_pwr ? a->rx_cdbm : INT16_MIN;
+        off += telem_put_u16(&buf[off], (uint16_t)fp);
+        off += telem_put_u16(&buf[off], (uint16_t)rx);
+        off += telem_put_u16(&buf[off], (uint16_t)a->anchor_fp_cdbm);
+        off += telem_put_u16(&buf[off], (uint16_t)a->anchor_rx_cdbm);
+    }
+    const uint16_t packed = telem_frame_pack(buf, TELEM_TYPE_RX_QUALITY,
+        rec->cycle_seq, uwb_platform_time_ms(), (uint16_t)(off - TELEM_HDR_LEN));
+    if (UART_TX_Write(buf, packed) == packed)
+    {
+        s_quality_sent = 1U;
+        s_quality_last_us = rec->t_us;
+        s_quality_boot_id = uwb_health.boot_id;
+        telem_quality_frames++;
+    }
+    else
+        telem_quality_deferred++;
+    const uint32_t elapsed = MCU_ElapsedUs(started);
+    if (elapsed > telem_quality_pack_max_us)
+        telem_quality_pack_max_us = elapsed;
+#else
+    (void)rec;
+#endif
+}
+
 /* ========================================================================== */
 /*                     DIAG_ANCHOR (0x11)                                      */
 /* ========================================================================== */
@@ -601,6 +758,14 @@ void Telem_SendDiagSystem(void)
     buf[off++] = 0U;
     off += telem_put_u32(&buf[off], tag_burst_rx_service_max_us);
     off += telem_put_u32(&buf[off], tag_burst_publish_max_us);
+    /* Append-only performance fields; existing decoders keep the v1 prefix. */
+    off += telem_put_u32(&buf[off], tag_burst_publish_step_max_us);
+    off += telem_put_u32(&buf[off], tag_burst_post_final_max_us);
+    off += telem_put_u32(&buf[off], tag_burst_telemetry_max_us);
+    off += telem_put_u32(&buf[off], tag_burst_maintenance_grants);
+    off += telem_put_u32(&buf[off], telem_quality_frames);
+    off += telem_put_u32(&buf[off], telem_quality_deferred);
+    off += telem_put_u32(&buf[off], telem_quality_pack_max_us);
 #endif
 
     send_frame(buf, TELEM_TYPE_DIAG_SYSTEM, s_frame_seq++, (uint16_t)(off - TELEM_HDR_LEN));

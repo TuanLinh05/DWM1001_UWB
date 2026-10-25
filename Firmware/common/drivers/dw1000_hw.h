@@ -442,6 +442,16 @@ int DW1000_WaitTxDone(uint32_t timeout_ms);
 /** @brief Enable the receiver (RXENAB). */
 void DW1000_StartRx(void);
 
+/** Change buffering only with RX stopped. Automatic RX re-enable stays off. */
+void DW1000_SetDoubleRxBuffer(uint8_t enabled);
+uint8_t DW1000_DoubleRxBufferEnabled(void);
+/** Toggle host pointer after ALL payload/metadata reads, even for rejected frames. */
+void DW1000_ReleaseRxBuffer(void);
+/** Discard pending buffers only with RX stopped, e.g. before a new POLL. */
+void DW1000_SyncRxBuffers(void);
+/** Clear this completed frame's good-RX flags BEFORE manually restarting RX. */
+void DW1000_ClearRxGoodStatus(void);
+
 /**
  * @brief  Turn the receiver on at DX_TIME (RXENAB | RXDLYE). The 9 LSBs of
  *         `rx_time` are ignored by the hardware, like for a delayed TX.
@@ -472,6 +482,16 @@ uint16_t DW1000_PeekRxPrefix(uint8_t *data, uint16_t prefix_len);
  * Returns 0 on truncation or SPI failure. Rearm RX only after this returns. */
 uint16_t DW1000_ReadRxFrame(uint8_t *data, uint16_t max_len,
                            uint8_t ts[5], DW1000_SignalDiag_t *diag);
+
+/** Split capture for burst RX: read FINFO + payload first so the caller can
+ * validate the last scheduled RESP and arm delayed FINAL before diagnostics.
+ * In single buffer mode RX must stay stopped until ReadRxMetadata completes.
+ * Double buffering permits RX into the other buffer; keep the host pointer
+ * unchanged until both reads finish. TX setup does not
+ * overwrite the RX metadata. Returns 0 on invalid length/SPI failure. */
+uint16_t DW1000_ReadRxPayload(uint8_t *data, uint16_t max_len, uint32_t *finfo);
+/** Reuse the captured FINFO; 1 on success, 0 on bad argument/SPI failure. */
+uint8_t DW1000_ReadRxMetadata(uint32_t finfo, uint8_t ts[5], DW1000_SignalDiag_t *diag);
 
 /** Capture timestamp + quality together (three SPI accesses). */
 void DW1000_ReadRxTimestampDiag(uint8_t ts[5], DW1000_SignalDiag_t *diag);
