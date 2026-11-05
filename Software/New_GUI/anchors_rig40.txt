@@ -1,0 +1,28 @@
+# UWB 8-Anchor 3D Calibration Rig Layout (40 cm Cube Rig)
+# Compatible with UWB Fast Studio (New_GUI) and Reference/IMGUI_UWB_CALIB
+# Format: anN_p, x_m, y_m, z_m  |  anN_bias, bias_m (meas = true + bias)
+an1_p, 0.000, 0.000, 0.480
+an2_p, 0.400, 0.400, 0.480
+an3_p, 0.400, 0.000, 0.480
+an4_p, 0.000, 0.400, 0.480
+an5_p, 0.000, 0.000, 1.580
+an6_p, 0.400, 0.400, 1.580
+an7_p, 0.400, 0.000, 1.580
+an8_p, 0.000, 0.400, 1.580
+# Per-anchor range bias (m) and white noise sigma (m)
+an1_bias, 0.0000
+an1_sigma, 0.0300
+an2_bias, -0.0170
+an2_sigma, 0.0300
+an3_bias, -0.1780
+an3_sigma, 0.0300
+an4_bias, 0.1460
+an4_sigma, 0.0300
+an5_bias, 0.0520
+an5_sigma, 0.0300
+an6_bias, -0.0330
+an6_sigma, 0.0300
+an7_bias, 0.0630
+an7_sigma, 0.0300
+an8_bias, -0.0590
+an8_sigma, 0.0300
