@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSlider,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -60,9 +61,13 @@ from core_state import (  # noqa: E402
     DEFAULT_PRESET_FLAT4,
     DEFAULT_PRESET_RIG40,
     DEFAULT_PRESET_ROOM_66_36,
+    DopMetrics,
+    LoadedLogSession,
+    PositionResult,
     UwbStateEngine,
     load_anchor_layout_json,
     load_anchors_rig_txt,
+    load_log_session,
     save_anchor_layout_json,
     save_anchors_rig_txt,
 )
@@ -239,6 +244,12 @@ class UwbFastGuiWindow(QMainWindow):
                 pass
 
         self.engine = UwbStateEngine(initial_anchors=initial_rig)
+        self.replay_engine = UwbStateEngine(initial_anchors=initial_rig)
+        self.loaded_session: Optional[LoadedLogSession] = None
+        self.replay_playing: bool = False
+        self.replay_frame_idx: int = 0
+        self.replay_speed: float = 1.0
+        self._replay_accum_f: float = 0.0
         self.serial_worker: Optional[SerialTelemetryWorker] = None
         self.demo_worker: Optional[DemoBurstWorker] = None
         self.csv_logger: Optional[FastCsvLogger] = None
@@ -298,6 +309,7 @@ class UwbFastGuiWindow(QMainWindow):
         self.pages.addWidget(self._build_live_positioning_page())
         self.pages.addWidget(self._build_calibration_page())
         self.pages.addWidget(self._build_layout_and_diag_page())
+        self.pages.addWidget(self._build_replay_and_analysis_page())
         body_hbox.addWidget(self.pages, 1)
 
         root_vbox.addWidget(body, 1)
@@ -391,6 +403,7 @@ class UwbFastGuiWindow(QMainWindow):
             ("1. 2D / 3D Positioning", 0),
             ("2. Fast Calibration", 1),
             ("3. Rig Layout && Diag", 2),
+            ("4. Log Replay && Analysis", 3),
         ]
         for label, page_idx in nav_items:
             btn = QPushButton(label)
@@ -556,6 +569,17 @@ class UwbFastGuiWindow(QMainWindow):
         self.chk_show_trail.setChecked(True)
         self.chk_show_trail.toggled.connect(self._on_canvas_overlay_changed)
         canvas_bar.addWidget(self.chk_show_trail)
+
+        self.chk_stability_colors = QCheckBox("Stability Colors")
+        self.chk_stability_colors.setChecked(True)
+        self.chk_stability_colors.setToolTip("Green=Stable, Amber=Warn, Red=Unstable along the full 3D loop")
+        self.chk_stability_colors.toggled.connect(self._on_canvas_overlay_changed)
+        canvas_bar.addWidget(self.chk_stability_colors)
+
+        btn_mark_wp = QPushButton("Mark Point")
+        btn_mark_wp.setToolTip("Drop a numbered waypoint marker (W1, W2...) on the 2D/3D map and record it in CSV log")
+        btn_mark_wp.clicked.connect(self._mark_live_waypoint)
+        canvas_bar.addWidget(btn_mark_wp)
 
         btn_fit = QPushButton("Reset Cam")
         btn_fit.clicked.connect(lambda: self.map_canvas.reset_camera())
@@ -1108,6 +1132,198 @@ class UwbFastGuiWindow(QMainWindow):
         return page
 
     # ------------------------------------------------------------------
+    # Page 4: Log Replay, 3D Loop Trajectory & Instability Inspector
+    # ------------------------------------------------------------------
+
+    def _build_replay_and_analysis_page(self) -> QWidget:
+        page = QWidget(self)
+        page.setObjectName("workspace_page")
+        page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        vbox = QVBoxLayout(page)
+        vbox.setContentsMargins(SPACING_MD, SPACING_MD, SPACING_MD, SPACING_MD)
+        vbox.setSpacing(SPACING_SM)
+
+        # Top Control & KPI Row
+        ctrl_bar = QHBoxLayout()
+        ctrl_bar.setSpacing(6)
+
+        btn_load_latest = QPushButton("Load Latest Log")
+        btn_load_latest.setObjectName("primary_btn")
+        btn_load_latest.clicked.connect(self._load_latest_log_session)
+        ctrl_bar.addWidget(btn_load_latest)
+
+        btn_open_log = QPushButton("Open Log CSV...")
+        btn_open_log.clicked.connect(self._open_log_session_dialog)
+        ctrl_bar.addWidget(btn_open_log)
+
+        self.chk_replay_resolve = QCheckBox("Re-Solve 3D with Current Rig && Filter")
+        self.chk_replay_resolve.setChecked(False)
+        self.chk_replay_resolve.setToolTip(
+            "Re-run the 3D position solver on raw anchor distances using the current Rig Layout & biases"
+        )
+        self.chk_replay_resolve.toggled.connect(self._reload_current_log_session)
+        ctrl_bar.addWidget(self.chk_replay_resolve)
+
+        ctrl_bar.addStretch(1)
+
+        self.lbl_replay_file = QLabel("No log loaded — Click 'Load Latest Log' or 'Open Log CSV...'")
+        self.lbl_replay_file.setObjectName("metric_sub")
+        ctrl_bar.addWidget(self.lbl_replay_file)
+
+        vbox.addLayout(ctrl_bar)
+
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(SPACING_SM)
+        self.card_rep_session = StatCard("SESSION OVERVIEW", "--", "Duration: -- | Frames: 0")
+        self.card_rep_loop = StatCard("3D LOOP & DISTANCE", "0.00 m", "2D Path: 0.00 m | Waypoints: 0")
+        self.card_rep_stability = StatCard("STABILITY BREAKDOWN", "-- % Stable", "Warn: --% | Unstable: --% | Segments: 0")
+        self.card_rep_cursor = StatCard("REPLAY CURSOR (X, Y, Z)", "-- , -- , -- m", "t = 0.00s | RMS: -- mm | Speed: -- m/s")
+        for c in (self.card_rep_session, self.card_rep_loop, self.card_rep_stability, self.card_rep_cursor):
+            kpi_row.addWidget(c, 1)
+        vbox.addLayout(kpi_row)
+
+        main_split = QSplitter(Qt.Orientation.Horizontal, page)
+
+        # Left Pane: 2D/3D Replay Map + Timeline Scrubber
+        left_card = QFrame(main_split)
+        left_card.setObjectName("panel_card")
+        left_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        l_vbox = QVBoxLayout(left_card)
+        l_vbox.setContentsMargins(10, 10, 10, 10)
+        l_vbox.setSpacing(8)
+
+        map_bar = QHBoxLayout()
+        map_bar.setSpacing(6)
+        lbl_m = QLabel("REPLAY 2D + 3D TRAJECTORY (Green=Stable · Amber=Warn · Red=Unstable · Pink=Selected Segment)")
+        lbl_m.setObjectName("section_header")
+        map_bar.addWidget(lbl_m)
+        map_bar.addStretch(1)
+
+        btn_rep_reset = QPushButton("Reset Cam")
+        btn_rep_reset.clicked.connect(lambda: self.replay_canvas.reset_camera())
+        map_bar.addWidget(btn_rep_reset)
+        l_vbox.addLayout(map_bar)
+
+        self.replay_canvas = PositionMapCanvas(self.replay_engine, left_card)
+        self.replay_canvas.view_mode = "SPLIT"
+        self.replay_canvas.color_by_stability = True
+        l_vbox.addWidget(self.replay_canvas, 1)
+
+        # Timeline Scrubber Bar
+        scrub_card = QFrame(left_card)
+        scrub_card.setObjectName("sub_card")
+        scrub_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        s_hbox = QHBoxLayout(scrub_card)
+        s_hbox.setContentsMargins(10, 6, 10, 6)
+        s_hbox.setSpacing(6)
+
+        self.btn_replay_play = QPushButton("Play")
+        self.btn_replay_play.setObjectName("primary_btn")
+        self.btn_replay_play.setFixedWidth(72)
+        self.btn_replay_play.clicked.connect(self._toggle_replay_play)
+        s_hbox.addWidget(self.btn_replay_play)
+
+        self.combo_replay_speed = QComboBox()
+        for spd_lbl, spd_val in (("0.25x", 0.25), ("0.5x", 0.5), ("1.0x", 1.0), ("2.0x", 2.0), ("5.0x", 5.0), ("10x", 10.0)):
+            self.combo_replay_speed.addItem(spd_lbl, spd_val)
+        self.combo_replay_speed.setCurrentIndex(2)
+        self.combo_replay_speed.currentIndexChanged.connect(
+            lambda _i: setattr(self, "replay_speed", float(self.combo_replay_speed.currentData() or 1.0))
+        )
+        s_hbox.addWidget(self.combo_replay_speed)
+
+        self.replay_slider = QSlider(Qt.Orientation.Horizontal, scrub_card)
+        self.replay_slider.setRange(0, 0)
+        self.replay_slider.valueChanged.connect(self._on_replay_slider_changed)
+        s_hbox.addWidget(self.replay_slider, 1)
+
+        self.lbl_replay_time = QLabel("0.00s / 0.00s")
+        self.lbl_replay_time.setFont(QFont(FONT_MONO, 9))
+        s_hbox.addWidget(self.lbl_replay_time)
+
+        btn_prev_uns = QPushButton("<< Prev Unstable")
+        btn_prev_uns.clicked.connect(lambda: self._step_unstable_segment(-1))
+        s_hbox.addWidget(btn_prev_uns)
+
+        btn_next_uns = QPushButton("Next Unstable >>")
+        btn_next_uns.clicked.connect(lambda: self._step_unstable_segment(1))
+        s_hbox.addWidget(btn_next_uns)
+
+        l_vbox.addWidget(scrub_card)
+
+        # Right Pane: Unstable Segments Table + 8-Anchor Snapshot at Cursor
+        right_split = QSplitter(Qt.Orientation.Vertical, main_split)
+
+        uns_card = QFrame(right_split)
+        uns_card.setObjectName("panel_card")
+        uns_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        u_vbox = QVBoxLayout(uns_card)
+        u_vbox.setContentsMargins(10, 10, 10, 10)
+        u_vbox.setSpacing(6)
+
+        u_hdr = QLabel("UNSTABLE SEGMENTS (CLICK ROW TO INSPECT ON 2D/3D MAP)")
+        u_hdr.setObjectName("section_header")
+        u_vbox.addWidget(u_hdr)
+
+        self.unstable_table = QTableWidget(0, 7, uns_card)
+        self.unstable_table.setHorizontalHeaderLabels(
+            ["#", "Severity", "Time (s)", "Pos (X,Y,Z)", "Max RMS", "Jump", "Cause / Anchor Diagnosis"]
+        )
+        self.unstable_table.verticalHeader().setVisible(False)
+        self.unstable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.unstable_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.unstable_table.setAlternatingRowColors(True)
+        u_hview = self.unstable_table.horizontalHeader()
+        u_hview.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        u_hview.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.unstable_table.cellClicked.connect(self._on_unstable_table_row_clicked)
+        u_vbox.addWidget(self.unstable_table, 1)
+
+        snap_card = QFrame(right_split)
+        snap_card.setObjectName("panel_card")
+        snap_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sn_vbox = QVBoxLayout(snap_card)
+        sn_vbox.setContentsMargins(10, 10, 10, 10)
+        sn_vbox.setSpacing(6)
+
+        sn_hdr = QLabel("8-ANCHOR TELEMETRY AT REPLAY CURSOR")
+        sn_hdr.setObjectName("section_header")
+        sn_vbox.addWidget(sn_hdr)
+
+        self.replay_anchor_table = QTableWidget(8, 8, snap_card)
+        self.replay_anchor_table.setHorizontalHeaderLabels(
+            ["ID", "State", "Hz", "Raw (m)", "Filt (m)", "Res (mm)", "NLOS (dB)", "σ (mm)"]
+        )
+        self.replay_anchor_table.verticalHeader().setVisible(False)
+        self.replay_anchor_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.replay_anchor_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.replay_anchor_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.replay_anchor_table.setAlternatingRowColors(True)
+        sn_hview = self.replay_anchor_table.horizontalHeader()
+        sn_hview.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        sn_hview.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        sn_hview.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        sn_hview.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        mono = QFont(FONT_MONO, 9)
+        for row in range(8):
+            aid = row + 1
+            for col in range(8):
+                it = QTableWidgetItem(f"A{aid}" if col == 0 else "--")
+                it.setFont(mono)
+                if col == 0:
+                    it.setForeground(QColor(ANCHOR_PALETTE[row]))
+                else:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.replay_anchor_table.setItem(row, col, it)
+            self.replay_anchor_table.setRowHeight(row, 26)
+        sn_vbox.addWidget(self.replay_anchor_table, 1)
+
+        right_split.setSizes([280, 290])
+        main_split.setSizes([780, 520])
+        vbox.addWidget(main_split, 1)
+        return page
+
+    # ------------------------------------------------------------------
     # Serial & Demo Worker Lifecycle
     # ------------------------------------------------------------------
 
@@ -1225,7 +1441,7 @@ class UwbFastGuiWindow(QMainWindow):
                     sol = self.engine.latest_solution
                     pos_xyz = (sol.x, sol.y, sol.z) if sol is not None else None
                     rms_m = sol.rms_m if sol is not None else None
-                    self.csv_logger.log_burst(msg, pos_xyz=pos_xyz, rms_m=rms_m)
+                    self.csv_logger.log_burst(msg, pos_xyz=pos_xyz, rms_m=rms_m, engine=self.engine)
                 elif isinstance(msg, tp.CmdAckMessage):
                     self._log_event(
                         f"CMD_ACK cmd=0x{msg.command_id:02X} result={msg.result_name} ({'OK' if msg.ok else 'ERR'})"
@@ -1244,12 +1460,12 @@ class UwbFastGuiWindow(QMainWindow):
             if sol is not None:
                 self.card_pos.update_metric(
                     f"{sol.x:+.3f}, {sol.y:+.3f}, {sol.z:+.3f} m",
-                    f"Mode: {sol.dimension}D | Anchors: {len(sol.used_anchor_ids)} ({','.join(f'A{a}' for a in sol.used_anchor_ids)})",
+                    f"Mode: {sol.dimension}D ({sol.motion_state}) | Anchors: {len(sol.used_anchor_ids)} ({','.join(f'A{a}' for a in sol.used_anchor_ids)})",
                 )
                 excl = ",".join(f"A{a}" for a in sol.excluded_anchor_ids) if sol.excluded_anchor_ids else "none"
                 self.card_residual.update_metric(
-                    f"RMS: {sol.rms_m * 1000.0:.1f} mm",
-                    f"Max: {sol.max_residual_m * 1000.0:.1f} mm | Excl: {excl}",
+                    f"RMS: {sol.rms_m * 1000.0:.1f} mm [{sol.stability_state}]",
+                    f"Max: {sol.max_residual_m * 1000.0:.1f} mm | Jump: {sol.step_jump_mm:.0f} mm | Excl: {excl}",
                 )
                 dop = sol.dop
                 coplanar_tag = " [COPLANAR Z]" if dop.coplanar_warning else ""
@@ -1261,9 +1477,10 @@ class UwbFastGuiWindow(QMainWindow):
                 self.card_pos.update_metric("-- , -- , -- m", f"Mode: {eng.solver_dimension}D | Waiting for >=3 anchors")
 
             temp_str = f"{eng.temperature_c:.1f}°C" if eng.temperature_c is not None else "--°C"
+            log_str = f" | Log:{self.csv_logger.rows_written}" if self.csv_logger is not None else ""
             self.card_rate.update_metric(
                 f"{eng.cycle_rate_hz:.1f} Hz",
-                f"Bursts: {eng.total_bursts} | Lost: {eng.lost_cycles} | CalMask: 0x{eng.calibrated_mask:02X} | {temp_str}",
+                f"Bursts: {eng.total_bursts} | Lost: {eng.lost_cycles} | {temp_str}{log_str}",
             )
 
             if eng.device_info is not None:
@@ -1285,6 +1502,8 @@ class UwbFastGuiWindow(QMainWindow):
                 self._update_calibration_page()
             elif page_idx == 2:
                 self._update_diagnostics_page()
+            elif page_idx == 3:
+                self._update_replay_playback_tick()
         except Exception as exc:
             self._log_event(f"UI refresh warning: {exc}")
 
@@ -1450,10 +1669,19 @@ class UwbFastGuiWindow(QMainWindow):
         self.map_canvas.show_rays = self.chk_show_rays.isChecked()
         self.map_canvas.show_ranges = self.chk_show_ranges.isChecked()
         self.map_canvas.show_trail = self.chk_show_trail.isChecked()
+        self.map_canvas.color_by_stability = self.chk_stability_colors.isChecked()
         self.map_canvas.update()
 
+    def _mark_live_waypoint(self) -> None:
+        wp = self.engine.mark_waypoint()
+        if wp is not None:
+            self._log_event(f"Marked Waypoint {wp[1]} at ({wp[2]:+.3f}, {wp[3]:+.3f}, {wp[4]:+.3f}) m")
+            if self.csv_logger is not None:
+                self.csv_logger._write_metadata_snapshot()
+            self.map_canvas.update()
+
     def _clear_trail(self) -> None:
-        self.engine.position_trail.clear()
+        self.engine.clear_trail_and_waypoints()
         self.map_canvas.update()
 
     def _on_chart_controls_changed(self) -> None:
@@ -1825,14 +2053,245 @@ class UwbFastGuiWindow(QMainWindow):
         if checked:
             log_root = NEW_GUI_DIR / "logs"
             port_label = "DEMO" if self.demo_worker is not None else str(self.port_combo.currentData() or "UART")
-            self.csv_logger = FastCsvLogger(log_root, port_label)
+            self.csv_logger = FastCsvLogger(log_root, port_label, engine=self.engine)
             self.btn_csv_log.setText("Log CSV: ON")
-            self._log_event(f"CSV logging started -> {self.csv_logger.session_dir}")
+            self._log_event(f"Full 3D & Anchor CSV logging started -> {self.csv_logger.session_dir}")
         else:
+            saved_csv: Optional[Path] = None
             if self.csv_logger is not None:
+                saved_csv = self.csv_logger.csv_path
+                rows = self.csv_logger.rows_written
                 self.csv_logger.stop()
                 self.csv_logger = None
+                self._log_event(f"CSV logging stopped ({rows} rows) -> {saved_csv}")
             self.btn_csv_log.setText("Log CSV: OFF")
+            if saved_csv is not None and saved_csv.is_file():
+                try:
+                    self._load_log_from_path(saved_csv)
+                except Exception as exc:
+                    self._log_event(f"Auto-load replay warning: {exc}")
+
+    # ------------------------------------------------------------------
+    # Log Replay & Instability Inspector Actions
+    # ------------------------------------------------------------------
+
+    def _load_latest_log_session(self) -> None:
+        log_root = NEW_GUI_DIR / "logs"
+        if not log_root.is_dir():
+            QMessageBox.information(self, "No Logs Found", f"No logs directory found at {log_root}")
+            return
+        candidates = sorted(
+            log_root.glob("**/uwb_fast_log.csv"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            QMessageBox.information(self, "No Logs Found", f"No uwb_fast_log.csv files found inside {log_root}")
+            return
+        self._load_log_from_path(candidates[0])
+
+    def _open_log_session_dialog(self) -> None:
+        log_root = NEW_GUI_DIR / "logs"
+        start_dir = str(log_root if log_root.is_dir() else NEW_GUI_DIR)
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open UWB Session CSV Log",
+            start_dir,
+            "CSV Log Files (*.csv);;All Files (*)",
+        )
+        if not path_str:
+            return
+        self._load_log_from_path(Path(path_str))
+
+    def _reload_current_log_session(self) -> None:
+        if self.loaded_session is not None and self.loaded_session.csv_path.is_file():
+            self._load_log_from_path(self.loaded_session.csv_path)
+
+    def _load_log_from_path(self, csv_path: Path) -> None:
+        self.replay_playing = False
+        self.btn_replay_play.setText("Play")
+        re_solve = self.chk_replay_resolve.isChecked()
+        fallback = list(self.engine.anchors.values())
+        session = load_log_session(
+            csv_path=csv_path,
+            fallback_anchors=fallback,
+            re_solve=re_solve,
+            max_frames=12000,
+        )
+        self.loaded_session = session
+        self.replay_engine.set_anchors(session.anchors)
+        self.replay_engine.clear_trail_and_waypoints()
+        for pt in session.map_path:
+            self.replay_engine.map_path.append(pt)
+            self.replay_engine.position_trail.append((pt[0], pt[1], pt[2], pt[3]))
+        self.replay_engine.waypoints = list(session.waypoints)
+        self.replay_canvas.highlight_time_range = None
+        self.replay_canvas.reset_camera()
+
+        self.lbl_replay_file.setText(f"{csv_path.parent.name}/{csv_path.name} ({session.total_csv_rows:,} raw rows)")
+        self.card_rep_session.update_metric(
+            f"{session.duration_s:.1f} s ({len(session.frames):,} frames)",
+            f"Folder: {csv_path.parent.name} | Raw CSV: {session.total_csv_rows:,} rows",
+        )
+        self.card_rep_loop.update_metric(
+            f"3D Path: {session.path_length_3d_m:.2f} m",
+            f"2D Loop: {session.path_length_2d_m:.2f} m | Waypoints: {len(session.waypoints)}",
+        )
+        self.card_rep_stability.update_metric(
+            f"{session.stable_pct:.1f}% Stable",
+            f"Warn: {session.warn_pct:.1f}% | Unstable: {session.unstable_pct:.1f}% | Segments: {len(session.unstable_segments)}",
+        )
+
+        # Populate Unstable Segments table
+        mono = QFont(FONT_MONO, 8)
+        self.unstable_table.setRowCount(len(session.unstable_segments))
+        for r_idx, seg in enumerate(session.unstable_segments):
+            vals = (
+                f"#{seg.segment_id}",
+                seg.severity,
+                f"{seg.start_rel_s:.1f}–{seg.end_rel_s:.1f}s ({seg.duration_s:.1f}s)",
+                f"({seg.xyz_m[0]:.2f}, {seg.xyz_m[1]:.2f}, {seg.xyz_m[2]:.2f})",
+                f"{seg.max_rms_mm:.0f} mm",
+                f"{seg.max_jump_mm:.0f} mm",
+                seg.cause_summary,
+            )
+            for c_idx, txt in enumerate(vals):
+                it = QTableWidgetItem(txt)
+                it.setFont(mono)
+                if c_idx == 1:
+                    it.setForeground(QColor("#ef4444" if seg.severity == "UNSTABLE" else "#f59e0b"))
+                self.unstable_table.setItem(r_idx, c_idx, it)
+            self.unstable_table.setRowHeight(r_idx, 25)
+
+        max_idx = max(0, len(session.frames) - 1)
+        self.replay_slider.blockSignals(True)
+        self.replay_slider.setRange(0, max_idx)
+        self.replay_slider.setValue(max_idx)
+        self.replay_slider.blockSignals(False)
+        self._apply_replay_frame(max_idx)
+
+    def _on_replay_slider_changed(self, idx: int) -> None:
+        self._apply_replay_frame(idx)
+
+    def _toggle_replay_play(self) -> None:
+        if self.loaded_session is None or not self.loaded_session.frames:
+            self._load_latest_log_session()
+            if self.loaded_session is None or not self.loaded_session.frames:
+                return
+        self.replay_playing = not self.replay_playing
+        if self.replay_playing and self.replay_frame_idx >= len(self.loaded_session.frames) - 1:
+            self.replay_frame_idx = 0
+        self.btn_replay_play.setText("Pause" if self.replay_playing else "Play")
+
+    def _update_replay_playback_tick(self) -> None:
+        if not self.replay_playing or self.loaded_session is None or not self.loaded_session.frames:
+            return
+        n = len(self.loaded_session.frames)
+        dur = max(self.loaded_session.duration_s, 1.0)
+        fps_log = n / dur
+        step_f = max(0.25, (fps_log * 0.033) * self.replay_speed)
+        self._replay_accum_f += step_f
+        inc = int(self._replay_accum_f)
+        if inc >= 1:
+            self._replay_accum_f -= inc
+            nxt = self.replay_frame_idx + inc
+            if nxt >= n - 1:
+                nxt = n - 1
+                self.replay_playing = False
+                self.btn_replay_play.setText("Play")
+            self.replay_slider.blockSignals(True)
+            self.replay_slider.setValue(nxt)
+            self.replay_slider.blockSignals(False)
+            self._apply_replay_frame(nxt)
+
+    def _on_unstable_table_row_clicked(self, row: int, _col: int) -> None:
+        if self.loaded_session is None or not (0 <= row < len(self.loaded_session.unstable_segments)):
+            return
+        seg = self.loaded_session.unstable_segments[row]
+        self.replay_playing = False
+        self.btn_replay_play.setText("Play")
+        self.replay_canvas.highlight_time_range = (seg.start_rel_s, seg.end_rel_s)
+        self.replay_slider.blockSignals(True)
+        self.replay_slider.setValue(seg.peak_frame_idx)
+        self.replay_slider.blockSignals(False)
+        self._apply_replay_frame(seg.peak_frame_idx)
+
+    def _step_unstable_segment(self, direction: int) -> None:
+        if self.loaded_session is None or not self.loaded_session.unstable_segments:
+            return
+        segs = self.loaded_session.unstable_segments
+        cur_row = self.unstable_table.currentRow()
+        if cur_row < 0:
+            nxt_row = 0 if direction >= 0 else len(segs) - 1
+        else:
+            nxt_row = (cur_row + direction) % len(segs)
+        self.unstable_table.selectRow(nxt_row)
+        self._on_unstable_table_row_clicked(nxt_row, 0)
+
+    def _apply_replay_frame(self, idx: int) -> None:
+        if self.loaded_session is None or not self.loaded_session.frames:
+            return
+        idx = max(0, min(idx, len(self.loaded_session.frames) - 1))
+        self.replay_frame_idx = idx
+        fr = self.loaded_session.frames[idx]
+        dur = self.loaded_session.duration_s
+        self.lbl_replay_time.setText(f"{fr.rel_time_s:.2f}s / {dur:.2f}s")
+
+        res_m = {
+            aid: (sn.res_mm / 1000.0)
+            for aid, sn in fr.anchors.items()
+            if sn.res_mm is not None
+        }
+        self.replay_engine.latest_solution = PositionResult(
+            x=fr.x,
+            y=fr.y,
+            z=fr.z,
+            rms_m=fr.rms_mm / 1000.0,
+            max_residual_m=fr.max_res_mm / 1000.0,
+            residuals_m=res_m,
+            used_anchor_ids=fr.used_anchor_ids,
+            excluded_anchor_ids=fr.excluded_anchor_ids,
+            dimension=3,
+            dop=DopMetrics(
+                gdop=fr.pdop,
+                pdop=fr.pdop,
+                hdop=fr.hdop,
+                vdop=fr.vdop,
+                condition_number=1.5,
+                coplanar_warning=False,
+            ),
+            tag_time_s=fr.rel_time_s,
+            raw_x=fr.raw_x,
+            raw_y=fr.raw_y,
+            raw_z=fr.raw_z,
+            speed_mps=fr.speed_mps,
+            step_jump_mm=fr.step_jump_mm,
+            motion_state=fr.motion_state,
+            stability_state=fr.stability_state,
+            instability_reason=fr.instability_reason,
+        )
+
+        wp_tag = f" | {fr.waypoint_label}" if fr.waypoint_label else ""
+        reason_tag = f" | {fr.instability_reason}" if fr.instability_reason else ""
+        self.card_rep_cursor.update_metric(
+            f"{fr.x:+.3f}, {fr.y:+.3f}, {fr.z:+.3f} m [{fr.stability_state}]",
+            f"t={fr.rel_time_s:.2f}s | RMS:{fr.rms_mm:.1f}mm | Jump:{fr.step_jump_mm:.0f}mm | {fr.speed_mps:.2f}m/s{wp_tag}{reason_tag}",
+        )
+
+        for row in range(8):
+            aid = row + 1
+            sn = fr.anchors.get(aid)
+            if sn is None:
+                continue
+            self.replay_anchor_table.item(row, 1).setText(sn.status_str)
+            self.replay_anchor_table.item(row, 2).setText(f"{sn.rate_hz:.0f}")
+            self.replay_anchor_table.item(row, 3).setText(f"{sn.raw_mm / 1000.0:.3f}" if sn.raw_mm else "--")
+            self.replay_anchor_table.item(row, 4).setText(f"{sn.filt_mm / 1000.0:.3f}" if sn.filt_mm else "--")
+            self.replay_anchor_table.item(row, 5).setText(f"{sn.res_mm:+.1f}" if sn.res_mm is not None else "--")
+            self.replay_anchor_table.item(row, 6).setText(f"{sn.nlos_db:.1f}" if sn.nlos_db is not None else "--")
+            self.replay_anchor_table.item(row, 7).setText(f"{sn.sigma_mm:.1f}" if sn.sigma_mm is not None else "--")
+
+        self.replay_canvas.update()
 
     def _toggle_theme(self) -> None:
         if self.theme_manager is None:
@@ -1840,8 +2299,10 @@ class UwbFastGuiWindow(QMainWindow):
         is_dark = bool(self.theme_manager.toggle())
         self.btn_theme.setText("Theme: Dark" if is_dark else "Theme: Light")
         self.map_canvas.is_dark = is_dark
+        self.replay_canvas.is_dark = is_dark
         self.rolling_chart.is_dark = is_dark
         self.map_canvas.update()
+        self.replay_canvas.update()
         self.rolling_chart.update()
 
     def closeEvent(self, event) -> None:  # noqa: N802

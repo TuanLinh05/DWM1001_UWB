@@ -31,7 +31,7 @@ FRESH_AGE_S = 2.0
 STATIONARY_HOLD_AGE_S = 9.0
 RING_HISTORY_LEN = 9000  # Holds >= 30s of high-rate history per anchor even at 300 Hz
 TRAIL_MAX_LEN = 9000     # Holds >= 30s of solved XYZ history for the 30s Rolling Chart
-MAP_TRAIL_LEN = 220      # Recent comet-tail length drawn on the 2D/3D spatial canvas
+MAP_TRAIL_LEN = 18000    # Full-loop spatial path capacity on the 2D/3D canvas
 NLOS_WARN_DB = 6.0
 NLOS_ALERT_DB = 10.0
 
@@ -79,6 +79,17 @@ class PositionResult:
     dimension: int
     dop: DopMetrics
     tag_time_s: float
+    raw_x: float = 0.0
+    raw_y: float = 0.0
+    raw_z: float = 0.0
+    vx_mps: float = 0.0
+    vy_mps: float = 0.0
+    vz_mps: float = 0.0
+    speed_mps: float = 0.0
+    step_jump_mm: float = 0.0
+    motion_state: str = "STATIONARY"      # "MOVING" | "STATIONARY"
+    stability_state: str = "STABLE"       # "STABLE" | "WARN" | "UNSTABLE"
+    instability_reason: str = ""
 
 
 @dataclass
@@ -471,6 +482,9 @@ def solve_position_robust(
         dimension=dimension,
         dop=dop,
         tag_time_s=tag_time_s,
+        raw_x=pos_xyz[0],
+        raw_y=pos_xyz[1],
+        raw_z=pos_xyz[2],
     )
 
 
@@ -641,17 +655,31 @@ class UwbStateEngine:
         self._recent_corr_mm: dict[int, deque[float]] = {
             aid: deque(maxlen=9) for aid in range(1, MAX_ANCHORS + 1)
         }
+        self._motion_win: dict[int, deque[tuple[float, float]]] = {
+            aid: deque(maxlen=24) for aid in range(1, MAX_ANCHORS + 1)
+        }
+        self._anchor_moving_until: dict[int, float] = {}
         self._smooth_range_mm: dict[int, float] = {}
         self._lock_range_mm: dict[int, float] = {}
         self._last_range_t: dict[int, float] = {}
         self._first_rx_s: float | None = None
         self._smooth_xyz: tuple[float, float, float] | None = None
+        self._prev_smooth_xyz: tuple[float, float, float] | None = None
+        self._prev_raw_xyz: tuple[float, float, float] | None = None
+        self._vel_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._best_anchor_count: int = 0
         self._last_solve_s: float | None = None
+        self._global_moving_until_s: float = -1.0
+        self.is_tag_moving: bool = False
         self._cycle_times: deque[tuple[float, int]] = deque(maxlen=250)
 
         self.latest_solution: PositionResult | None = None
         self.position_trail: deque[tuple[float, float, float, float]] = deque(maxlen=TRAIL_MAX_LEN)
+        # Spatial/time-decimated path for full-loop 2D/3D rendering: (x, y, z, tag_time_s, stability_state, rms_mm)
+        self.map_path: deque[tuple[float, float, float, float, str, float]] = deque(maxlen=MAP_TRAIL_LEN)
+        # User-marked waypoints: (wp_index, label, x, y, z, tag_time_s)
+        self.waypoints: list[tuple[int, str, float, float, float, float]] = []
+        self.pending_waypoint_label: str = ""
 
         self.boot_id: int | None = None
         self.last_cycle_seq: int | None = None
@@ -696,12 +724,38 @@ class UwbStateEngine:
         self.host_filters.clear()
         for q in self._recent_corr_mm.values():
             q.clear()
+        for q in self._motion_win.values():
+            q.clear()
+        self._anchor_moving_until.clear()
         self._smooth_range_mm.clear()
         self._lock_range_mm.clear()
         self._last_range_t.clear()
         self._smooth_xyz = None
+        self._prev_smooth_xyz = None
+        self._prev_raw_xyz = None
+        self._vel_xyz = (0.0, 0.0, 0.0)
         self._best_anchor_count = 0
         self._last_solve_s = None
+        self._global_moving_until_s = -1.0
+        self.is_tag_moving = False
+
+    def mark_waypoint(self, label: str = "") -> tuple[int, str, float, float, float, float] | None:
+        """Record a user waypoint marker at the current solved 3D position."""
+        sol = self.latest_solution
+        if sol is None:
+            return None
+        idx = len(self.waypoints) + 1
+        clean_lbl = label.strip() if label.strip() else f"W{idx} ({sol.x:.2f},{sol.y:.2f})"
+        wp = (idx, clean_lbl, sol.x, sol.y, sol.z, sol.tag_time_s)
+        self.waypoints.append(wp)
+        self.pending_waypoint_label = clean_lbl
+        return wp
+
+    def clear_trail_and_waypoints(self) -> None:
+        self.position_trail.clear()
+        self.map_path.clear()
+        self.waypoints.clear()
+        self.pending_waypoint_label = ""
 
     def current_dop(self) -> DopMetrics:
         pos = (
@@ -937,11 +991,18 @@ class UwbStateEngine:
     ) -> float:
         if self._first_rx_s is None:
             self._first_rx_s = received_s
+        dt_a = min(max(received_s - self._last_range_t.get(aid, received_s - 0.02), 0.002), 1.5)
+        self._last_range_t[aid] = received_s
+
+        # Time-aware spike gate so slow anchors (e.g. A2 at 1 Hz) are never blocked during walking
         win = self._recent_corr_mm[aid]
+        if dt_a > 0.35:
+            win.clear()
         if len(win) >= 5:
             med_prev = statistics.median(win)
             win.append(corrected_mm)
-            if abs(corrected_mm - med_prev) > 160.0:
+            spike_limit = 160.0 + 1800.0 * dt_a
+            if abs(corrected_mm - med_prev) > spike_limit:
                 gated_mm = statistics.median(win)
             else:
                 gated_mm = corrected_mm
@@ -957,10 +1018,18 @@ class UwbStateEngine:
             )
         )
 
-        dt_a = min(max(received_s - self._last_range_t.get(aid, received_s - 0.02), 0.002), 0.5)
-        self._last_range_t[aid] = received_s
         uptime = received_s - self._first_rx_s
         sig = max(self.live[aid].noise_sigma_mm or self.anchors[aid].sigma_mm, 18.0)
+
+        mwin = self._motion_win[aid]
+        mwin.append((received_s, gated_mm))
+        while len(mwin) > 2 and (received_s - mwin[0][0]) > 0.45:
+            mwin.popleft()
+        drift_045_mm = (
+            abs(gated_mm - mwin[0][1])
+            if len(mwin) >= 3 and (received_s - mwin[0][0]) >= 0.12
+            else 0.0
+        )
 
         if aid not in self._smooth_range_mm:
             self._smooth_range_mm[aid] = gated_mm
@@ -968,17 +1037,26 @@ class UwbStateEngine:
         else:
             dev = abs(gated_mm - self._lock_range_mm[aid])
             thresh = max(2.8 * sig, 55.0)
-            if uptime < 1.8:
+            if dev >= thresh or drift_045_mm >= max(2.5 * sig, 50.0):
+                self._anchor_moving_until[aid] = received_s + 0.55
+
+            is_anchor_moving = (
+                received_s < self._anchor_moving_until.get(aid, -1.0)
+                or received_s < self._global_moving_until_s
+            )
+            if is_anchor_moving:
+                tau_r = 0.010
+                target_mm = gated_mm
+                self._lock_range_mm[aid] = gated_mm
+            elif uptime < 1.8:
                 tau_r = 0.22
                 self._lock_range_mm[aid] += (dt_a / (0.30 + dt_a)) * (gated_mm - self._lock_range_mm[aid])
-            elif dev < thresh:
+                target_mm = gated_mm
+            else:
                 tau_r = 1.45
                 self._lock_range_mm[aid] += (dt_a / (10.0 + dt_a)) * (gated_mm - self._lock_range_mm[aid])
-            else:
-                tau_r = 0.02
-                self._lock_range_mm[aid] = gated_mm
+                target_mm = gated_mm
             alpha_r = dt_a / (tau_r + dt_a)
-            target_mm = gated_mm if dev < thresh else cv_mm
             self._smooth_range_mm[aid] += alpha_r * (target_mm - self._smooth_range_mm[aid])
 
         return self._smooth_range_mm[aid]
@@ -988,12 +1066,20 @@ class UwbStateEngine:
             self.host_filters.clear()
             for q in self._recent_corr_mm.values():
                 q.clear()
+            for q in self._motion_win.values():
+                q.clear()
+            self._anchor_moving_until.clear()
             self._smooth_range_mm.clear()
             self._lock_range_mm.clear()
             self._last_range_t.clear()
             self._smooth_xyz = None
+            self._prev_smooth_xyz = None
+            self._prev_raw_xyz = None
+            self._vel_xyz = (0.0, 0.0, 0.0)
             self._best_anchor_count = 0
             self._last_solve_s = None
+            self._global_moving_until_s = -1.0
+            self.is_tag_moving = False
             self.last_cycle_seq = None
         self.boot_id = msg.boot_id
         if self.last_cycle_seq is not None:
@@ -1199,24 +1285,29 @@ class UwbStateEngine:
             self.finish_calibration(now_s)
 
     def _solve_current_position(self, now_s: float, tag_time_s: float) -> None:
-        fast_moving = 0
+        moving_anchors = 0
         if self.use_host_filter_for_pos:
             for aid, state in self.live.items():
                 if not self.anchors[aid].enabled or state.last_update_s < 0.0:
                     continue
-                if (now_s - state.last_update_s) <= 0.6 and aid in self._smooth_range_mm and aid in self._lock_range_mm:
-                    sig = max(state.noise_sigma_mm or self.anchors[aid].sigma_mm, 18.0)
-                    if abs(self._smooth_range_mm[aid] - self._lock_range_mm[aid]) > max(2.5 * sig, 50.0):
-                        fast_moving += 1
+                if (now_s - state.last_update_s) <= 0.65 and now_s < self._anchor_moving_until.get(aid, -1.0):
+                    moving_anchors += 1
+            if moving_anchors >= 2:
+                self._global_moving_until_s = max(self._global_moving_until_s, now_s + 0.65)
+            self.is_tag_moving = (now_s < self._global_moving_until_s) or (moving_anchors >= 2)
+        else:
+            self.is_tag_moving = True
 
         max_age = (
-            (1.2 if fast_moving >= 2 else STATIONARY_HOLD_AGE_S)
+            (1.2 if self.is_tag_moving else STATIONARY_HOLD_AGE_S)
             if self.use_host_filter_for_pos
             else FRESH_AGE_S
         )
 
         ranges_mm: dict[int, float] = {}
         nlos_map: dict[int, float | None] = {}
+        fresh_ranges_mm: dict[int, float] = {}
+        fresh_nlos_map: dict[int, float | None] = {}
         for aid, state in self.live.items():
             cfg = self.anchors[aid]
             age = now_s - state.last_update_s
@@ -1228,6 +1319,14 @@ class UwbStateEngine:
             if val is not None and val > 10.0:
                 ranges_mm[aid] = val
                 nlos_map[aid] = state.nlos_db
+                if age <= 0.16:
+                    fresh_ranges_mm[aid] = val
+                    fresh_nlos_map[aid] = state.nlos_db
+
+        min_needed = 4 if self.solver_dimension == 3 else 3
+        if self.is_tag_moving and len(fresh_ranges_mm) >= min_needed:
+            ranges_mm = fresh_ranges_mm
+            nlos_map = fresh_nlos_map
 
         # When >=6 anchors are active, exclude any anchor with severe live white noise (>45 mm)
         # provided the remaining anchors still span 3D height cleanly.
@@ -1272,7 +1371,7 @@ class UwbStateEngine:
             tag_time_s=tag_time_s,
         )
 
-        if sol is not None and self.use_host_filter_for_pos:
+        if sol is not None:
             raw_xyz = (sol.x, sol.y, sol.z)
             dt_s = min(
                 max(now_s - (self._last_solve_s if self._last_solve_s is not None else now_s - 0.005), 0.001),
@@ -1282,50 +1381,123 @@ class UwbStateEngine:
             uptime = now_s - (self._first_rx_s if self._first_rx_s is not None else now_s)
             n_used = len(sol.used_anchor_ids)
 
-            if self._smooth_xyz is None or (n_used > self._best_anchor_count and uptime < 1.0):
-                self._smooth_xyz = raw_xyz
-                self._best_anchor_count = max(self._best_anchor_count, n_used)
-            else:
-                self._best_anchor_count = max(self._best_anchor_count, n_used)
-                if uptime < 2.0:
-                    ax = dt_s / (0.25 + dt_s)
-                    az = dt_s / (0.35 + dt_s)
-                elif fast_moving == 0:
-                    if n_used < self._best_anchor_count:
-                        ax = 0.0
-                        az = 0.0
-                    else:
-                        ax = dt_s / (4.0 + dt_s)
-                        az = dt_s / (6.0 + dt_s)
-                elif fast_moving == 1:
-                    ax = dt_s / (1.2 + dt_s)
-                    az = dt_s / (2.0 + dt_s)
+            if self.use_host_filter_for_pos:
+                if self._smooth_xyz is None or (n_used > self._best_anchor_count and uptime < 1.0):
+                    self._smooth_xyz = raw_xyz
+                    self._best_anchor_count = max(self._best_anchor_count, n_used)
                 else:
-                    ax = dt_s / (0.025 + dt_s)
-                    az = dt_s / (0.04 + dt_s)
-                sx = self._smooth_xyz[0] + ax * (raw_xyz[0] - self._smooth_xyz[0])
-                sy = self._smooth_xyz[1] + ax * (raw_xyz[1] - self._smooth_xyz[1])
-                sz = (
-                    (self._smooth_xyz[2] + az * (raw_xyz[2] - self._smooth_xyz[2]))
-                    if self.solver_dimension == 3
-                    else self.fixed_z_m
-                )
-                self._smooth_xyz = (sx, sy, sz)
+                    if self.is_tag_moving:
+                        self._best_anchor_count = n_used
+                        ax = dt_s / (0.025 + dt_s)
+                        az = dt_s / (0.040 + dt_s)
+                    elif uptime < 2.0:
+                        self._best_anchor_count = max(self._best_anchor_count, n_used)
+                        ax = dt_s / (0.25 + dt_s)
+                        az = dt_s / (0.35 + dt_s)
+                    elif moving_anchors == 0:
+                        self._best_anchor_count = max(self._best_anchor_count, n_used)
+                        if n_used < self._best_anchor_count:
+                            ax = 0.0
+                            az = 0.0
+                        else:
+                            ax = dt_s / (4.0 + dt_s)
+                            az = dt_s / (6.0 + dt_s)
+                    else:
+                        self._best_anchor_count = max(self._best_anchor_count, n_used)
+                        ax = dt_s / (1.2 + dt_s)
+                        az = dt_s / (2.0 + dt_s)
 
-            if self._smooth_xyz != raw_xyz:
-                sol = PositionResult(
-                    x=self._smooth_xyz[0],
-                    y=self._smooth_xyz[1],
-                    z=self._smooth_xyz[2],
-                    rms_m=sol.rms_m,
-                    max_residual_m=sol.max_residual_m,
-                    residuals_m=sol.residuals_m,
-                    used_anchor_ids=sol.used_anchor_ids,
-                    excluded_anchor_ids=sol.excluded_anchor_ids,
-                    dimension=sol.dimension,
-                    dop=sol.dop,
-                    tag_time_s=sol.tag_time_s,
+                    sx = self._smooth_xyz[0] + ax * (raw_xyz[0] - self._smooth_xyz[0])
+                    sy = self._smooth_xyz[1] + ax * (raw_xyz[1] - self._smooth_xyz[1])
+                    sz = (
+                        (self._smooth_xyz[2] + az * (raw_xyz[2] - self._smooth_xyz[2]))
+                        if self.solver_dimension == 3
+                        else self.fixed_z_m
+                    )
+                    self._smooth_xyz = (sx, sy, sz)
+            else:
+                self._smooth_xyz = raw_xyz
+
+            final_xyz = self._smooth_xyz if self._smooth_xyz is not None else raw_xyz
+            if self._prev_smooth_xyz is not None:
+                inst_vx = (final_xyz[0] - self._prev_smooth_xyz[0]) / dt_s
+                inst_vy = (final_xyz[1] - self._prev_smooth_xyz[1]) / dt_s
+                inst_vz = (final_xyz[2] - self._prev_smooth_xyz[2]) / dt_s
+                av = dt_s / (0.12 + dt_s)
+                self._vel_xyz = (
+                    self._vel_xyz[0] + av * (inst_vx - self._vel_xyz[0]),
+                    self._vel_xyz[1] + av * (inst_vy - self._vel_xyz[1]),
+                    self._vel_xyz[2] + av * (inst_vz - self._vel_xyz[2]),
                 )
+                smooth_jump_mm = math.dist(final_xyz, self._prev_smooth_xyz) * 1000.0
+            else:
+                smooth_jump_mm = 0.0
+
+            raw_jump_mm = (
+                math.dist(raw_xyz, self._prev_raw_xyz) * 1000.0
+                if self._prev_raw_xyz is not None
+                else 0.0
+            )
+            self._prev_smooth_xyz = final_xyz
+            self._prev_raw_xyz = raw_xyz
+
+            vx, vy, vz = self._vel_xyz
+            speed_mps = math.sqrt(vx * vx + vy * vy + vz * vz)
+            step_jump_mm = smooth_jump_mm
+            rms_mm = sol.rms_m * 1000.0
+            max_res_mm = sol.max_residual_m * 1000.0
+            motion_str = "MOVING" if self.is_tag_moving else "STATIONARY"
+
+            reasons: list[str] = []
+            if rms_mm > 110.0:
+                reasons.append(f"High RMS ({rms_mm:.0f}mm)")
+            elif rms_mm > 65.0:
+                reasons.append(f"RMS {rms_mm:.0f}mm")
+            if raw_jump_mm > 180.0 and not self.is_tag_moving:
+                reasons.append(f"Raw spike ({raw_jump_mm:.0f}mm)")
+            if step_jump_mm > 90.0:
+                reasons.append(f"Jump {step_jump_mm:.0f}mm")
+            if sol.excluded_anchor_ids:
+                reasons.append("Outlier " + ",".join(f"A{a}" for a in sol.excluded_anchor_ids))
+            if sol.dop.pdop > 4.5 or (sol.dimension == 3 and n_used < 4):
+                reasons.append(f"Geometry (PDOP {sol.dop.pdop:.1f}, {n_used}A)")
+            if sol.residuals_m:
+                worst_aid = max(sol.residuals_m, key=lambda k: abs(sol.residuals_m[k]))
+                worst_mm = sol.residuals_m[worst_aid] * 1000.0
+                if abs(worst_mm) > 95.0:
+                    reasons.append(f"A{worst_aid} res {worst_mm:+.0f}mm")
+
+            if rms_mm > 110.0 or step_jump_mm > 90.0 or sol.dop.pdop > 5.0 or (sol.dimension == 3 and n_used < 4):
+                stab_str = "UNSTABLE"
+            elif rms_mm > 65.0 or step_jump_mm > 45.0 or bool(sol.excluded_anchor_ids) or raw_jump_mm > 160.0:
+                stab_str = "WARN"
+            else:
+                stab_str = "STABLE"
+
+            sol = PositionResult(
+                x=final_xyz[0],
+                y=final_xyz[1],
+                z=final_xyz[2],
+                rms_m=sol.rms_m,
+                max_residual_m=sol.max_residual_m,
+                residuals_m=sol.residuals_m,
+                used_anchor_ids=sol.used_anchor_ids,
+                excluded_anchor_ids=sol.excluded_anchor_ids,
+                dimension=sol.dimension,
+                dop=sol.dop,
+                tag_time_s=sol.tag_time_s,
+                raw_x=raw_xyz[0],
+                raw_y=raw_xyz[1],
+                raw_z=raw_xyz[2],
+                vx_mps=vx,
+                vy_mps=vy,
+                vz_mps=vz,
+                speed_mps=speed_mps,
+                step_jump_mm=step_jump_mm,
+                motion_state=motion_str,
+                stability_state=stab_str,
+                instability_reason=" | ".join(reasons),
+            )
 
         self.latest_solution = sol
         for aid, state in self.live.items():
@@ -1336,6 +1508,16 @@ class UwbStateEngine:
 
         if sol is not None:
             self.position_trail.append((sol.x, sol.y, sol.z, tag_time_s))
+            if not self.map_path:
+                self.map_path.append((sol.x, sol.y, sol.z, tag_time_s, sol.stability_state, sol.rms_m * 1000.0))
+            else:
+                lx, ly, lz, lt, lstab, _lrms = self.map_path[-1]
+                if (
+                    math.dist((sol.x, sol.y, sol.z), (lx, ly, lz)) >= 0.006
+                    or abs(tag_time_s - lt) >= 0.035
+                    or sol.stability_state != lstab
+                ):
+                    self.map_path.append((sol.x, sol.y, sol.z, tag_time_s, sol.stability_state, sol.rms_m * 1000.0))
             if self.accuracy_eval_active:
                 self._accuracy_fixes.append(sol)
                 if len(self._accuracy_fixes) >= self.accuracy_target_samples:
@@ -1389,3 +1571,540 @@ class UwbStateEngine:
                     self.anchors[aid].fw_bias_mm = bias_um / 1000.0
                     self.anchors[aid].fw_calibrated = bool(cal_flag)
                     self.anchors[aid].bias_mm = bias_um / 1000.0
+
+
+# ----------------------------------------------------------------------
+# Log Session Replay & Instability Analysis Engine
+# ----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReplayAnchorSnap:
+    anchor_id: int
+    raw_mm: float | None = None
+    corr_mm: float | None = None
+    filt_mm: float | None = None
+    res_mm: float | None = None
+    rate_hz: float = 0.0
+    sigma_mm: float | None = None
+    fp_dbm: float | None = None
+    rx_dbm: float | None = None
+    nlos_db: float | None = None
+    status_str: str = "OFF"
+
+
+@dataclass(frozen=True)
+class ReplayFrame:
+    frame_index: int
+    host_time_s: float
+    rel_time_s: float
+    cycle_seq: int
+    x: float
+    y: float
+    z: float
+    raw_x: float
+    raw_y: float
+    raw_z: float
+    speed_mps: float
+    rms_mm: float
+    max_res_mm: float
+    step_jump_mm: float
+    pdop: float
+    hdop: float
+    vdop: float
+    used_anchor_ids: tuple[int, ...]
+    excluded_anchor_ids: tuple[int, ...]
+    motion_state: str
+    stability_state: str
+    instability_reason: str
+    waypoint_label: str
+    anchors: dict[int, ReplayAnchorSnap]
+
+
+@dataclass(frozen=True)
+class InstabilitySegment:
+    segment_id: int
+    severity: str               # "UNSTABLE" | "WARN"
+    start_frame_idx: int
+    peak_frame_idx: int
+    end_frame_idx: int
+    start_rel_s: float
+    end_rel_s: float
+    duration_s: float
+    xyz_m: tuple[float, float, float]
+    max_rms_mm: float
+    max_jump_mm: float
+    min_anchors: int
+    used_anchors_str: str
+    cause_summary: str
+
+
+@dataclass
+class LoadedLogSession:
+    csv_path: Path
+    anchors: list[AnchorConfig]
+    frames: list[ReplayFrame]
+    map_path: list[tuple[float, float, float, float, str, float]]
+    waypoints: list[tuple[int, str, float, float, float, float]]
+    unstable_segments: list[InstabilitySegment]
+    duration_s: float
+    path_length_2d_m: float
+    path_length_3d_m: float
+    stable_pct: float
+    warn_pct: float
+    unstable_pct: float
+    total_csv_rows: int
+
+
+def _safe_float(val: str | None, default: float | None = None) -> float | None:
+    if val is None:
+        return default
+    s = val.strip()
+    if not s:
+        return default
+    try:
+        v = float(s)
+        return v if math.isfinite(v) else default
+    except ValueError:
+        return default
+
+
+def load_log_session(
+    csv_path: Path,
+    fallback_anchors: Sequence[AnchorConfig] = DEFAULT_PRESET_ROOM_66_36,
+    re_solve: bool = False,
+    max_frames: int = 12000,
+) -> LoadedLogSession:
+    """Load a UWB CSV session log (enriched or legacy), reconstruct 3D loop trajectory, and detect unstable segments."""
+    import csv as _csv
+
+    anchors_list: list[AnchorConfig] = [AnchorConfig(**asdict(a)) for a in fallback_anchors]
+    by_id: dict[int, AnchorConfig] = {a.anchor_id: a for a in anchors_list}
+    for aid in range(1, MAX_ANCHORS + 1):
+        by_id.setdefault(aid, AnchorConfig(aid, 0.0, 0.0, 0.0, enabled=False))
+
+    waypoints: list[tuple[int, str, float, float, float, float]] = []
+    meta_path = csv_path.parent / "session_metadata.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(meta.get("anchors"), list):
+                for item in meta["anchors"]:
+                    aid = int(item.get("anchor_id", 0))
+                    if 1 <= aid <= MAX_ANCHORS:
+                        by_id[aid] = AnchorConfig(
+                            anchor_id=aid,
+                            x=float(item.get("x", 0.0)),
+                            y=float(item.get("y", 0.0)),
+                            z=float(item.get("z", 0.0)),
+                            enabled=bool(item.get("enabled", True)),
+                            bias_mm=float(item.get("bias_mm", 0.0)),
+                            sigma_mm=float(item.get("sigma_mm", 30.0)),
+                            fw_calibrated=bool(item.get("fw_calibrated", False)),
+                            fw_bias_mm=float(item.get("fw_bias_mm", 0.0)),
+                        )
+            if isinstance(meta.get("waypoints"), list):
+                for idx, wp in enumerate(meta["waypoints"], start=1):
+                    waypoints.append(
+                        (
+                            int(wp.get("index", idx)),
+                            str(wp.get("label", f"W{idx}")),
+                            float(wp.get("x", 0.0)),
+                            float(wp.get("y", 0.0)),
+                            float(wp.get("z", 0.0)),
+                            float(wp.get("time_s", 0.0)),
+                        )
+                    )
+        except Exception:
+            pass
+
+    anchors_sorted = [by_id[aid] for aid in range(1, MAX_ANCHORS + 1)]
+
+    # Count rows quickly to choose a clean stride if the log has hundreds of thousands of rows
+    total_rows = 0
+    with csv_path.open("r", encoding="utf-8", errors="replace") as f:
+        for _ in f:
+            total_rows += 1
+    total_rows = max(0, total_rows - 1)
+    stride = max(1, total_rows // max_frames) if total_rows > max_frames else 1
+
+    sim_engine = UwbStateEngine(initial_anchors=anchors_sorted) if re_solve else None
+
+    frames: list[ReplayFrame] = []
+    map_path: list[tuple[float, float, float, float, str, float]] = []
+    t0_host: float | None = None
+    prev_xyz: tuple[float, float, float] | None = None
+    last_row_xyz: tuple[float, float, float] | None = None
+    prev_rel_s: float = 0.0
+    path_2d = 0.0
+    path_3d = 0.0
+    n_stable = 0
+    n_warn = 0
+    n_unstable = 0
+    last_seen_rel_s: dict[int, float] = {}
+    last_raw_by_aid: dict[int, float] = {}
+    last_fp_by_aid: dict[int, float | None] = {}
+    last_nlos_by_aid: dict[int, float | None] = {}
+    recent_rx_times: dict[int, deque[float]] = {aid: deque(maxlen=40) for aid in range(1, MAX_ANCHORS + 1)}
+
+    with csv_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        header_line = f.readline()
+        if not header_line:
+            return LoadedLogSession(
+                csv_path=csv_path,
+                anchors=anchors_sorted,
+                frames=[],
+                map_path=[],
+                waypoints=waypoints,
+                unstable_segments=[],
+                duration_s=0.0,
+                path_length_2d_m=0.0,
+                path_length_3d_m=0.0,
+                stable_pct=100.0,
+                warn_pct=0.0,
+                unstable_pct=0.0,
+                total_csv_rows=0,
+            )
+        headers = next(_csv.reader([header_line]))
+        for row_idx, raw_line in enumerate(f):
+            # Fast skip for massive logs when stride > 24: only parse the 20 rows leading up to each sampled frame
+            if stride > 24 and not re_solve:
+                rem = row_idx % stride
+                if rem != 0 and (stride - rem) > 20 and ("W" not in raw_line) and ("UNSTABLE" not in raw_line):
+                    continue
+            vals = next(_csv.reader([raw_line]))
+            row = dict(zip(headers, vals))
+
+            host_t = _safe_float(row.get("host_time_s"), 0.0) or 0.0
+            if t0_host is None:
+                t0_host = host_t
+            rel_s = max(0.0, host_t - t0_host)
+
+            # Track per-anchor rolling state across all rows so TDMA burst logs have complete 8-anchor state
+            for aid in range(1, MAX_ANCHORS + 1):
+                rmm_row = _safe_float(row.get(f"a{aid}_mm"))
+                if rmm_row is not None and rmm_row > 0:
+                    last_seen_rel_s[aid] = rel_s
+                    last_raw_by_aid[aid] = rmm_row
+                    last_fp_by_aid[aid] = _safe_float(row.get(f"a{aid}_fp_dbm"))
+                    last_nlos_by_aid[aid] = _safe_float(row.get(f"a{aid}_nlos_db"))
+                    recent_rx_times[aid].append(rel_s)
+
+            row_px = _safe_float(row.get("pos_x_m"))
+            row_py = _safe_float(row.get("pos_y_m"))
+            row_pz = _safe_float(row.get("pos_z_m"))
+            row_step_jump_mm = 0.0
+            if row_px is not None and row_py is not None and row_pz is not None:
+                if last_row_xyz is not None:
+                    row_step_jump_mm = math.dist((row_px, row_py, row_pz), last_row_xyz) * 1000.0
+                last_row_xyz = (row_px, row_py, row_pz)
+
+            # Restore anchor coords from CSV row 0 if metadata JSON was not present
+            if row_idx == 0 and not meta_path.is_file():
+                updated_cfg = False
+                for aid in range(1, MAX_ANCHORS + 1):
+                    cx = _safe_float(row.get(f"a{aid}_cfg_x"))
+                    cy = _safe_float(row.get(f"a{aid}_cfg_y"))
+                    cz = _safe_float(row.get(f"a{aid}_cfg_z"))
+                    cb = _safe_float(row.get(f"a{aid}_bias_mm"))
+                    if cx is not None and cy is not None and cz is not None:
+                        by_id[aid].x = cx
+                        by_id[aid].y = cy
+                        by_id[aid].z = cz
+                        if cb is not None:
+                            by_id[aid].bias_mm = cb
+                        updated_cfg = True
+                if updated_cfg and sim_engine is not None:
+                    sim_engine.set_anchors([by_id[a] for a in range(1, MAX_ANCHORS + 1)])
+
+            wp_lbl = (row.get("waypoint_label") or "").strip()
+            stab_col = (row.get("stability_state") or "").strip()
+            is_important = bool(wp_lbl) or stab_col in ("WARN", "UNSTABLE")
+            if stride > 1 and (row_idx % stride != 0) and not is_important:
+                continue
+
+            seq = int(_safe_float(row.get("cycle_seq"), float(row_idx)) or row_idx)
+            tag_us = int(_safe_float(row.get("tag_time_us"), rel_s * 1e6) or int(rel_s * 1e6))
+
+            px = _safe_float(row.get("pos_x_m"))
+            py = _safe_float(row.get("pos_y_m"))
+            pz = _safe_float(row.get("pos_z_m"))
+
+            if sim_engine is not None or px is None or py is None or pz is None:
+                if sim_engine is None:
+                    sim_engine = UwbStateEngine(initial_anchors=anchors_sorted)
+                entries: list[tp.BurstAnchor] = []
+                for aid in range(1, MAX_ANCHORS + 1):
+                    rmm = _safe_float(row.get(f"a{aid}_mm"))
+                    fp = _safe_float(row.get(f"a{aid}_fp_dbm"))
+                    nlos = _safe_float(row.get(f"a{aid}_nlos_db"))
+                    ci = _safe_float(row.get(f"a{aid}_ci_ppm"))
+                    if rmm is not None and rmm > 0:
+                        fp_c = int(round(fp * 100.0)) if fp is not None else -8200
+                        rx_c = int(round((fp + nlos) * 100.0)) if (fp is not None and nlos is not None) else fp_c
+                        ci_c = int(round(ci * 100.0)) if ci is not None else tp.INT16_MIN
+                        entries.append(
+                            tp.BurstAnchor(
+                                anchor_id=aid,
+                                status=0,
+                                flags=tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_VALID | tp.BURST_FLAG_CAL_OK,
+                                range_mm=int(round(rmm)),
+                                fp_cdbm=fp_c,
+                                rx_cdbm=rx_c,
+                                ci_ppm_x100=ci_c,
+                            )
+                        )
+                burst = tp.RangeBurstMessage(
+                    sequence=seq,
+                    time_ms=tag_us // 1000,
+                    boot_id=int(_safe_float(row.get("boot_id"), 1) or 1),
+                    cycle_seq=seq,
+                    meas_seq_first=seq * 8,
+                    t_us=tag_us,
+                    period_us=int(_safe_float(row.get("period_us"), 5000) or 5000),
+                    anchors=tuple(entries),
+                )
+                sim_engine.ingest_message(burst, host_t if host_t > 0 else rel_s + 1.0)
+                sol = sim_engine.latest_solution
+                if sol is None:
+                    continue
+                px, py, pz = sol.x, sol.y, sol.z
+                rx, ry, rz = sol.raw_x, sol.raw_y, sol.raw_z
+                rms_mm = sol.rms_m * 1000.0
+                max_res_mm = sol.max_residual_m * 1000.0
+                jump_mm = sol.step_jump_mm
+                speed = sol.speed_mps
+                pdop, hdop, vdop = sol.dop.pdop, sol.dop.hdop, sol.dop.vdop
+                used_ids = sol.used_anchor_ids
+                excl_ids = sol.excluded_anchor_ids
+                motion_str = sol.motion_state
+                stab_str = sol.stability_state
+                reason_str = sol.instability_reason
+                snap_map: dict[int, ReplayAnchorSnap] = {}
+                for aid in range(1, MAX_ANCHORS + 1):
+                    st = sim_engine.live[aid]
+                    snap_map[aid] = ReplayAnchorSnap(
+                        anchor_id=aid,
+                        raw_mm=float(st.raw_mm) if st.raw_mm > 0 else None,
+                        corr_mm=st.corrected_mm if st.raw_mm > 0 else None,
+                        filt_mm=st.host_filtered_mm,
+                        res_mm=st.residual_mm,
+                        rate_hz=st.rate_hz,
+                        sigma_mm=st.noise_sigma_mm,
+                        fp_dbm=st.fp_dbm,
+                        rx_dbm=st.rx_dbm,
+                        nlos_db=st.nlos_db,
+                        status_str="OK" if st.radio_ok and st.raw_mm > 0 else "OFF",
+                    )
+            else:
+                rx = _safe_float(row.get("raw_x_m"), px) or px
+                ry = _safe_float(row.get("raw_y_m"), py) or py
+                rz = _safe_float(row.get("raw_z_m"), pz) or pz
+                rms_m = _safe_float(row.get("pos_rms_m"), 0.0) or 0.0
+                rms_mm = rms_m * 1000.0
+                max_res_mm = _safe_float(row.get("max_res_mm"), rms_mm) or rms_mm
+                dt = max(rel_s - prev_rel_s, 0.005)
+                strided_jump_mm = math.dist((px, py, pz), prev_xyz) * 1000.0 if prev_xyz is not None else 0.0
+                calc_jump_mm = row_step_jump_mm if stride > 1 else strided_jump_mm
+                jump_mm = _safe_float(row.get("step_jump_mm"), calc_jump_mm) or calc_jump_mm
+                speed = _safe_float(row.get("speed_mps"), (strided_jump_mm / 1000.0) / dt) or 0.0
+                pdop = _safe_float(row.get("pdop"), 1.8) or 1.8
+                hdop = _safe_float(row.get("hdop"), 1.1) or 1.1
+                vdop = _safe_float(row.get("vdop"), 1.4) or 1.4
+
+                used_raw = (row.get("used_anchors") or "").strip()
+                if used_raw:
+                    used_ids = tuple(
+                        int(tok[1:]) for tok in used_raw.replace(",", "|").split("|") if tok.startswith("A") and tok[1:].isdigit()
+                    )
+                else:
+                    used_ids = tuple(
+                        aid for aid in range(1, MAX_ANCHORS + 1)
+                        if aid in last_seen_rel_s and (rel_s - last_seen_rel_s[aid]) <= 2.5
+                    )
+                excl_raw = (row.get("excluded_anchors") or "").strip()
+                excl_ids = tuple(
+                    int(tok[1:]) for tok in excl_raw.replace(",", "|").split("|") if tok.startswith("A") and tok[1:].isdigit()
+                )
+                motion_str = (row.get("motion_state") or ("MOVING" if speed > 0.08 else "STATIONARY")).strip()
+
+                snap_map = {}
+                worst_aid = 0
+                worst_res = 0.0
+                for aid in range(1, MAX_ANCHORS + 1):
+                    active_recently = aid in last_seen_rel_s and (rel_s - last_seen_rel_s[aid]) <= 2.5
+                    rmm = _safe_float(row.get(f"a{aid}_mm"))
+                    if rmm is None and active_recently:
+                        rmm = last_raw_by_aid.get(aid)
+                    ac = by_id.get(aid)
+                    default_corr = (rmm - ac.bias_mm) if (rmm is not None and ac is not None) else rmm
+                    cmm = _safe_float(row.get(f"a{aid}_corr_mm"), default_corr)
+                    fmm = _safe_float(row.get(f"a{aid}_filt_mm"), cmm)
+                    res_a = _safe_float(row.get(f"a{aid}_res_mm"))
+                    if res_a is None and fmm is not None and ac is not None and ac.enabled:
+                        res_a = math.dist((px, py, pz), (ac.x, ac.y, ac.z)) * 1000.0 - fmm
+                    if res_a is not None and abs(res_a) > abs(worst_res):
+                        worst_res = res_a
+                        worst_aid = aid
+                    rx_win = recent_rx_times[aid]
+                    while rx_win and (rel_s - rx_win[0]) > 2.5:
+                        rx_win.popleft()
+                    est_hz = (len(rx_win) - 1) / max(rel_s - rx_win[0], 0.2) if len(rx_win) >= 2 else 0.0
+                    snap_map[aid] = ReplayAnchorSnap(
+                        anchor_id=aid,
+                        raw_mm=rmm,
+                        corr_mm=cmm,
+                        filt_mm=fmm,
+                        res_mm=res_a,
+                        rate_hz=_safe_float(row.get(f"a{aid}_hz"), est_hz) or est_hz,
+                        sigma_mm=_safe_float(row.get(f"a{aid}_sigma_mm"), ac.sigma_mm if ac else None),
+                        fp_dbm=_safe_float(row.get(f"a{aid}_fp_dbm"), last_fp_by_aid.get(aid)),
+                        rx_dbm=_safe_float(row.get(f"a{aid}_rx_dbm")),
+                        nlos_db=_safe_float(row.get(f"a{aid}_nlos_db"), last_nlos_by_aid.get(aid)),
+                        status_str=(row.get(f"a{aid}_status") or ("OK" if active_recently else "OFF")).strip(),
+                    )
+
+                if stab_col in ("STABLE", "WARN", "UNSTABLE"):
+                    stab_str = stab_col
+                elif rms_mm > 110.0 or jump_mm > 90.0 or pdop > 5.0 or (rel_s > 0.6 and len(used_ids) < 4):
+                    stab_str = "UNSTABLE"
+                elif rms_mm > 65.0 or jump_mm > 45.0 or bool(excl_ids):
+                    stab_str = "WARN"
+                else:
+                    stab_str = "STABLE"
+
+                reason_str = (row.get("instability_reason") or "").strip()
+                if not reason_str and stab_str != "STABLE":
+                    r_parts: list[str] = []
+                    if rms_mm > 65.0:
+                        r_parts.append(f"RMS {rms_mm:.0f}mm")
+                    if jump_mm > 45.0:
+                        r_parts.append(f"Jump {jump_mm:.0f}mm")
+                    if worst_aid and abs(worst_res) > 85.0:
+                        r_parts.append(f"A{worst_aid} res {worst_res:+.0f}mm")
+                    if len(used_ids) < 5:
+                        r_parts.append(f"Only {len(used_ids)}A")
+                    reason_str = " | ".join(r_parts) if r_parts else "Elevated variance"
+
+            if prev_xyz is not None:
+                d2 = math.hypot(px - prev_xyz[0], py - prev_xyz[1])
+                d3 = math.dist((px, py, pz), prev_xyz)
+                if d3 >= 0.008:
+                    path_2d += d2
+                    path_3d += d3
+            prev_xyz = (px, py, pz)
+            prev_rel_s = rel_s
+
+            if stab_str == "UNSTABLE":
+                n_unstable += 1
+            elif stab_str == "WARN":
+                n_warn += 1
+            else:
+                n_stable += 1
+
+            if wp_lbl and not any(w[1] == wp_lbl for w in waypoints):
+                waypoints.append((len(waypoints) + 1, wp_lbl, px, py, pz, rel_s))
+
+            frame = ReplayFrame(
+                frame_index=len(frames),
+                host_time_s=host_t,
+                rel_time_s=rel_s,
+                cycle_seq=seq,
+                x=px,
+                y=py,
+                z=pz,
+                raw_x=rx,
+                raw_y=ry,
+                raw_z=rz,
+                speed_mps=speed,
+                rms_mm=rms_mm,
+                max_res_mm=max_res_mm,
+                step_jump_mm=jump_mm,
+                pdop=pdop,
+                hdop=hdop,
+                vdop=vdop,
+                used_anchor_ids=used_ids,
+                excluded_anchor_ids=excl_ids,
+                motion_state=motion_str,
+                stability_state=stab_str,
+                instability_reason=reason_str,
+                waypoint_label=wp_lbl,
+                anchors=snap_map,
+            )
+            frames.append(frame)
+
+            if not map_path:
+                map_path.append((px, py, pz, rel_s, stab_str, rms_mm))
+            else:
+                lx, ly, lz, lt, lstab, _ = map_path[-1]
+                if (
+                    math.dist((px, py, pz), (lx, ly, lz)) >= 0.006
+                    or (rel_s - lt) >= 0.04
+                    or stab_str != lstab
+                ):
+                    map_path.append((px, py, pz, rel_s, stab_str, rms_mm))
+
+    # Build contiguous InstabilitySegments from frames where stability_state != "STABLE"
+    total_f = max(1, len(frames))
+    duration_s = frames[-1].rel_time_s if frames else 0.0
+    avg_dt = duration_s / total_f if total_f > 1 else 0.02
+    merge_gap_s = max(1.2, 4.0 * avg_dt)
+
+    segments: list[InstabilitySegment] = []
+    cur_frames: list[ReplayFrame] = []
+    for fr in frames:
+        if fr.stability_state in ("WARN", "UNSTABLE"):
+            if cur_frames and (fr.rel_time_s - cur_frames[-1].rel_time_s) > merge_gap_s:
+                segments.append(_summarize_instability_segment(len(segments) + 1, cur_frames))
+                cur_frames = [fr]
+            else:
+                cur_frames.append(fr)
+        else:
+            if cur_frames and (fr.rel_time_s - cur_frames[-1].rel_time_s) > merge_gap_s:
+                segments.append(_summarize_instability_segment(len(segments) + 1, cur_frames))
+                cur_frames = []
+    if cur_frames:
+        segments.append(_summarize_instability_segment(len(segments) + 1, cur_frames))
+    return LoadedLogSession(
+        csv_path=csv_path,
+        anchors=anchors_sorted,
+        frames=frames,
+        map_path=map_path,
+        waypoints=waypoints,
+        unstable_segments=segments,
+        duration_s=duration_s,
+        path_length_2d_m=path_2d,
+        path_length_3d_m=path_3d,
+        stable_pct=100.0 * n_stable / total_f,
+        warn_pct=100.0 * n_warn / total_f,
+        unstable_pct=100.0 * n_unstable / total_f,
+        total_csv_rows=total_rows,
+    )
+
+
+def _summarize_instability_segment(seg_id: int, seg_frames: Sequence[ReplayFrame]) -> InstabilitySegment:
+    peak = max(seg_frames, key=lambda f: f.rms_mm + f.step_jump_mm * 1.2)
+    sev = "UNSTABLE" if any(f.stability_state == "UNSTABLE" for f in seg_frames) else "WARN"
+    t0 = seg_frames[0].rel_time_s
+    t1 = seg_frames[-1].rel_time_s
+    max_rms = max(f.rms_mm for f in seg_frames)
+    max_jmp = max(f.step_jump_mm for f in seg_frames)
+    min_anc = min((len(f.used_anchor_ids) for f in seg_frames), default=0)
+    used_str = ",".join(f"A{a}" for a in peak.used_anchor_ids) if peak.used_anchor_ids else "none"
+    cause = peak.instability_reason or f"RMS {max_rms:.0f}mm / Jump {max_jmp:.0f}mm"
+    return InstabilitySegment(
+        segment_id=seg_id,
+        severity=sev,
+        start_frame_idx=seg_frames[0].frame_index,
+        peak_frame_idx=peak.frame_index,
+        end_frame_idx=seg_frames[-1].frame_index,
+        start_rel_s=t0,
+        end_rel_s=t1,
+        duration_s=max(0.005, t1 - t0),
+        xyz_m=(peak.x, peak.y, peak.z),
+        max_rms_mm=max_rms,
+        max_jump_mm=max_jmp,
+        min_anchors=min_anc,
+        used_anchors_str=used_str,
+        cause_summary=cause,
+    )
+

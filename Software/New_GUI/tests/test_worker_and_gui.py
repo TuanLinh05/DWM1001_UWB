@@ -72,18 +72,49 @@ class DesignTokensAndWorkerTests(unittest.TestCase):
         self.assertTrue(any(a.command_id == tp.CMD_SET_DS_CAL and a.ok for a in acks))
 
     def test_fast_csv_logger_writes_burst_and_position_rows(self) -> None:
+        from core_state import UwbStateEngine, load_log_session
+        import math
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger = FastCsvLogger(Path(tmpdir), "TEST_DEMO")
+            engine = UwbStateEngine()
+            logger = FastCsvLogger(Path(tmpdir), "TEST_DEMO", engine=engine)
             try:
-                anchor = tp.BurstAnchor(1, 0, tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_VALID, 2500, -8000, -7600, 0)
-                msg = tp.RangeBurstMessage(1, 10, 1, 1, 1, 10000, 5000, (anchor,))
-                logger.log_burst(msg, pos_xyz=(1.2, 2.3, 0.9), rms_m=0.015)
+                for step in range(1, 25):
+                    t_s = step * 0.05
+                    entries = []
+                    for a in engine.anchors.values():
+                        d_mm = round(math.dist((2.0 + step * 0.02, 1.5, 1.0), (a.x, a.y, a.z)) * 1000.0 + a.bias_mm)
+                        if step in (12, 13, 14) and a.anchor_id in (1, 2):
+                            d_mm += 650  # Inject temporary NLOS instability
+                        entries.append(
+                            tp.BurstAnchor(a.anchor_id, 0, tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_CAL_OK | tp.BURST_FLAG_VALID, d_mm, -8000, -7600, 0)
+                        )
+                    msg = tp.RangeBurstMessage(step, step * 50, 1, step, step * 8, step * 50000, 50000, tuple(entries))
+                    engine.ingest_message(msg, received_s=t_s)
+                    if step == 10:
+                        engine.mark_waypoint("Point_A")
+                    sol = engine.latest_solution
+                    pos_xyz = (sol.x, sol.y, sol.z) if sol else None
+                    rms_m = sol.rms_m if sol else None
+                    logger.log_burst(msg, pos_xyz=pos_xyz, rms_m=rms_m, engine=engine)
             finally:
                 logger.stop()
-            self.assertTrue((logger.session_dir / "uwb_fast_log.csv").is_file())
-            content = (logger.session_dir / "uwb_fast_log.csv").read_text(encoding="utf-8")
+            csv_path = logger.session_dir / "uwb_fast_log.csv"
+            meta_path = logger.session_dir / "session_metadata.json"
+            self.assertTrue(csv_path.is_file())
+            self.assertTrue(meta_path.is_file())
+            content = csv_path.read_text(encoding="utf-8")
             self.assertIn("cycle_seq", content)
-            self.assertIn("2500", content)
+            self.assertIn("a1_cfg_x", content)
+            self.assertIn("stability_state", content)
+
+            # Test loading the session back and re-solving
+            session = load_log_session(csv_path, re_solve=False)
+            self.assertEqual(len(session.frames), 24)
+            self.assertEqual(len(session.anchors), 8)
+            self.assertGreaterEqual(len(session.waypoints), 1)
+
+            session_resolved = load_log_session(csv_path, fallback_anchors=list(engine.anchors.values()), re_solve=True)
+            self.assertEqual(len(session_resolved.frames), 24)
 
 
 class MainWindowIntegrationTests(unittest.TestCase):
@@ -132,7 +163,10 @@ class MainWindowIntegrationTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertIsNotNone(win.engine.latest_accuracy_report)
 
-            for page_idx in (0, 1, 2, 0):
+            win._mark_live_waypoint()
+            self.assertGreaterEqual(len(win.engine.waypoints), 1)
+
+            for page_idx in (0, 1, 2, 3, 0):
                 win.pages.setCurrentIndex(page_idx)
                 win._on_ui_refresh_tick()
                 _APP.processEvents()

@@ -42,6 +42,8 @@ class PositionMapCanvas(QWidget):
         self.show_rays: bool = True         # Clean lines from active anchors to TAG
         self.show_ranges: bool = False      # 2D circles (optional so 8 circles don't clutter)
         self.show_trail: bool = True
+        self.color_by_stability: bool = True
+        self.highlight_time_range: tuple[float, float] | None = None
         self.show_reference: bool = False
         self.reference_xyz: tuple[float, float, float] = (2.5, 2.0, 1.2)
         self.is_dark: bool = False
@@ -306,12 +308,29 @@ class PositionMapCanvas(QWidget):
                     painter.setPen(QPen(r_col, 1.1, Qt.PenStyle.DotLine))
                     painter.drawLine(proj(cfg.x, cfg.y), tp_pt)
 
-        # Trajectory trail (recent comet tail)
-        if self.show_trail and len(self.engine.position_trail) >= 2:
-            recent_trail = list(self.engine.position_trail)[-MAP_TRAIL_LEN:]
-            poly = QPolygonF([proj(x, y) for x, y, _z, _t in recent_trail])
-            painter.setPen(QPen(QColor("#0ea5e9" if not self.is_dark else "#38bdf8"), 1.8))
-            painter.drawPolyline(poly)
+        # Full-loop trajectory trail (color-coded by stability: Green=STABLE, Amber=WARN, Red=UNSTABLE)
+        if self.show_trail:
+            self._paint_trajectory_2d(painter, proj)
+
+        # User-marked waypoints (W1, W2, ...)
+        if self.engine.waypoints:
+            painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            wp_col = QColor("#8b5cf6" if not self.is_dark else "#a78bfa")
+            for _idx, wlbl, wx, wy, _wz, _wt in self.engine.waypoints:
+                wp_pt = proj(wx, wy)
+                painter.setPen(QPen(QColor("#ffffff"), 1.2))
+                painter.setBrush(wp_col)
+                diamond = QPolygonF(
+                    [
+                        QPointF(wp_pt.x(), wp_pt.y() - 5.5),
+                        QPointF(wp_pt.x() + 5.5, wp_pt.y()),
+                        QPointF(wp_pt.x(), wp_pt.y() + 5.5),
+                        QPointF(wp_pt.x() - 5.5, wp_pt.y()),
+                    ]
+                )
+                painter.drawPolygon(diamond)
+                painter.setPen(wp_col)
+                painter.drawText(QPointF(wp_pt.x() + 7, wp_pt.y() + 3), wlbl.split()[0])
 
         # Reference waypoint
         if self.show_reference:
@@ -494,12 +513,29 @@ class PositionMapCanvas(QWidget):
                     painter.setPen(QPen(ray_col, 1.1, Qt.PenStyle.DashLine))
                     painter.drawLine(proj3((cfg.x, cfg.y, cfg.z)), tag_2d)
 
-        # 3D Trail (recent comet tail)
-        if self.show_trail and len(self.engine.position_trail) >= 2:
-            recent_trail = list(self.engine.position_trail)[-MAP_TRAIL_LEN:]
-            poly = QPolygonF([proj3((x, y, z)) for x, y, z, _t in recent_trail])
-            painter.setPen(QPen(QColor("#0ea5e9" if not self.is_dark else "#38bdf8"), 1.8))
-            painter.drawPolyline(poly)
+        # 3D Full-Loop Trajectory Trail (color-coded by stability)
+        if self.show_trail:
+            self._paint_trajectory_3d(painter, proj3)
+
+        # User-marked waypoints in 3D
+        if self.engine.waypoints:
+            painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            wp_col = QColor("#8b5cf6" if not self.is_dark else "#a78bfa")
+            for _idx, wlbl, wx, wy, wz, _wt in self.engine.waypoints:
+                wp_pt = proj3((wx, wy, wz))
+                painter.setPen(QPen(QColor("#ffffff"), 1.2))
+                painter.setBrush(wp_col)
+                diamond = QPolygonF(
+                    [
+                        QPointF(wp_pt.x(), wp_pt.y() - 5.0),
+                        QPointF(wp_pt.x() + 5.0, wp_pt.y()),
+                        QPointF(wp_pt.x(), wp_pt.y() + 5.0),
+                        QPointF(wp_pt.x() - 5.0, wp_pt.y()),
+                    ]
+                )
+                painter.drawPolygon(diamond)
+                painter.setPen(wp_col)
+                painter.drawText(QPointF(wp_pt.x() + 6, wp_pt.y() + 3), wlbl.split()[0])
 
         # Reference target in 3D
         if self.show_reference:
@@ -552,6 +588,87 @@ class PositionMapCanvas(QWidget):
             )
 
         painter.restore()  # End inner clip
+
+    def _stability_color(self, state: str) -> QColor:
+        if not self.color_by_stability:
+            return QColor("#0ea5e9" if not self.is_dark else "#38bdf8")
+        if state == "UNSTABLE":
+            return QColor("#ef4444")
+        if state == "WARN":
+            return QColor("#f59e0b")
+        return QColor("#10b981" if not self.is_dark else "#34d399")
+
+    def _paint_trajectory_2d(self, painter: QPainter, proj) -> None:
+        mpath = list(self.engine.map_path)
+        if len(mpath) < 2:
+            if len(self.engine.position_trail) >= 2:
+                poly = QPolygonF([proj(x, y) for x, y, _z, _t in self.engine.position_trail])
+                painter.setPen(QPen(self._stability_color("STABLE"), 2.0))
+                painter.drawPolyline(poly)
+            return
+
+        cur_state = mpath[0][4]
+        cur_pts = [proj(mpath[0][0], mpath[0][1])]
+        for x, y, _z, _t, st, _rms in mpath[1:]:
+            pt = proj(x, y)
+            cur_pts.append(pt)
+            if st != cur_state:
+                w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+                painter.setPen(QPen(self._stability_color(cur_state), w))
+                painter.drawPolyline(QPolygonF(cur_pts))
+                cur_state = st
+                cur_pts = [pt]
+        if len(cur_pts) >= 2:
+            w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+            painter.setPen(QPen(self._stability_color(cur_state), w))
+            painter.drawPolyline(QPolygonF(cur_pts))
+
+        if self.highlight_time_range is not None:
+            t0, t1 = self.highlight_time_range
+            hl_pts = [proj(x, y) for x, y, _z, t, _st, _rms in mpath if (t0 - 0.1) <= t <= (t1 + 0.1)]
+            if len(hl_pts) >= 2:
+                painter.setPen(QPen(QColor("#ec4899"), 4.2))
+                painter.drawPolyline(QPolygonF(hl_pts))
+            elif len(hl_pts) == 1:
+                painter.setPen(QPen(QColor("#ec4899"), 2.5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(hl_pts[0], 9.0, 9.0)
+
+    def _paint_trajectory_3d(self, painter: QPainter, proj3) -> None:
+        mpath = list(self.engine.map_path)
+        if len(mpath) < 2:
+            if len(self.engine.position_trail) >= 2:
+                poly = QPolygonF([proj3((x, y, z)) for x, y, z, _t in self.engine.position_trail])
+                painter.setPen(QPen(self._stability_color("STABLE"), 2.0))
+                painter.drawPolyline(poly)
+            return
+
+        cur_state = mpath[0][4]
+        cur_pts = [proj3((mpath[0][0], mpath[0][1], mpath[0][2]))]
+        for x, y, z, _t, st, _rms in mpath[1:]:
+            pt = proj3((x, y, z))
+            cur_pts.append(pt)
+            if st != cur_state:
+                w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+                painter.setPen(QPen(self._stability_color(cur_state), w))
+                painter.drawPolyline(QPolygonF(cur_pts))
+                cur_state = st
+                cur_pts = [pt]
+        if len(cur_pts) >= 2:
+            w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+            painter.setPen(QPen(self._stability_color(cur_state), w))
+            painter.drawPolyline(QPolygonF(cur_pts))
+
+        if self.highlight_time_range is not None:
+            t0, t1 = self.highlight_time_range
+            hl_pts = [proj3((x, y, z)) for x, y, z, t, _st, _rms in mpath if (t0 - 0.1) <= t <= (t1 + 0.1)]
+            if len(hl_pts) >= 2:
+                painter.setPen(QPen(QColor("#ec4899"), 4.2))
+                painter.drawPolyline(QPolygonF(hl_pts))
+            elif len(hl_pts) == 1:
+                painter.setPen(QPen(QColor("#ec4899"), 2.5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(hl_pts[0], 9.0, 9.0)
 
     def _paint_z_bar(self, painter: QPainter, box: QRectF) -> None:
         inner = self._draw_panel_box(painter, box, "Z (m)")

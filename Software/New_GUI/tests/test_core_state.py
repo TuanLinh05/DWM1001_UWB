@@ -336,6 +336,59 @@ class BurstIngestionAndCalibrationTests(unittest.TestCase):
         self.assertLess(max(zs) - min(zs), 0.025)
         self.assertAlmostEqual(zs[-1], true_xyz[2], delta=0.02)
 
+    def test_3d_loop_motion_tracking_and_waypoints(self) -> None:
+        from core_state import DEFAULT_PRESET_ROOM_66_36
+        engine = UwbStateEngine(initial_anchors=DEFAULT_PRESET_ROOM_66_36)
+        # Walk a full 3D loop around the 6.6 x 3.6 m room over 20 seconds (at 50 Hz = 1000 steps)
+        errors_3d: list[float] = []
+        total_steps = 400
+        dt = 0.05  # 20 seconds total
+        for step in range(1, total_steps + 1):
+            t_s = step * dt
+            theta = 2.0 * math.pi * (step / total_steps)
+            true_x = 3.30 + 2.20 * math.cos(theta)
+            true_y = 1.80 + 1.10 * math.sin(theta)
+            true_z = 0.85 + 0.25 * math.sin(2.0 * theta)
+            true_xyz = (true_x, true_y, true_z)
+
+            entries = []
+            for a in engine.anchors.values():
+                # Simulate realistic asymmetric anchor rates (A2 only updates every 15th frame, A3 offline)
+                if a.anchor_id == 3:
+                    entries.append(tp.BurstAnchor(a.anchor_id, tp.STATUS_TIMEOUT, 0, None, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN))
+                    continue
+                if a.anchor_id == 2 and (step % 15 != 0):
+                    entries.append(tp.BurstAnchor(a.anchor_id, tp.STATUS_TIMEOUT, 0, None, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN))
+                    continue
+                d_mm = round(math.dist(true_xyz, (a.x, a.y, a.z)) * 1000.0 + a.bias_mm)
+                entries.append(
+                    tp.BurstAnchor(
+                        a.anchor_id, 0, tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_CAL_OK | tp.BURST_FLAG_VALID,
+                        d_mm, -8000, -7600, 0
+                    )
+                )
+            msg = tp.RangeBurstMessage(step, int(t_s * 1000), 1, step, step * 8, int(t_s * 1e6), 50000, tuple(entries))
+            engine.ingest_message(msg, received_s=t_s)
+
+            if step in (100, 200, 300, 400):
+                wp = engine.mark_waypoint(f"Corner_{step // 100}")
+                self.assertIsNotNone(wp)
+
+            if engine.latest_solution is not None and step >= 15:
+                sol = engine.latest_solution
+                errors_3d.append(math.dist((sol.x, sol.y, sol.z), true_xyz))
+
+        self.assertGreater(len(errors_3d), 350)
+        mean_err_m = sum(errors_3d) / len(errors_3d)
+        self.assertLess(mean_err_m, 0.045)
+        # Ensure full loop path is preserved in map_path and 4 waypoints were marked
+        self.assertGreater(len(engine.map_path), 100)
+        self.assertEqual(len(engine.waypoints), 4)
+        xs = [p[0] for p in engine.map_path]
+        ys = [p[1] for p in engine.map_path]
+        self.assertGreater(max(xs) - min(xs), 4.0)
+        self.assertGreater(max(ys) - min(ys), 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

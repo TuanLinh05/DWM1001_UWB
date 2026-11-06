@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 import queue
@@ -27,7 +28,7 @@ except ImportError:  # pragma: no cover
     list_ports = None  # type: ignore[assignment]
 
 import telemetry_protocol as tp  # noqa: E402
-from core_state import AnchorConfig, DEFAULT_PRESET_BOX8, encode_set_ds_cal_command  # noqa: E402
+from core_state import AnchorConfig, DEFAULT_PRESET_BOX8, UwbStateEngine, encode_set_ds_cal_command  # noqa: E402
 
 
 BURST_PRESETS = {
@@ -51,27 +52,99 @@ def available_serial_ports() -> list[tuple[str, str]]:
 
 
 class FastCsvLogger:
-    """Lightweight single-thread CSV session logger for high-rate Burst & Position data."""
+    """Comprehensive non-blocking CSV & JSON session logger for Burst, 8-Anchor & 3D Trajectory data."""
 
-    def __init__(self, base_dir: Path, source_name: str) -> None:
+    def __init__(self, base_dir: Path, source_name: str, engine: UwbStateEngine | None = None) -> None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         clean_src = "".join(c if c.isalnum() else "_" for c in source_name)
         self.session_dir = base_dir / f"uwb_fast_{stamp}_{clean_src}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.csv_path = self.session_dir / "uwb_fast_log.csv"
+        self.meta_path = self.session_dir / "session_metadata.json"
+        self._engine = engine
+        self._started_s = time.time()
         self._queue: queue.Queue[tuple | None] = queue.Queue(maxsize=32768)
         self.rows_written = 0
         self.dropped_rows = 0
         self._stop = threading.Event()
+        self._write_metadata_snapshot()
         self._thread = threading.Thread(target=self._writer_loop, name="uwb-fast-csv", daemon=True)
         self._thread.start()
+
+    def _write_metadata_snapshot(self) -> None:
+        if self._engine is None:
+            return
+        try:
+            eng = self._engine
+            di = eng.device_info
+            payload = {
+                "schema": 3,
+                "started_unix_s": self._started_s,
+                "updated_unix_s": time.time(),
+                "rows_written": self.rows_written,
+                "dropped_rows": self.dropped_rows,
+                "solver": {
+                    "dimension": eng.solver_dimension,
+                    "fixed_z_m": eng.fixed_z_m,
+                    "allow_uncalibrated_positioning": eng.allow_uncalibrated_positioning,
+                    "use_host_filter_for_pos": eng.use_host_filter_for_pos,
+                    "use_nlos_downweight": eng.use_nlos_downweight,
+                },
+                "firmware": (
+                    {
+                        "git_hash": f"0x{di.git_hash:08X}",
+                        "frame_version": di.frame_version,
+                        "role": di.role,
+                        "node_address": di.node_address,
+                        "uart_baud": di.uart_baud,
+                    }
+                    if di is not None
+                    else None
+                ),
+                "anchors": [
+                    {
+                        "anchor_id": a.anchor_id,
+                        "x": round(a.x, 4),
+                        "y": round(a.y, 4),
+                        "z": round(a.z, 4),
+                        "enabled": a.enabled,
+                        "bias_mm": round(a.bias_mm, 2),
+                        "sigma_mm": round(a.sigma_mm, 2),
+                        "fw_calibrated": a.fw_calibrated,
+                        "fw_bias_mm": round(a.fw_bias_mm, 2),
+                    }
+                    for a in sorted(eng.anchors.values(), key=lambda item: item.anchor_id)
+                ],
+                "waypoints": [
+                    {
+                        "index": wp[0],
+                        "label": wp[1],
+                        "x": round(wp[2], 4),
+                        "y": round(wp[3], 4),
+                        "z": round(wp[4], 4),
+                        "time_s": round(wp[5], 3),
+                    }
+                    for wp in eng.waypoints
+                ],
+            }
+            self.meta_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     def log_burst(
         self,
         msg: tp.RangeBurstMessage,
         pos_xyz: tuple[float, float, float] | None,
         rms_m: float | None,
+        engine: UwbStateEngine | None = None,
     ) -> None:
+        eng = engine or self._engine
+        sol = eng.latest_solution if eng is not None else None
+        if pos_xyz is None and sol is not None:
+            pos_xyz = (sol.x, sol.y, sol.z)
+        if rms_m is None and sol is not None:
+            rms_m = sol.rms_m
+
         by_id = {a.anchor_id: a for a in msg.anchors}
         row: list[object] = [
             f"{time.time():.6f}",
@@ -97,6 +170,73 @@ class FastCsvLogger:
                 )
                 ci = "" if a.ci_ppm_x100 == tp.INT16_MIN else f"{a.ci_ppm_x100 / 100.0:.2f}"
                 row.extend((a.range_mm, fp, nlos, ci))
+
+        # Full 3D motion, DOP, stability & waypoint columns
+        wp_label = ""
+        if eng is not None and eng.pending_waypoint_label:
+            wp_label = eng.pending_waypoint_label
+            eng.pending_waypoint_label = ""
+
+        if sol is not None:
+            used_str = "|".join(f"A{a}" for a in sol.used_anchor_ids)
+            excl_str = "|".join(f"A{a}" for a in sol.excluded_anchor_ids)
+            row.extend(
+                (
+                    f"{sol.raw_x:.4f}",
+                    f"{sol.raw_y:.4f}",
+                    f"{sol.raw_z:.4f}",
+                    f"{sol.vx_mps:.3f}",
+                    f"{sol.vy_mps:.3f}",
+                    f"{sol.vz_mps:.3f}",
+                    f"{sol.speed_mps:.3f}",
+                    f"{sol.step_jump_mm:.1f}",
+                    f"{sol.max_residual_m * 1000.0:.1f}",
+                    f"{sol.dop.pdop:.2f}",
+                    f"{sol.dop.hdop:.2f}",
+                    f"{sol.dop.vdop:.2f}",
+                    f"{sol.dop.gdop:.2f}",
+                    len(sol.used_anchor_ids),
+                    used_str,
+                    excl_str,
+                    sol.motion_state,
+                    sol.stability_state,
+                    sol.instability_reason,
+                    wp_label,
+                )
+            )
+        else:
+            row.extend(("", "", "", "", "", "", "", "", "", "", "", "", "", 0, "", "", "", "", "", wp_label))
+
+        # Per-anchor processed telemetry & active rig coordinates/biases
+        for aid in range(1, 9):
+            if eng is not None:
+                st = eng.live[aid]
+                cfg = eng.anchors[aid]
+                corr_txt = f"{st.corrected_mm:.1f}" if st.raw_mm > 0 else ""
+                filt_txt = f"{st.host_filtered_mm:.1f}" if st.host_filtered_mm is not None and st.raw_mm > 0 else ""
+                res_txt = f"{st.residual_mm:+.1f}" if st.residual_mm is not None else ""
+                hz_txt = f"{st.rate_hz:.1f}"
+                sig_txt = f"{st.noise_sigma_mm:.1f}" if st.noise_sigma_mm is not None else f"{cfg.sigma_mm:.1f}"
+                rx_txt = f"{st.rx_dbm:.1f}" if st.rx_dbm is not None else ""
+                st_txt = "OK" if st.radio_ok and st.raw_mm > 0 else "OFF"
+                row.extend(
+                    (
+                        corr_txt,
+                        filt_txt,
+                        res_txt,
+                        hz_txt,
+                        sig_txt,
+                        rx_txt,
+                        st_txt,
+                        f"{cfg.x:.3f}",
+                        f"{cfg.y:.3f}",
+                        f"{cfg.z:.3f}",
+                        f"{cfg.bias_mm:.1f}",
+                    )
+                )
+            else:
+                row.extend(("", "", "", "", "", "", "", "", "", "", ""))
+
         try:
             self._queue.put_nowait(tuple(row))
         except queue.Full:
@@ -109,6 +249,33 @@ class FastCsvLogger:
         ]
         for aid in range(1, 9):
             headers.extend((f"a{aid}_mm", f"a{aid}_fp_dbm", f"a{aid}_nlos_db", f"a{aid}_ci_ppm"))
+
+        headers.extend(
+            (
+                "raw_x_m", "raw_y_m", "raw_z_m",
+                "vel_x_mps", "vel_y_mps", "vel_z_mps", "speed_mps",
+                "step_jump_mm", "max_res_mm",
+                "pdop", "hdop", "vdop", "gdop",
+                "used_count", "used_anchors", "excluded_anchors",
+                "motion_state", "stability_state", "instability_reason", "waypoint_label",
+            )
+        )
+        for aid in range(1, 9):
+            headers.extend(
+                (
+                    f"a{aid}_corr_mm",
+                    f"a{aid}_filt_mm",
+                    f"a{aid}_res_mm",
+                    f"a{aid}_hz",
+                    f"a{aid}_sigma_mm",
+                    f"a{aid}_rx_dbm",
+                    f"a{aid}_status",
+                    f"a{aid}_cfg_x",
+                    f"a{aid}_cfg_y",
+                    f"a{aid}_cfg_z",
+                    f"a{aid}_bias_mm",
+                )
+            )
 
         with self.csv_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -135,6 +302,7 @@ class FastCsvLogger:
         except queue.Full:
             pass
         self._thread.join(timeout=2.0)
+        self._write_metadata_snapshot()
 
 
 class SerialTelemetryWorker(QThread):
