@@ -842,9 +842,11 @@ class UwbStateEngine:
         if len(win) >= 2:
             span = max(received_s - win[0][0], 0.1)
             state.rate_hz = (len(win) - 1) / span if span >= 0.15 else float(len(win))
-        diffs = [b - a for (_, a), (_, b) in zip(win, list(win)[1:])]
-        if len(diffs) >= 4:
-            state.noise_sigma_mm = statistics.pstdev(diffs) / math.sqrt(2.0)
+        if len(win) >= 5 and (state.rx_count % 4 == 0 or state.noise_sigma_mm is None):
+            tail = list(win)[-32:]
+            diffs = [b - a for (_, a), (_, b) in zip(tail, tail[1:])]
+            if len(diffs) >= 4:
+                state.noise_sigma_mm = statistics.pstdev(diffs) / math.sqrt(2.0)
 
     def _ingest_burst(self, msg: tp.RangeBurstMessage, received_s: float) -> None:
         if self.boot_id is not None and msg.boot_id != self.boot_id:
@@ -1105,7 +1107,7 @@ class UwbStateEngine:
         self.uart_baud = msg.uart_baud
         self.telemetry_features = msg.telemetry_features
         self.calibrated_mask = msg.calibrated_mask
-        self.active_anchor_mask = msg.active_anchor_mask
+        self.active_anchor_mask = msg.active_mask
 
     def _ingest_diag_system(self, msg: tp.DiagSystemMessage) -> None:
         self.diag_system = msg

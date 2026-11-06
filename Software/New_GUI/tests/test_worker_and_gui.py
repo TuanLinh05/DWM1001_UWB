@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import time
@@ -71,7 +72,7 @@ class DesignTokensAndWorkerTests(unittest.TestCase):
         self.assertTrue(any(a.command_id == tp.CMD_SET_DS_CAL and a.ok for a in acks))
 
     def test_fast_csv_logger_writes_burst_and_position_rows(self) -> None:
-        with tempfile.TemporaryDirectory(dir="D:/Antigravity/2026-11-05/tmp") as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir:
             logger = FastCsvLogger(Path(tmpdir), "TEST_DEMO")
             try:
                 anchor = tp.BurstAnchor(1, 0, tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_VALID, 2500, -8000, -7600, 0)
@@ -139,6 +140,117 @@ class MainWindowIntegrationTests(unittest.TestCase):
             win._toggle_theme()
             win._on_ui_refresh_tick()
             _APP.processEvents()
+        finally:
+            win.close()
+
+    def test_real_hardware_messages_do_not_crash_gui(self) -> None:
+        """Verify DeviceInfoMessage, CmdAckMessage, DiagSystemMessage, RxQualityMessage from real TAG do not crash UI."""
+        win = UwbFastGuiWindow(start_demo=False)
+        try:
+            now = time.monotonic()
+            dev_info = tp.DeviceInfoMessage(
+                sequence=3693,
+                time_ms=405971,
+                role=1,
+                node_address=0,
+                git_hash=0x2D19AC75,
+                git_dirty=True,
+                frame_version=3,
+                telemetry_features=7,
+                wait4resp=True,
+                device_id=2963110252,
+                boot_id=41082,
+                boot_count=1,
+                reset_cause=0,
+                tx_power_mode=0,
+                reference_tuning=False,
+                tx_antenna_delay=16436,
+                rx_antenna_delay=16436,
+                tx_power_register=0x1F1F1F1F,
+                spi_clock_mhz=8,
+                otp_valid=True,
+                otp_part_id=1,
+                otp_lot_id=2,
+                otp_ldotune=0,
+                otp_xtal_trim=16,
+                otp_revision=1,
+                otp_vbat_cal=170,
+                otp_vtemp_cal=120,
+                applied_xtal_trim=16,
+                ldo_kicked=True,
+                settings_status=0,
+                uart_baud=460800,
+                active_mask=0xFF,
+                calibrated_mask=0x00,
+                build_config_hash=0x12345678,
+                calibration_profile_id=1,
+            )
+            ack_ping = tp.CmdAckMessage(sequence=1, time_ms=405971, command_id=tp.CMD_PING, result=0, data=b"")
+            cal_bytes = b"".join(struct.pack("<HiB", aid, 0, 0) for aid in range(1, 9))
+            ack_cal = tp.CmdAckMessage(sequence=2, time_ms=405972, command_id=tp.CMD_GET_DS_CAL, result=0, data=cal_bytes)
+            diag_sys = tp.DiagSystemMessage(
+                sequence=3694,
+                time_ms=406471,
+                boot_id=41082,
+                boot_count=1,
+                reset_cause=0,
+                uptime_ms=406471,
+                cycle_count=130711,
+                cycle_us=3119,
+                cycle_max_us=3628,
+                cycle_overruns=123,
+                spi_errors=0,
+                radio_recoveries=0,
+                radio_recovery_failures=0,
+                config_checks=356,
+                config_mismatches=0,
+                last_config_mismatch=0,
+                fault_hold=False,
+                last_fault_cause=0,
+                paused=False,
+                active_mask=0xFF,
+                uart_tx_overflow=0,
+                uart_rx_overflow=0,
+                uart_high_water=128,
+                meas_queue_drops=0,
+                cmd_ok=3,
+                cmd_rejected=0,
+                cmd_crc_errors=0,
+                locked=False,
+                settings_status=0,
+                rx_errors={},
+                ds_ok=100,
+                ds_fallback=0,
+                ds_report_timeout=0,
+                ds_final_tx_timeout=0,
+                temperature_c=29.84,
+                vbat_v=3.421,
+            )
+            rx_qual = tp.RxQualityMessage(
+                sequence=41777,
+                time_ms=405999,
+                boot_id=41082,
+                cycle_seq=41777,
+                t_us=407366242,
+                prf_mhz=16,
+                env_flags=3,
+                temperature_c=29.84,
+                vbat_v=3.421,
+                env_age_ms=497,
+                sample_period_ms=100,
+                temp_raw=131,
+                vbat_raw=181,
+                anchors=(
+                    tp.RxQualityAnchor(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, -32768, -32768, -32768, -32768),
+                ),
+            )
+            win._on_telemetry_batch([(dev_info, now), (ack_ping, now), (ack_cal, now), (diag_sys, now), (rx_qual, now)])
+            for page_idx in (0, 1, 2):
+                win.pages.setCurrentIndex(page_idx)
+                win._on_ui_refresh_tick()
+                _APP.processEvents()
+            self.assertIn("460800", win.lbl_sidebar_fw.text())
+            self.assertIn("406.5s", win.lbl_diag_summary.text())
         finally:
             win.close()
 

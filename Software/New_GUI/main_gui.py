@@ -1061,8 +1061,8 @@ class UwbFastGuiWindow(QMainWindow):
         btn_get_info.clicked.connect(lambda: self._send_raw_cmd(tp.CMD_GET_DEVICE_INFO))
         d_top.addWidget(btn_get_info)
 
-        btn_get_cfg = QPushButton("GET_CONFIG")
-        btn_get_cfg.clicked.connect(lambda: self._send_raw_cmd(tp.CMD_GET_CONFIG))
+        btn_get_cfg = QPushButton("GET_DS_CAL")
+        btn_get_cfg.clicked.connect(lambda: self._send_raw_cmd(tp.CMD_GET_DS_CAL))
         d_top.addWidget(btn_get_cfg)
 
         btn_rxq_on = QPushButton("Enable RX_QUALITY")
@@ -1198,67 +1198,74 @@ class UwbFastGuiWindow(QMainWindow):
 
     def _on_telemetry_batch(self, batch: List[Tuple[object, float]]) -> None:
         for msg, rx_ts in batch:
-            self.engine.ingest_message(msg, rx_ts)
-            if self.csv_logger is not None and isinstance(msg, tp.RangeBurstMessage):
-                sol = self.engine.latest_solution
-                pos_xyz = (sol.x, sol.y, sol.z) if sol is not None else None
-                rms_m = sol.rms_m if sol is not None else None
-                self.csv_logger.log_burst(msg, pos_xyz=pos_xyz, rms_m=rms_m)
-            elif isinstance(msg, tp.CmdAckMessage):
-                self._log_event(
-                    f"CMD_ACK cmd=0x{msg.command_id:02X} status={msg.status} ({'OK' if msg.ok else 'ERR'})"
-                )
-                if msg.command_id in (tp.CMD_GET_DS_CAL, tp.CMD_SET_DS_CAL):
-                    self._refresh_anchor_cfg_fw_column()
+            try:
+                self.engine.ingest_message(msg, rx_ts)
+                if self.csv_logger is not None and isinstance(msg, tp.RangeBurstMessage):
+                    sol = self.engine.latest_solution
+                    pos_xyz = (sol.x, sol.y, sol.z) if sol is not None else None
+                    rms_m = sol.rms_m if sol is not None else None
+                    self.csv_logger.log_burst(msg, pos_xyz=pos_xyz, rms_m=rms_m)
+                elif isinstance(msg, tp.CmdAckMessage):
+                    self._log_event(
+                        f"CMD_ACK cmd=0x{msg.command_id:02X} result={msg.result_name} ({'OK' if msg.ok else 'ERR'})"
+                    )
+                    if msg.command_id in (tp.CMD_GET_DS_CAL, tp.CMD_SET_DS_CAL):
+                        self._refresh_anchor_cfg_fw_column()
+            except Exception as exc:
+                self._log_event(f"Telemetry ingest warning ({type(msg).__name__}): {exc}")
 
     def _on_ui_refresh_tick(self) -> None:
-        eng = self.engine
-        sol = eng.latest_solution
+        try:
+            eng = self.engine
+            sol = eng.latest_solution
 
-        # 1. Update Top KPI Cards
-        if sol is not None:
-            self.card_pos.update_metric(
-                f"{sol.x:+.3f}, {sol.y:+.3f}, {sol.z:+.3f} m",
-                f"Mode: {sol.dimension}D | Anchors: {len(sol.used_anchor_ids)} ({','.join(f'A{a}' for a in sol.used_anchor_ids)})",
-            )
-            excl = ",".join(f"A{a}" for a in sol.excluded_anchor_ids) if sol.excluded_anchor_ids else "none"
-            self.card_residual.update_metric(
-                f"RMS: {sol.rms_m * 1000.0:.1f} mm",
-                f"Max: {sol.max_residual_m * 1000.0:.1f} mm | Excl: {excl}",
-            )
-            dop = sol.dop
-            coplanar_tag = " [COPLANAR Z]" if dop.coplanar_warning else ""
-            self.card_dop.update_metric(
-                f"PDOP: {dop.pdop:.2f}{coplanar_tag}",
-                f"HDOP: {dop.hdop:.2f} | VDOP: {dop.vdop:.2f} | GDOP: {dop.gdop:.2f}",
-            )
-        else:
-            self.card_pos.update_metric("-- , -- , -- m", f"Mode: {eng.solver_dimension}D | Waiting for >=3 anchors")
+            # 1. Update Top KPI Cards
+            if sol is not None:
+                self.card_pos.update_metric(
+                    f"{sol.x:+.3f}, {sol.y:+.3f}, {sol.z:+.3f} m",
+                    f"Mode: {sol.dimension}D | Anchors: {len(sol.used_anchor_ids)} ({','.join(f'A{a}' for a in sol.used_anchor_ids)})",
+                )
+                excl = ",".join(f"A{a}" for a in sol.excluded_anchor_ids) if sol.excluded_anchor_ids else "none"
+                self.card_residual.update_metric(
+                    f"RMS: {sol.rms_m * 1000.0:.1f} mm",
+                    f"Max: {sol.max_residual_m * 1000.0:.1f} mm | Excl: {excl}",
+                )
+                dop = sol.dop
+                coplanar_tag = " [COPLANAR Z]" if dop.coplanar_warning else ""
+                self.card_dop.update_metric(
+                    f"PDOP: {dop.pdop:.2f}{coplanar_tag}",
+                    f"HDOP: {dop.hdop:.2f} | VDOP: {dop.vdop:.2f} | GDOP: {dop.gdop:.2f}",
+                )
+            else:
+                self.card_pos.update_metric("-- , -- , -- m", f"Mode: {eng.solver_dimension}D | Waiting for >=3 anchors")
 
-        temp_str = f"{eng.temperature_c:.1f}°C" if eng.temperature_c is not None else "--°C"
-        self.card_rate.update_metric(
-            f"{eng.cycle_rate_hz:.1f} Hz",
-            f"Bursts: {eng.total_bursts} | Lost: {eng.lost_cycles} | CalMask: 0x{eng.calibrated_mask:02X} | {temp_str}",
-        )
-
-        if eng.device_info is not None:
-            di = eng.device_info
-            self.lbl_sidebar_fw.setText(
-                f"FW v{di.fw_version} | Role {di.role} | Node {di.node_id}\n"
-                f"Mode: {eng.ranging_mode_name} | Baud: {di.uart_baud}"
+            temp_str = f"{eng.temperature_c:.1f}°C" if eng.temperature_c is not None else "--°C"
+            self.card_rate.update_metric(
+                f"{eng.cycle_rate_hz:.1f} Hz",
+                f"Bursts: {eng.total_bursts} | Lost: {eng.lost_cycles} | CalMask: 0x{eng.calibrated_mask:02X} | {temp_str}",
             )
 
-        # 2. Repaint active page widgets only
-        page_idx = self.pages.currentIndex()
-        if page_idx == 0:
-            self.map_canvas.update()
-            self.rolling_chart.update()
-            self._update_live_anchor_table()
-            self._update_eval_status_bar()
-        elif page_idx == 1:
-            self._update_calibration_page()
-        elif page_idx == 2:
-            self._update_diagnostics_page()
+            if eng.device_info is not None:
+                di = eng.device_info
+                role_str = "TAG" if di.role == 1 else f"Role {di.role}"
+                self.lbl_sidebar_fw.setText(
+                    f"FW git:{di.git_hash:08X} (v{di.frame_version}) | {role_str} #{di.node_address}\n"
+                    f"Mode: {eng.ranging_mode_name} | Baud: {di.uart_baud}"
+                )
+
+            # 2. Repaint active page widgets only
+            page_idx = self.pages.currentIndex()
+            if page_idx == 0:
+                self.map_canvas.update()
+                self.rolling_chart.update()
+                self._update_live_anchor_table()
+                self._update_eval_status_bar()
+            elif page_idx == 1:
+                self._update_calibration_page()
+            elif page_idx == 2:
+                self._update_diagnostics_page()
+        except Exception as exc:
+            self._log_event(f"UI refresh warning: {exc}")
 
     def _update_live_anchor_table(self) -> None:
         eng = self.engine
@@ -1382,10 +1389,12 @@ class UwbFastGuiWindow(QMainWindow):
         eng = self.engine
         ds = eng.diag_system
         if ds is not None:
+            uptime_s = ds.uptime_ms / 1000.0
+            temp_txt = f"{ds.temperature_c:.1f}" if ds.temperature_c is not None else "--"
+            vbat_txt = f"{ds.vbat_v:.2f}" if ds.vbat_v is not None else "--"
             self.lbl_diag_summary.setText(
-                f"System Diag — Uptime: {ds.uptime_s}s | ActiveMask: 0x{ds.active_mask:02X} | "
-                f"Temp: {ds.temperature_c if ds.temperature_c is not None else '--'} °C | "
-                f"Vbat: {ds.vbat_v if ds.vbat_v is not None else '--'} V"
+                f"System Diag — Uptime: {uptime_s:.1f}s | ActiveMask: 0x{ds.active_mask:02X} | "
+                f"Temp: {temp_txt} °C | Vbat: {vbat_txt} V"
             )
         log_text = "\n".join(self._event_log[-100:])
         if self.event_console.toPlainText() != log_text:
@@ -1760,10 +1769,13 @@ class UwbFastGuiWindow(QMainWindow):
         worker = self._active_worker()
         if worker is None:
             return
-        cur = self.engine.telemetry_features or (
-            tp.TELEM_FEATURE_RANGE_SNAPSHOT | tp.TELEM_FEATURE_RANGE_MEAS | tp.TELEM_FEATURE_DIAG
+        wanted = (
+            tp.TELEM_FEATURE_RANGE_SNAPSHOT
+            | tp.TELEM_FEATURE_RANGE_MEAS
+            | tp.TELEM_FEATURE_DIAG
         )
-        worker.send_command(tp.CMD_SET_TELEMETRY, bytes(((cur | tp.TELEM_FEATURE_RX_QUALITY) & 0xFF,)))
+        cur = self.engine.telemetry_features or 0
+        worker.send_command(tp.CMD_SET_TELEMETRY, bytes(((cur | wanted) & 0xFF,)))
 
     def _send_raw_cmd(self, cmd_id: int, payload: bytes = b"") -> None:
         worker = self._active_worker()

@@ -286,7 +286,7 @@ class BurstIngestionAndCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(loaded[4].z, 1.58)
         self.assertAlmostEqual(loaded[2].bias_mm, -178.0)
 
-        with tempfile.TemporaryDirectory(dir="D:/Antigravity/2026-11-05/tmp") as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir:
             out_path = Path(tmpdir) / "anchors_out.txt"
             save_anchors_rig_txt(out_path, loaded)
             reloaded = load_anchors_rig_txt(out_path)
