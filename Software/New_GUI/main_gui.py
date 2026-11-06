@@ -59,12 +59,15 @@ from core_state import (  # noqa: E402
     DEFAULT_PRESET_BOX8,
     DEFAULT_PRESET_FLAT4,
     DEFAULT_PRESET_RIG40,
+    DEFAULT_PRESET_ROOM_66_36,
     UwbStateEngine,
     load_anchor_layout_json,
     load_anchors_rig_txt,
     save_anchor_layout_json,
     save_anchors_rig_txt,
 )
+
+LAST_RIG_PATH = NEW_GUI_DIR / "last_rig_config.json"
 from design_tokens import (  # noqa: E402
     ANCHOR_PALETTE,
     FONT_MONO,
@@ -226,7 +229,16 @@ class UwbFastGuiWindow(QMainWindow):
         if self.theme_manager is not None:
             self.theme_manager.apply_light()
 
-        self.engine = UwbStateEngine()
+        initial_rig = DEFAULT_PRESET_BOX8 if start_demo else DEFAULT_PRESET_ROOM_66_36
+        if not start_demo and LAST_RIG_PATH.is_file():
+            try:
+                loaded = load_anchor_layout_json(LAST_RIG_PATH)
+                if any(a.enabled for a in loaded):
+                    initial_rig = loaded
+            except Exception:
+                pass
+
+        self.engine = UwbStateEngine(initial_anchors=initial_rig)
         self.serial_worker: Optional[SerialTelemetryWorker] = None
         self.demo_worker: Optional[DemoBurstWorker] = None
         self.csv_logger: Optional[FastCsvLogger] = None
@@ -235,6 +247,7 @@ class UwbFastGuiWindow(QMainWindow):
         self._editing_anchor_table = False
         self._build_ui()
         self._populate_anchor_config_table()
+        self.map_canvas.reset_camera()
         self._refresh_ports(select_port=initial_port)
 
         idx_baud = self.baud_combo.findText(str(initial_baud))
@@ -778,6 +791,10 @@ class UwbFastGuiWindow(QMainWindow):
         self.btn_capture_spot.clicked.connect(self._start_spot_calibration)
         s_btns.addWidget(self.btn_capture_spot)
 
+        btn_room_center = QPushButton("Preset: Room (3.6, 1.8, 0.48)")
+        btn_room_center.clicked.connect(lambda: self._set_spot_xyz(3.60, 1.80, 0.48))
+        s_btns.addWidget(btn_room_center)
+
         btn_rig_center = QPushButton("Preset: Rig40 (0.2, 0.2, 1.0)")
         btn_rig_center.clicked.connect(lambda: self._set_spot_xyz(0.20, 0.20, 1.00))
         s_btns.addWidget(btn_rig_center)
@@ -986,6 +1003,10 @@ class UwbFastGuiWindow(QMainWindow):
 
         l_top = QHBoxLayout()
         l_top.setSpacing(8)
+        btn_preset_room = QPushButton("Preset: Room (6.6×3.6×1.58m)")
+        btn_preset_room.clicked.connect(lambda: self._apply_anchor_preset(DEFAULT_PRESET_ROOM_66_36))
+        l_top.addWidget(btn_preset_room)
+
         btn_preset_box = QPushButton("Preset: 3D Box (5×4×3m)")
         btn_preset_box.clicked.connect(lambda: self._apply_anchor_preset(DEFAULT_PRESET_BOX8))
         l_top.addWidget(btn_preset_box)
@@ -1270,14 +1291,16 @@ class UwbFastGuiWindow(QMainWindow):
     def _update_live_anchor_table(self) -> None:
         eng = self.engine
         valid_cnt = 0
+        now_s = time.monotonic()
 
         for row in range(8):
             aid = row + 1
             st = eng.live[aid]
-            if st.radio_ok and st.raw_mm > 0:
+            fresh = st.is_fresh(now_s) and st.raw_mm > 0
+            if fresh:
                 valid_cnt += 1
 
-            if not st.radio_ok or st.raw_mm <= 0:
+            if not fresh:
                 status_txt = "OFF"
             elif st.valid or st.fw_calibrated:
                 status_txt = "FW_CAL"
@@ -1515,9 +1538,18 @@ class UwbFastGuiWindow(QMainWindow):
             target_samples=int(self.spin_cal_samples.value()),
         )
 
+    def _persist_rig_config(self) -> None:
+        if self.demo_worker is not None:
+            return
+        try:
+            save_anchor_layout_json(LAST_RIG_PATH, list(self.engine.anchors.values()))
+        except Exception:
+            pass
+
     def apply_calibrated_biases_to_host(self) -> Dict[int, float]:
         applied = self.engine.apply_calibration_to_host()
         self._populate_anchor_config_table()
+        self._persist_rig_config()
         return applied
 
     def _write_calibrated_biases_to_tag(self) -> None:
@@ -1703,8 +1735,10 @@ class UwbFastGuiWindow(QMainWindow):
             self._populate_anchor_config_table()
             return
 
+        self.engine.set_anchors(list(self.engine.anchors.values()))
         if self.demo_worker is not None:
             self.demo_worker.set_anchors(list(self.engine.anchors.values()))
+        self._persist_rig_config()
         self.map_canvas.reset_camera()
 
     def _apply_anchor_preset(self, configs: Sequence[AnchorConfig]) -> None:
@@ -1712,6 +1746,7 @@ class UwbFastGuiWindow(QMainWindow):
         self._populate_anchor_config_table()
         if self.demo_worker is not None:
             self.demo_worker.set_anchors(list(self.engine.anchors.values()))
+        self._persist_rig_config()
         self.map_canvas.reset_camera()
 
     def _import_rig_file_dialog(self) -> None:

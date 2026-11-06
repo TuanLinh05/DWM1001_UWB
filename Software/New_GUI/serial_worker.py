@@ -243,6 +243,7 @@ class SerialTelemetryWorker(QThread):
                             self.link_status.emit("online", f"TAG Online · {self.port}")
                         if isinstance(msg, tp.DeviceInfoMessage) and not device_info_seen:
                             device_info_seen = True
+                            self._write_cmd_now(ser, tp.CMD_GET_DS_CAL)
                             wanted = tp.TELEM_FEATURE_RANGE_SNAPSHOT | tp.TELEM_FEATURE_DIAG
                             if msg.uart_baud >= tp.TELEM_RANGE_MEAS_MIN_BAUD:
                                 wanted |= tp.TELEM_FEATURE_RANGE_MEAS

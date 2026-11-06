@@ -27,7 +27,8 @@ from host_range_filter import HostRangeFilter  # noqa: E402
 
 
 MAX_ANCHORS = 8
-FRESH_AGE_S = 0.35
+FRESH_AGE_S = 2.0
+STATIONARY_HOLD_AGE_S = 9.0
 RING_HISTORY_LEN = 9000  # Holds >= 30s of high-rate history per anchor even at 300 Hz
 TRAIL_MAX_LEN = 9000     # Holds >= 30s of solved XYZ history for the 30s Rolling Chart
 MAP_TRAIL_LEN = 220      # Recent comet-tail length drawn on the 2D/3D spatial canvas
@@ -152,6 +153,17 @@ class AccuracyReport:
     sep95_m: float
     mean_pdop: float
 
+
+DEFAULT_PRESET_ROOM_66_36 = (
+    AnchorConfig(1, 0.00, 0.00, 0.48, True),
+    AnchorConfig(2, 6.60, 0.00, 0.48, True),
+    AnchorConfig(3, 6.60, 3.60, 0.48, True),
+    AnchorConfig(4, 0.00, 3.60, 0.48, True),
+    AnchorConfig(5, 0.00, 0.00, 1.58, True),
+    AnchorConfig(6, 6.60, 0.00, 1.58, True),
+    AnchorConfig(7, 6.60, 3.60, 1.58, True),
+    AnchorConfig(8, 0.00, 3.60, 1.58, True),
+)
 
 DEFAULT_PRESET_BOX8 = (
     AnchorConfig(1, 0.0, 0.0, 0.0, True),
@@ -280,27 +292,16 @@ def _solve_linear(matrix: list[list[float]], rhs: list[float]) -> list[float] | 
     return [sum(inv[i][j] * rhs[j] for j in range(n)) for i in range(n)]
 
 
-def _fit_irls(
+def _fit_irls_single(
     anchor_map: dict[int, AnchorConfig],
     ranges_m: dict[int, float],
     weights_prior: dict[int, float],
     used_ids: Sequence[int],
     dimension: int,
     fixed_z: float,
-    initial_xyz: tuple[float, float, float] | None = None,
+    est_init: list[float],
 ) -> tuple[list[float], dict[int, float]] | None:
-    if initial_xyz is not None:
-        est = [initial_xyz[0], initial_xyz[1]] + ([initial_xyz[2]] if dimension == 3 else [])
-    else:
-        est = [
-            statistics.fmean(getattr(anchor_map[aid], axis) for aid in used_ids)
-            for axis in ("x", "y", "z")[:dimension]
-        ]
-        if dimension == 3:
-            zs = [anchor_map[aid].z for aid in used_ids]
-            if max(zs) - min(zs) > 0.05:
-                est[2] = statistics.fmean(zs) + 0.05
-
+    est = list(est_init)
     for _ in range(25):
         residuals: dict[int, float] = {}
         jac: dict[int, list[float]] = {}
@@ -313,15 +314,15 @@ def _fit_irls(
             jac[aid] = [dx / dist, dy / dist] + ([dz / dist] if dimension == 3 else [])
 
         abs_res = sorted(abs(v) for v in residuals.values())
-        scale = max(_percentile(abs_res, 0.50), 0.035)
-        huber = max(2.2 * scale, 0.10)
+        scale = max(_percentile(abs_res, 0.50), 0.020)
+        huber = max(1.8 * scale, 0.045)
 
         normal = [[0.0] * dimension for _ in range(dimension)]
         rhs = [0.0] * dimension
         for aid in used_ids:
             r = residuals[aid]
             row = jac[aid]
-            w_huber = min(1.0, huber / max(abs(r), 1e-9))
+            w_huber = 1.0 if abs(r) <= huber else (huber / abs(r)) ** 2
             w = w_huber * weights_prior.get(aid, 1.0)
             for i in range(dimension):
                 rhs[i] -= w * row[i] * r
@@ -342,6 +343,58 @@ def _fit_irls(
         dist = math.dist((est[0], est[1], z), (a.x, a.y, a.z))
         final_residuals[aid] = dist - ranges_m[aid]
     return est, final_residuals
+
+
+def _fit_irls(
+    anchor_map: dict[int, AnchorConfig],
+    ranges_m: dict[int, float],
+    weights_prior: dict[int, float],
+    used_ids: Sequence[int],
+    dimension: int,
+    fixed_z: float,
+    initial_xyz: tuple[float, float, float] | None = None,
+) -> tuple[list[float], dict[int, float]] | None:
+    mx = statistics.fmean(anchor_map[aid].x for aid in used_ids)
+    my = statistics.fmean(anchor_map[aid].y for aid in used_ids)
+    if dimension != 3:
+        seed = [initial_xyz[0], initial_xyz[1]] if initial_xyz is not None else [mx, my]
+        return _fit_irls_single(anchor_map, ranges_m, weights_prior, used_ids, dimension, fixed_z, seed)
+
+    zs = [anchor_map[aid].z for aid in used_ids]
+    z_min, z_max = min(zs), max(zs)
+    z_span = z_max - z_min
+    if initial_xyz is not None and (z_span <= 0.05 or initial_xyz[2] <= z_max):
+        res = _fit_irls_single(
+            anchor_map,
+            ranges_m,
+            weights_prior,
+            used_ids,
+            dimension,
+            fixed_z,
+            [initial_xyz[0], initial_xyz[1], initial_xyz[2]],
+        )
+        if res is not None and (z_span <= 0.05 or res[0][2] <= z_max + 0.05):
+            return res
+
+    z_mid = 0.5 * (z_min + z_max)
+    if z_span > 0.05:
+        z_seeds = [z_min, z_mid - 0.20 * z_span, z_mid + 0.20 * z_span]
+    else:
+        z_seeds = [z_mid]
+
+    best: tuple[list[float], dict[int, float]] | None = None
+    best_cost = math.inf
+    for z0 in z_seeds:
+        res = _fit_irls_single(anchor_map, ranges_m, weights_prior, used_ids, dimension, fixed_z, [mx, my, z0])
+        if res is not None:
+            est, residuals = res
+            cost = sum(weights_prior.get(aid, 1.0) * (r * r) for aid, r in residuals.items())
+            if z_span > 0.05 and est[2] > z_max + 0.10:
+                cost *= 1.35
+            if cost < best_cost:
+                best_cost = cost
+                best = res
+    return best
 
 
 def solve_position_robust(
@@ -371,11 +424,8 @@ def solve_position_robust(
         w = (0.03 / sigma_m) ** 2
         if nlos_db_map:
             nlos = nlos_db_map.get(aid)
-            if nlos is not None and math.isfinite(nlos):
-                if nlos >= NLOS_ALERT_DB:
-                    w *= 0.15
-                elif nlos >= NLOS_WARN_DB:
-                    w *= 0.45
+            if nlos is not None and math.isfinite(nlos) and nlos > 7.5:
+                w /= 1.0 + 0.25 * min(nlos - 7.5, 10.0) ** 2
         weights_prior[aid] = min(max(w, 0.05), 4.0)
 
     used = sorted(ranges_m)
@@ -581,10 +631,23 @@ class UwbStateEngine:
         self.anchor_history: dict[int, deque[tuple[float, float, float, float, float | None]]] = {
             aid: deque(maxlen=RING_HISTORY_LEN) for aid in range(1, MAX_ANCHORS + 1)
         }
-        # 2-second sliding window per anchor for rate_hz and difference noise
+        # 2-second sliding window per anchor for rate_hz and 48-sample window for stable difference noise
         self._rate_window: dict[int, deque[tuple[float, int]]] = {
             aid: deque() for aid in range(1, MAX_ANCHORS + 1)
         }
+        self._noise_window: dict[int, deque[int]] = {
+            aid: deque(maxlen=48) for aid in range(1, MAX_ANCHORS + 1)
+        }
+        self._recent_corr_mm: dict[int, deque[float]] = {
+            aid: deque(maxlen=9) for aid in range(1, MAX_ANCHORS + 1)
+        }
+        self._smooth_range_mm: dict[int, float] = {}
+        self._lock_range_mm: dict[int, float] = {}
+        self._last_range_t: dict[int, float] = {}
+        self._first_rx_s: float | None = None
+        self._smooth_xyz: tuple[float, float, float] | None = None
+        self._best_anchor_count: int = 0
+        self._last_solve_s: float | None = None
         self._cycle_times: deque[tuple[float, int]] = deque(maxlen=250)
 
         self.latest_solution: PositionResult | None = None
@@ -630,6 +693,15 @@ class UwbStateEngine:
         for a in configs:
             if 1 <= a.anchor_id <= MAX_ANCHORS:
                 self.anchors[a.anchor_id] = AnchorConfig(**asdict(a))
+        self.host_filters.clear()
+        for q in self._recent_corr_mm.values():
+            q.clear()
+        self._smooth_range_mm.clear()
+        self._lock_range_mm.clear()
+        self._last_range_t.clear()
+        self._smooth_xyz = None
+        self._best_anchor_count = 0
+        self._last_solve_s = None
 
     def current_dop(self) -> DopMetrics:
         pos = (
@@ -842,15 +914,86 @@ class UwbStateEngine:
         if len(win) >= 2:
             span = max(received_s - win[0][0], 0.1)
             state.rate_hz = (len(win) - 1) / span if span >= 0.15 else float(len(win))
-        if len(win) >= 5 and (state.rx_count % 4 == 0 or state.noise_sigma_mm is None):
-            tail = list(win)[-32:]
-            diffs = [b - a for (_, a), (_, b) in zip(tail, tail[1:])]
-            if len(diffs) >= 4:
-                state.noise_sigma_mm = statistics.pstdev(diffs) / math.sqrt(2.0)
+
+        nwin = self._noise_window[aid]
+        if not nwin or abs(raw_mm - nwin[-1]) < 500:
+            nwin.append(raw_mm)
+        if len(nwin) >= 6 and (state.rx_count % 4 == 0 or state.noise_sigma_mm is None):
+            diffs = [b - a for a, b in zip(nwin, list(nwin)[1:])]
+            if len(diffs) >= 5:
+                inst_sig = statistics.pstdev(diffs) / math.sqrt(2.0)
+                if state.noise_sigma_mm is None:
+                    state.noise_sigma_mm = inst_sig
+                else:
+                    state.noise_sigma_mm = 0.85 * state.noise_sigma_mm + 0.15 * inst_sig
+
+    def _update_filtered_range(
+        self,
+        aid: int,
+        corrected_mm: float,
+        fpp_cdbm: int,
+        tag_time_ms: int,
+        received_s: float,
+    ) -> float:
+        if self._first_rx_s is None:
+            self._first_rx_s = received_s
+        win = self._recent_corr_mm[aid]
+        if len(win) >= 5:
+            med_prev = statistics.median(win)
+            win.append(corrected_mm)
+            if abs(corrected_mm - med_prev) > 160.0:
+                gated_mm = statistics.median(win)
+            else:
+                gated_mm = corrected_mm
+        else:
+            win.append(corrected_mm)
+            gated_mm = corrected_mm
+
+        cv_mm = float(
+            self.host_filters.setdefault(aid, HostRangeFilter()).update(
+                round(gated_mm),
+                tp.fpp_to_legacy_scale_cdbm(fpp_cdbm, self.info_flags),
+                tag_time_ms,
+            )
+        )
+
+        dt_a = min(max(received_s - self._last_range_t.get(aid, received_s - 0.02), 0.002), 0.5)
+        self._last_range_t[aid] = received_s
+        uptime = received_s - self._first_rx_s
+        sig = max(self.live[aid].noise_sigma_mm or self.anchors[aid].sigma_mm, 18.0)
+
+        if aid not in self._smooth_range_mm:
+            self._smooth_range_mm[aid] = gated_mm
+            self._lock_range_mm[aid] = gated_mm
+        else:
+            dev = abs(gated_mm - self._lock_range_mm[aid])
+            thresh = max(2.8 * sig, 55.0)
+            if uptime < 1.8:
+                tau_r = 0.22
+                self._lock_range_mm[aid] += (dt_a / (0.30 + dt_a)) * (gated_mm - self._lock_range_mm[aid])
+            elif dev < thresh:
+                tau_r = 1.45
+                self._lock_range_mm[aid] += (dt_a / (10.0 + dt_a)) * (gated_mm - self._lock_range_mm[aid])
+            else:
+                tau_r = 0.02
+                self._lock_range_mm[aid] = gated_mm
+            alpha_r = dt_a / (tau_r + dt_a)
+            target_mm = gated_mm if dev < thresh else cv_mm
+            self._smooth_range_mm[aid] += alpha_r * (target_mm - self._smooth_range_mm[aid])
+
+        return self._smooth_range_mm[aid]
 
     def _ingest_burst(self, msg: tp.RangeBurstMessage, received_s: float) -> None:
         if self.boot_id is not None and msg.boot_id != self.boot_id:
             self.host_filters.clear()
+            for q in self._recent_corr_mm.values():
+                q.clear()
+            self._smooth_range_mm.clear()
+            self._lock_range_mm.clear()
+            self._last_range_t.clear()
+            self._smooth_xyz = None
+            self._best_anchor_count = 0
+            self._last_solve_s = None
             self.last_cycle_seq = None
         self.boot_id = msg.boot_id
         if self.last_cycle_seq is not None:
@@ -873,18 +1016,24 @@ class UwbStateEngine:
 
         tag_time_s = msg.t_us / 1e6
         tag_time_ms = int(msg.t_us // 1000) & 0xFFFFFFFF
+        updated_any = False
 
         for entry in msg.anchors:
             aid = entry.anchor_id
             if not (1 <= aid <= MAX_ANCHORS):
                 continue
             state = self.live[aid]
+            if not entry.radio_ok or entry.range_mm is None:
+                if not state.is_fresh(received_s):
+                    state.radio_ok = False
+                    state.status = entry.status
+                continue
+
+            updated_any = True
             state.mode_name = entry.mode_name
             state.status = entry.status
-            state.radio_ok = entry.radio_ok
+            state.radio_ok = True
             state.late = bool(entry.flags & tp.BURST_FLAG_ANCHOR_LATE)
-            if not entry.radio_ok or entry.range_mm is None:
-                continue
 
             cfg = self.anchors[aid]
             cal_ok = bool(entry.flags & tp.BURST_FLAG_CAL_OK)
@@ -902,20 +1051,17 @@ class UwbStateEngine:
                 raw_mm = int(entry.range_mm)
             state.raw_mm = raw_mm
 
-            # Corrected range: use firmware value if firmware calibrated & no host override,
-            # else subtract host bias_mm from raw_mm
-            corrected_mm = float(raw_mm) - cfg.bias_mm
+            # Corrected range: use firmware value directly if firmware calibrated and host has no distinct override
+            if cal_ok and (cfg.bias_mm == 0.0 or abs(cfg.bias_mm - cfg.fw_bias_mm) < 1.0):
+                corrected_mm = float(entry.range_mm)
+            else:
+                corrected_mm = float(raw_mm) - cfg.bias_mm
             state.corrected_mm = corrected_mm
             state.fw_filtered_mm = entry.range_mm if valid_flag else None
 
+            self._update_anchor_rate_and_noise(aid, received_s, raw_mm)
             fpp_cdbm = entry.fp_cdbm if entry.fp_cdbm != tp.INT16_MIN else -8200
-            host_mm = float(
-                self.host_filters.setdefault(aid, HostRangeFilter()).update(
-                    round(corrected_mm),
-                    tp.fpp_to_legacy_scale_cdbm(fpp_cdbm, self.info_flags),
-                    tag_time_ms,
-                )
-            )
+            host_mm = self._update_filtered_range(aid, corrected_mm, fpp_cdbm, tag_time_ms, received_s)
             state.host_filtered_mm = host_mm
 
             fp_dbm = None if entry.fp_cdbm == tp.INT16_MIN else entry.fp_cdbm / 100.0
@@ -927,14 +1073,18 @@ class UwbStateEngine:
             state.nlos_db = nlos_db
             state.ci_ppm = ci_ppm
 
-            self._update_anchor_rate_and_noise(aid, received_s, raw_mm)
             self.anchor_history[aid].append((tag_time_s, float(raw_mm), corrected_mm, host_mm, nlos_db))
 
             if self.calibration_active and aid in self._cal_samples:
                 self._cal_samples[aid].append((tag_time_s, raw_mm, nlos_db, fp_dbm))
 
         self._check_calibration_progress(received_s)
-        self._solve_current_position(received_s, tag_time_s)
+        if updated_any:
+            self._solve_current_position(received_s, tag_time_s)
+        elif self.latest_solution is not None:
+            self.position_trail.append(
+                (self.latest_solution.x, self.latest_solution.y, self.latest_solution.z, tag_time_s)
+            )
 
     def _ingest_range_meas(self, msg: tp.RangeMeasMessage, received_s: float) -> None:
         aid = msg.anchor_id
@@ -1049,11 +1199,28 @@ class UwbStateEngine:
             self.finish_calibration(now_s)
 
     def _solve_current_position(self, now_s: float, tag_time_s: float) -> None:
+        fast_moving = 0
+        if self.use_host_filter_for_pos:
+            for aid, state in self.live.items():
+                if not self.anchors[aid].enabled or state.last_update_s < 0.0:
+                    continue
+                if (now_s - state.last_update_s) <= 0.6 and aid in self._smooth_range_mm and aid in self._lock_range_mm:
+                    sig = max(state.noise_sigma_mm or self.anchors[aid].sigma_mm, 18.0)
+                    if abs(self._smooth_range_mm[aid] - self._lock_range_mm[aid]) > max(2.5 * sig, 50.0):
+                        fast_moving += 1
+
+        max_age = (
+            (1.2 if fast_moving >= 2 else STATIONARY_HOLD_AGE_S)
+            if self.use_host_filter_for_pos
+            else FRESH_AGE_S
+        )
+
         ranges_mm: dict[int, float] = {}
         nlos_map: dict[int, float | None] = {}
         for aid, state in self.live.items():
             cfg = self.anchors[aid]
-            if not cfg.enabled or not state.is_fresh(now_s):
+            age = now_s - state.last_update_s
+            if not cfg.enabled or state.last_update_s < 0.0 or age > max_age:
                 continue
             if not self.allow_uncalibrated_positioning and not (state.valid or state.fw_calibrated):
                 continue
@@ -1062,13 +1229,41 @@ class UwbStateEngine:
                 ranges_mm[aid] = val
                 nlos_map[aid] = state.nlos_db
 
-        prev_xyz = (
+        # When >=6 anchors are active, exclude any anchor with severe live white noise (>45 mm)
+        # provided the remaining anchors still span 3D height cleanly.
+        if self.use_host_filter_for_pos and len(ranges_mm) >= 6:
+            noisy_candidates = sorted(
+                (
+                    aid
+                    for aid in ranges_mm
+                    if (self.live[aid].noise_sigma_mm or 0.0) > 45.0
+                ),
+                key=lambda a: self.live[a].noise_sigma_mm or 0.0,
+                reverse=True,
+            )
+            for noisy_aid in noisy_candidates:
+                if len(ranges_mm) < 6:
+                    break
+                rem_zs = [self.anchors[a].z for a in ranges_mm if a != noisy_aid]
+                if max(rem_zs) - min(rem_zs) > 0.08:
+                    ranges_mm.pop(noisy_aid, None)
+
+        solver_anchors: list[AnchorConfig] = []
+        for a in self.anchors.values():
+            ac = AnchorConfig(**asdict(a))
+            if self.use_host_filter_for_pos and a.anchor_id in ranges_mm:
+                live_sig = self.live[a.anchor_id].noise_sigma_mm
+                base_sig = live_sig if live_sig is not None else a.sigma_mm
+                ac.sigma_mm = max(20.0, min(45.0, base_sig))
+            solver_anchors.append(ac)
+
+        prev_xyz = self._smooth_xyz or (
             (self.latest_solution.x, self.latest_solution.y, self.latest_solution.z)
             if self.latest_solution is not None
             else None
         )
         sol = solve_position_robust(
-            anchors=list(self.anchors.values()),
+            anchors=solver_anchors,
             ranges_mm=ranges_mm,
             dimension=self.solver_dimension,
             fixed_z=self.fixed_z_m,
@@ -1076,6 +1271,62 @@ class UwbStateEngine:
             initial_xyz=prev_xyz,
             tag_time_s=tag_time_s,
         )
+
+        if sol is not None and self.use_host_filter_for_pos:
+            raw_xyz = (sol.x, sol.y, sol.z)
+            dt_s = min(
+                max(now_s - (self._last_solve_s if self._last_solve_s is not None else now_s - 0.005), 0.001),
+                0.25,
+            )
+            self._last_solve_s = now_s
+            uptime = now_s - (self._first_rx_s if self._first_rx_s is not None else now_s)
+            n_used = len(sol.used_anchor_ids)
+
+            if self._smooth_xyz is None or (n_used > self._best_anchor_count and uptime < 1.0):
+                self._smooth_xyz = raw_xyz
+                self._best_anchor_count = max(self._best_anchor_count, n_used)
+            else:
+                self._best_anchor_count = max(self._best_anchor_count, n_used)
+                if uptime < 2.0:
+                    ax = dt_s / (0.25 + dt_s)
+                    az = dt_s / (0.35 + dt_s)
+                elif fast_moving == 0:
+                    if n_used < self._best_anchor_count:
+                        ax = 0.0
+                        az = 0.0
+                    else:
+                        ax = dt_s / (4.0 + dt_s)
+                        az = dt_s / (6.0 + dt_s)
+                elif fast_moving == 1:
+                    ax = dt_s / (1.2 + dt_s)
+                    az = dt_s / (2.0 + dt_s)
+                else:
+                    ax = dt_s / (0.025 + dt_s)
+                    az = dt_s / (0.04 + dt_s)
+                sx = self._smooth_xyz[0] + ax * (raw_xyz[0] - self._smooth_xyz[0])
+                sy = self._smooth_xyz[1] + ax * (raw_xyz[1] - self._smooth_xyz[1])
+                sz = (
+                    (self._smooth_xyz[2] + az * (raw_xyz[2] - self._smooth_xyz[2]))
+                    if self.solver_dimension == 3
+                    else self.fixed_z_m
+                )
+                self._smooth_xyz = (sx, sy, sz)
+
+            if self._smooth_xyz != raw_xyz:
+                sol = PositionResult(
+                    x=self._smooth_xyz[0],
+                    y=self._smooth_xyz[1],
+                    z=self._smooth_xyz[2],
+                    rms_m=sol.rms_m,
+                    max_residual_m=sol.max_residual_m,
+                    residuals_m=sol.residuals_m,
+                    used_anchor_ids=sol.used_anchor_ids,
+                    excluded_anchor_ids=sol.excluded_anchor_ids,
+                    dimension=sol.dimension,
+                    dop=sol.dop,
+                    tag_time_s=sol.tag_time_s,
+                )
+
         self.latest_solution = sol
         for aid, state in self.live.items():
             if sol is not None and aid in sol.residuals_m:
@@ -1099,8 +1350,12 @@ class UwbStateEngine:
             self.ranging_mode_name = "DS-TWR" if msg.ranging_mode else "SS-TWR"
         for aid, offset_um in msg.active_offsets_um:
             if 1 <= aid <= MAX_ANCHORS:
-                self.anchors[aid].fw_bias_mm = offset_um / 1000.0
-                self.anchors[aid].fw_calibrated = bool(msg.calibrated_mask & (1 << (aid - 1)))
+                fw_b = offset_um / 1000.0
+                cal_ok = bool(msg.calibrated_mask & (1 << (aid - 1)))
+                self.anchors[aid].fw_bias_mm = fw_b
+                self.anchors[aid].fw_calibrated = cal_ok
+                if cal_ok and self.anchors[aid].bias_mm == 0.0 and fw_b != 0.0:
+                    self.anchors[aid].bias_mm = fw_b
 
     def _ingest_device_info(self, msg: tp.DeviceInfoMessage) -> None:
         self.device_info = msg

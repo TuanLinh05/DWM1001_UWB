@@ -279,12 +279,16 @@ class BurstIngestionAndCalibrationTests(unittest.TestCase):
         self.assertLess(report.sep95_m, 0.01)
 
     def test_anchors_rig40_txt_roundtrip(self) -> None:
+        from core_state import DEFAULT_PRESET_RIG40
         rig_path = NEW_GUI_DIR.parents[1] / "Reference" / "IMGUI_UWB_CALIB" / "anchors_rig40.txt"
-        loaded = load_anchors_rig_txt(rig_path)
-        self.assertEqual(len(loaded), 8)
-        self.assertAlmostEqual(loaded[0].z, 0.48)
-        self.assertAlmostEqual(loaded[4].z, 1.58)
-        self.assertAlmostEqual(loaded[2].bias_mm, -178.0)
+        if rig_path.is_file():
+            loaded = load_anchors_rig_txt(rig_path)
+            self.assertEqual(len(loaded), 8)
+            self.assertAlmostEqual(loaded[0].z, 0.48)
+            self.assertAlmostEqual(loaded[4].z, 1.58)
+            self.assertAlmostEqual(loaded[2].bias_mm, -178.0)
+        else:
+            loaded = list(DEFAULT_PRESET_RIG40)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_path = Path(tmpdir) / "anchors_out.txt"
@@ -296,6 +300,41 @@ class BurstIngestionAndCalibrationTests(unittest.TestCase):
                 self.assertAlmostEqual(a.y, b.y, places=3)
                 self.assertAlmostEqual(a.z, b.z, places=3)
                 self.assertAlmostEqual(a.bias_mm, b.bias_mm, places=1)
+
+    def test_stationary_anti_jump_and_glitch_rejection(self) -> None:
+        from core_state import DEFAULT_PRESET_ROOM_66_36
+        engine = UwbStateEngine(initial_anchors=DEFAULT_PRESET_ROOM_66_36)
+        true_xyz = (4.10, 1.05, 0.43)
+        zs: list[float] = []
+        for cycle in range(1, 120):
+            t_s = cycle * 0.025
+            entries = []
+            for a in engine.anchors.values():
+                if a.anchor_id == 3:
+                    # Simulate A3 offline
+                    entries.append(tp.BurstAnchor(a.anchor_id, tp.STATUS_TIMEOUT, 0, None, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN))
+                    continue
+                if a.anchor_id == 6 and 60 <= cycle <= 80:
+                    # Simulate 0.5s RF fade on A6
+                    entries.append(tp.BurstAnchor(a.anchor_id, tp.STATUS_TIMEOUT, 0, None, tp.INT16_MIN, tp.INT16_MIN, tp.INT16_MIN))
+                    continue
+                d_mm = round(math.dist(true_xyz, (a.x, a.y, a.z)) * 1000.0)
+                if a.anchor_id == 1 and cycle == 70:
+                    d_mm = 33685  # Single-packet hardware glitch
+                entries.append(
+                    tp.BurstAnchor(
+                        a.anchor_id, 0, tp.BURST_FLAG_RADIO_OK | tp.BURST_FLAG_CAL_OK | tp.BURST_FLAG_VALID,
+                        d_mm, -8000, -7600, 0
+                    )
+                )
+            msg = tp.RangeBurstMessage(cycle, int(t_s * 1000), 1, cycle, cycle * 8, int(t_s * 1e6), 25000, tuple(entries))
+            engine.ingest_message(msg, received_s=t_s)
+            if engine.latest_solution is not None and cycle >= 20:
+                zs.append(engine.latest_solution.z)
+
+        self.assertGreater(len(zs), 50)
+        self.assertLess(max(zs) - min(zs), 0.025)
+        self.assertAlmostEqual(zs[-1], true_xyz[2], delta=0.02)
 
 
 if __name__ == "__main__":
