@@ -45,6 +45,7 @@ class PositionMapCanvas(QWidget):
         self.show_reference: bool = False
         self.reference_xyz: tuple[float, float, float] = (2.5, 2.0, 1.2)
         self.is_dark: bool = False
+        self.grid_step_m: float = 0.6
 
         # Independent 2D & 3D camera states
         self.zoom_2d: float = 1.0
@@ -213,7 +214,8 @@ class PositionMapCanvas(QWidget):
         painter.end()
 
     def _paint_2d(self, painter: QPainter, box: QRectF) -> None:
-        inner = self._draw_panel_box(painter, box, "2D TOP-DOWN (X → , Y ↑)")
+        step = max(self.grid_step_m, 0.05)
+        inner = self._draw_panel_box(painter, box, f"2D TOP-DOWN (X → , Y ↑ · Grid {step:g}m)")
         if inner.width() < 50 or inner.height() < 50:
             return
 
@@ -243,27 +245,30 @@ class PositionMapCanvas(QWidget):
         text_muted = QColor("#94a3b8" if self.is_dark else "#64748b")
         painter.setFont(QFont("Segoe UI", 8))
 
-        max_span = max(max_x - min_x, max_y - min_y)
-        step = 0.2 if max_span <= 1.5 else (0.5 if max_span <= 3.5 else (1.0 if max_span <= 8.0 else 2.0))
-
-        # Clip grid lines inside plot rect
+        # Clip grid lines inside plot rect (exact 0.6 m grid spacing without float drift)
         painter.save()
         painter.setClipRect(plot)
-        gx = math.ceil(min_x / step) * step
-        while gx <= max_x:
+        kx = math.ceil((min_x - 1e-9) / step)
+        while True:
+            gx = round(kx * step, 3)
+            if gx > max_x + 1e-9:
+                break
             p1 = proj(gx, min_y)
             p2 = proj(gx, max_y)
             painter.setPen(QPen(grid_color, 1))
             painter.drawLine(p1, p2)
-            gx += step
+            kx += 1
 
-        gy = math.ceil(min_y / step) * step
-        while gy <= max_y:
+        ky = math.ceil((min_y - 1e-9) / step)
+        while True:
+            gy = round(ky * step, 3)
+            if gy > max_y + 1e-9:
+                break
             p1 = proj(min_x, gy)
             p2 = proj(max_x, gy)
             painter.setPen(QPen(grid_color, 1))
             painter.drawLine(p1, p2)
-            gy += step
+            ky += 1
 
         sol = self.engine.latest_solution
         tag_z = sol.z if sol is not None else self.engine.fixed_z_m
@@ -358,32 +363,43 @@ class PositionMapCanvas(QWidget):
         # Axis tick labels outside `plot` but inside `inner`
         painter.setFont(QFont("Segoe UI", 7))
         painter.setPen(text_muted)
-        gx = math.ceil(min_x / step) * step
-        while gx <= max_x:
+        last_lbl_px = -1e9
+        kx = math.ceil((min_x - 1e-9) / step)
+        while True:
+            gx = round(kx * step, 3)
+            if gx > max_x + 1e-9:
+                break
             px = proj(gx, min_y).x()
-            if plot.left() <= px <= plot.right():
+            if plot.left() <= px <= plot.right() and (px - last_lbl_px) >= 22.0:
                 painter.drawText(
-                    QRectF(px - 20, plot.bottom() + 3, 40, 15),
+                    QRectF(px - 18, plot.bottom() + 3, 36, 15),
                     Qt.AlignmentFlag.AlignCenter,
-                    f"{gx:g}m",
+                    f"{gx:g}",
                 )
-            gx += step
+                last_lbl_px = px
+            kx += 1
 
-        gy = math.ceil(min_y / step) * step
-        while gy <= max_y:
+        last_lbl_py = 1e9
+        ky = math.ceil((min_y - 1e-9) / step)
+        while True:
+            gy = round(ky * step, 3)
+            if gy > max_y + 1e-9:
+                break
             py = proj(min_x, gy).y()
-            if plot.top() <= py <= plot.bottom():
+            if plot.top() <= py <= plot.bottom() and (last_lbl_py - py) >= 14.0:
                 painter.drawText(
                     QRectF(inner.left() + 2, py - 7, 26, 14),
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     f"{gy:g}",
                 )
-            gy += step
+                last_lbl_py = py
+            ky += 1
 
         painter.restore()  # End inner clip
 
     def _paint_3d(self, painter: QPainter, box: QRectF) -> None:
-        title = f"3D ORBIT (Az {self.azimuth_deg:.0f}° · El {self.elevation_deg:.0f}° · Drag/Wheel)"
+        step = max(self.grid_step_m, 0.05)
+        title = f"3D ORBIT (Az {self.azimuth_deg:.0f}° · El {self.elevation_deg:.0f}° · Grid {step:g}m)"
         inner = self._draw_panel_box(painter, box, title)
         if inner.width() < 50 or inner.height() < 50:
             return
@@ -424,6 +440,25 @@ class PositionMapCanvas(QWidget):
         def proj3(pt: tuple[float, float, float]) -> QPointF:
             hx, vy, _d = raw_proj(pt)
             return QPointF(mid_x + hx * scale, mid_y - vy * scale)
+
+        # Draw 0.6 m floor grid on the z = min_z plane
+        floor_pen = QPen(QColor("#172033" if self.is_dark else "#e2e8f0"), 1.0)
+        painter.setPen(floor_pen)
+        kx = math.ceil((min_x - 1e-9) / step)
+        while True:
+            gx = round(kx * step, 3)
+            if gx > max_x + 1e-9:
+                break
+            painter.drawLine(proj3((gx, min_y, min_z)), proj3((gx, max_y, min_z)))
+            kx += 1
+
+        ky = math.ceil((min_y - 1e-9) / step)
+        while True:
+            gy = round(ky * step, 3)
+            if gy > max_y + 1e-9:
+                break
+            painter.drawLine(proj3((min_x, gy, min_z)), proj3((max_x, gy, min_z)))
+            ky += 1
 
         # Draw bounding box wireframe
         box_pen = QPen(QColor("#1e293b" if self.is_dark else "#cbd5e1"), 1.0)
