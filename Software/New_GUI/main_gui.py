@@ -9,6 +9,7 @@ firmware (`RANGE_BURST` 0x18 at 50-300 Hz, uncalibrated `CAL_MISSING` fallback,
 
 from __future__ import annotations
 
+from collections import deque
 import argparse
 import csv
 from datetime import datetime
@@ -2121,8 +2122,8 @@ class UwbFastGuiWindow(QMainWindow):
         self.loaded_session = session
         self.replay_engine.set_anchors(session.anchors)
         self.replay_engine.clear_trail_and_waypoints()
+        self.replay_engine.map_path = deque(session.map_path)
         for pt in session.map_path:
-            self.replay_engine.map_path.append(pt)
             self.replay_engine.position_trail.append((pt[0], pt[1], pt[2], pt[3]))
         self.replay_engine.waypoints = list(session.waypoints)
         self.replay_canvas.highlight_time_range = None

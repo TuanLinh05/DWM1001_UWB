@@ -29,9 +29,9 @@ from host_range_filter import HostRangeFilter  # noqa: E402
 MAX_ANCHORS = 8
 FRESH_AGE_S = 2.0
 STATIONARY_HOLD_AGE_S = 9.0
-RING_HISTORY_LEN = 9000  # Holds >= 30s of high-rate history per anchor even at 300 Hz
-TRAIL_MAX_LEN = 9000     # Holds >= 30s of solved XYZ history for the 30s Rolling Chart
-MAP_TRAIL_LEN = 18000    # Full-loop spatial path capacity on the 2D/3D canvas
+RING_HISTORY_LEN = 9000   # Holds >= 30s of high-rate history per anchor even at 300 Hz
+TRAIL_MAX_LEN = 9000      # Holds >= 30s of solved XYZ history for the 30s Rolling Chart
+MAP_TRAIL_LEN = 120000    # Full-loop spatial path capacity on the 2D/3D canvas (hours of walking)
 NLOS_WARN_DB = 6.0
 NLOS_ALERT_DB = 10.0
 
@@ -1513,9 +1513,9 @@ class UwbStateEngine:
             else:
                 lx, ly, lz, lt, lstab, _lrms = self.map_path[-1]
                 if (
-                    math.dist((sol.x, sol.y, sol.z), (lx, ly, lz)) >= 0.006
-                    or abs(tag_time_s - lt) >= 0.035
-                    or sol.stability_state != lstab
+                    math.dist((sol.x, sol.y, sol.z), (lx, ly, lz)) >= 0.010
+                    or abs(tag_time_s - lt) >= 0.50
+                    or (sol.stability_state != lstab and abs(tag_time_s - lt) >= 0.15)
                 ):
                     self.map_path.append((sol.x, sol.y, sol.z, tag_time_s, sol.stability_state, sol.rms_m * 1000.0))
             if self.accuracy_eval_active:
@@ -1769,7 +1769,7 @@ def load_log_session(
             # Fast skip for massive logs when stride > 24: only parse the 20 rows leading up to each sampled frame
             if stride > 24 and not re_solve:
                 rem = row_idx % stride
-                if rem != 0 and (stride - rem) > 20 and ("W" not in raw_line) and ("UNSTABLE" not in raw_line):
+                if rem != 0 and (stride - rem) > 20 and ("W" not in raw_line):
                     continue
             vals = next(_csv.reader([raw_line]))
             row = dict(zip(headers, vals))
@@ -1818,7 +1818,7 @@ def load_log_session(
 
             wp_lbl = (row.get("waypoint_label") or "").strip()
             stab_col = (row.get("stability_state") or "").strip()
-            is_important = bool(wp_lbl) or stab_col in ("WARN", "UNSTABLE")
+            is_important = bool(wp_lbl)
             if stride > 1 and (row_idx % stride != 0) and not is_important:
                 continue
 
@@ -2037,9 +2037,9 @@ def load_log_session(
             else:
                 lx, ly, lz, lt, lstab, _ = map_path[-1]
                 if (
-                    math.dist((px, py, pz), (lx, ly, lz)) >= 0.006
-                    or (rel_s - lt) >= 0.04
-                    or stab_str != lstab
+                    math.dist((px, py, pz), (lx, ly, lz)) >= 0.010
+                    or (rel_s - lt) >= 0.50
+                    or (stab_str != lstab and (rel_s - lt) >= 0.15)
                 ):
                     map_path.append((px, py, pz, rel_s, stab_str, rms_mm))
 

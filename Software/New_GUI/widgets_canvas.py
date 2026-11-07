@@ -623,6 +623,15 @@ class PositionMapCanvas(QWidget):
             painter.setPen(QPen(self._stability_color(cur_state), w))
             painter.drawPolyline(QPolygonF(cur_pts))
 
+        # Mark trajectory START point clearly in 2D
+        start_pt = proj(mpath[0][0], mpath[0][1])
+        painter.setPen(QPen(QColor("#ffffff"), 1.4))
+        painter.setBrush(QColor("#0284c7"))
+        painter.drawEllipse(start_pt, 4.5, 4.5)
+        painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        painter.setPen(QColor("#0284c7" if not self.is_dark else "#38bdf8"))
+        painter.drawText(QPointF(start_pt.x() + 6, start_pt.y() + 3), "START")
+
         if self.highlight_time_range is not None:
             t0, t1 = self.highlight_time_range
             hl_pts = [proj(x, y) for x, y, _z, t, _st, _rms in mpath if (t0 - 0.1) <= t <= (t1 + 0.1)]
@@ -658,6 +667,12 @@ class PositionMapCanvas(QWidget):
             w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
             painter.setPen(QPen(self._stability_color(cur_state), w))
             painter.drawPolyline(QPolygonF(cur_pts))
+
+        # Mark trajectory START point in 3D
+        start_pt3 = proj3((mpath[0][0], mpath[0][1], mpath[0][2]))
+        painter.setPen(QPen(QColor("#ffffff"), 1.4))
+        painter.setBrush(QColor("#0284c7"))
+        painter.drawEllipse(start_pt3, 4.5, 4.5)
 
         if self.highlight_time_range is not None:
             t0, t1 = self.highlight_time_range
