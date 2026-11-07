@@ -1,0 +1,79 @@
+{
+  "schema": 2,
+  "coordinate_system": "ENU",
+  "unit": "m",
+  "anchors": [
+    {
+      "anchor_id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.48,
+      "enabled": true,
+      "bias_mm": 575.72,
+      "sigma_mm": 28.93
+    },
+    {
+      "anchor_id": 2,
+      "x": 5.4,
+      "y": 0.0,
+      "z": 0.48,
+      "enabled": true,
+      "bias_mm": -536.91,
+      "sigma_mm": 33.15
+    },
+    {
+      "anchor_id": 3,
+      "x": 5.4,
+      "y": 3.6,
+      "z": 0.48,
+      "enabled": true,
+      "bias_mm": -387.43,
+      "sigma_mm": 58.6
+    },
+    {
+      "anchor_id": 4,
+      "x": 0.0,
+      "y": 3.6,
+      "z": 0.48,
+      "enabled": true,
+      "bias_mm": 786.16,
+      "sigma_mm": 18.45
+    },
+    {
+      "anchor_id": 5,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 2.208,
+      "enabled": true,
+      "bias_mm": 531.92,
+      "sigma_mm": 50.39
+    },
+    {
+      "anchor_id": 6,
+      "x": 5.4,
+      "y": 0.0,
+      "z": 2.208,
+      "enabled": true,
+      "bias_mm": -346.35,
+      "sigma_mm": 16.13
+    },
+    {
+      "anchor_id": 7,
+      "x": 5.4,
+      "y": 3.6,
+      "z": 2.208,
+      "enabled": true,
+      "bias_mm": -325.34,
+      "sigma_mm": 14.85
+    },
+    {
+      "anchor_id": 8,
+      "x": 0.0,
+      "y": 3.6,
+      "z": 2.208,
+      "enabled": true,
+      "bias_mm": 580.23,
+      "sigma_mm": 16.3
+    }
+  ]
+}

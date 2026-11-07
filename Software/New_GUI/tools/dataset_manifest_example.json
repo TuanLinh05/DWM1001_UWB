@@ -1,0 +1,21 @@
+{
+  "comment": "G0.3 standard static dataset. Coordinates in the rig ENU frame (m), TAG antenna centre. Measure with a laser/tape before recording. Replace the example values.",
+  "rig": "5.4 x 3.6 m, anchors at z = 0.48 and 2.208 (last_rig_config.json, 07/11/2026)",
+  "trim_s": 2.0,
+  "points": {
+    "P1": [1.35, 0.90, 1.00],
+    "P2": [4.05, 2.70, 1.70],
+    "P3": [4.05, 0.90, 1.00],
+    "P4": [1.35, 2.70, 1.70],
+    "V1": [2.70, 1.80, 1.30],
+    "V2": [0.90, 1.80, 0.70]
+  },
+  "segments": [
+    {"point": "P1", "start": "P1_start", "end": "P1_end"},
+    {"point": "P2", "start": "P2_start", "end": "P2_end"},
+    {"point": "P3", "start": "P3_start", "end": "P3_end"},
+    {"point": "P4", "start": "P4_start", "end": "P4_end"},
+    {"point": "V1", "start": "V1_start", "end": "V1_end"},
+    {"point": "V2", "start": "V2_start", "end": "V2_end"}
+  ]
+}

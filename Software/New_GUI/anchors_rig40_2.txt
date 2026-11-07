@@ -1,0 +1,27 @@
+# UWB Anchor Layout & Calibration file (compatible with uwb_calib.py / uwb_pos.py)
+# Format: anN_p, x_m, y_m, z_m  |  anN_bias, bias_m (meas = true + bias)
+an1_p, 0.000, 0.000, 0.480
+an2_p, 6.600, 0.000, 0.480
+an3_p, 6.600, 3.600, 0.480
+an4_p, 0.000, 3.600, 0.480
+an5_p, 0.000, 0.000, 2.208
+an6_p, 6.600, 0.000, 2.208
+an7_p, 6.600, 3.600, 2.208
+an8_p, 0.000, 3.600, 2.208
+# Per-anchor range bias (m) and white noise sigma (m)
+an1_bias, 0.1143
+an1_sigma, 0.0293
+an2_bias, -0.0151
+an2_sigma, 0.2709
+an3_bias, 0.0571
+an3_sigma, 0.1743
+an4_bias, 0.3903
+an4_sigma, 0.1629
+an5_bias, 0.3214
+an5_sigma, 0.0570
+an6_bias, 0.1119
+an6_sigma, 0.0168
+an7_bias, 0.1534
+an7_sigma, 0.0155
+an8_bias, 0.9090
+an8_sigma, 0.0208
