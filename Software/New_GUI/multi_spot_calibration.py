@@ -1,4 +1,4 @@
-"""Joint multi-spot UWB range-bias calibration (G0.1) — SKELETON.
+"""Joint multi-spot UWB range-bias calibration (G0.1).
 
 Plan: Plan/G0_KE_HOACH_HIEU_CHUAN_DA_DIEM_VA_DU_LIEU_CHUAN.md (section G0.1).
 Contract: tests/test_g0_multi_spot_solver.py. Do not loosen the tests.
@@ -28,8 +28,11 @@ enabled (AnchorConfig works). Disabled anchors are ignored.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+import math
 from typing import Any, Iterable, Mapping, Protocol, Sequence
+
+import numpy as np
 
 SOLVER_VERSION = "multi-spot-joint-v1"
 # Standard error of a median of N Gaussian samples = 1.2533 * sigma / sqrt(N).
@@ -160,7 +163,20 @@ class JointCalibrationResult:
         settings {field: value}.
         Dict keys are strings; non-finite floats (nan, inf) become None.
         """
-        raise NotImplementedError("G0.1: JointCalibrationResult.to_dict")
+        return _json_value(asdict(self))
+
+
+def _json_value(value: Any) -> Any:
+    """Convert nested dataclasses' values to strict JSON primitives."""
+    if isinstance(value, Mapping):
+        return {str(k): _json_value(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_value(v) for v in value]
+    if isinstance(value, (float, np.floating)):
+        return float(value) if math.isfinite(value) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    return value
 
 
 def observations_from_captures(
@@ -177,7 +193,78 @@ def observations_from_captures(
       enabled_anchor_ids (when given). Skip a spot capture with no usable anchor.
     - Keep the capture order.
     """
-    raise NotImplementedError("G0.1: observations_from_captures")
+    enabled = None if enabled_anchor_ids is None else set(enabled_anchor_ids)
+    spots, tapes = [], []
+    for cap in captures:
+        usable = {aid: r for aid, r in cap.anchor_results.items()
+                  if r.quality != "LOW_SAMPLES" and (enabled is None or aid in enabled)}
+        if cap.single_anchor_id is not None and cap.reference_distance_m is not None:
+            aid = cap.single_anchor_id
+            if aid in usable:
+                r = usable[aid]
+                tapes.append(TapeObservation(cap.spot_index, aid, cap.reference_distance_m * 1000.0,
+                                             r.median_raw_mm, r.sigma_mm, r.samples))
+        elif cap.single_anchor_id is None and cap.spot_xyz is not None and usable:
+            spots.append(SpotObservation(cap.spot_index, tuple(cap.spot_xyz),
+                                         {a: r.median_raw_mm for a, r in usable.items()},
+                                         {a: r.sigma_mm for a, r in usable.items()},
+                                         {a: r.samples for a, r in usable.items()}))
+    return spots, tapes
+
+
+def _finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def _clean_inputs(anchors, spots, tapes):
+    coords = {a.anchor_id: np.array((a.x, a.y, a.z), dtype=float) for a in anchors
+              if getattr(a, "enabled", True) and all(_finite(v) for v in (a.x, a.y, a.z))}
+    clean_spots = []
+    for spot in spots:
+        if len(spot.entered_xyz) != 3 or not all(_finite(v) for v in spot.entered_xyz):
+            continue
+        med = {a: float(v) for a, v in spot.median_raw_mm.items()
+               if a in coords and _finite(v) and float(v) > 10.0}
+        if med:
+            clean_spots.append(replace(spot, entered_xyz=tuple(float(v) for v in spot.entered_xyz),
+                                       median_raw_mm=med))
+    clean_tapes = [t for t in tapes if t.anchor_id in coords and _finite(t.median_raw_mm)
+                   and float(t.median_raw_mm) > 10.0 and _finite(t.reference_mm) and t.reference_mm > 0]
+    return coords, clean_spots, clean_tapes
+
+
+def _data_matrix(coords, spots, tapes, dimension):
+    ids = sorted({a for s in spots for a in s.median_raw_mm} | {t.anchor_id for t in tapes})
+    columns = {a: i for i, a in enumerate(ids)}
+    unknowns = len(ids) + dimension * len(spots)
+    rows = []
+    for j, s in enumerate(spots):
+        for a in s.median_raw_mm:
+            row = np.zeros(unknowns)
+            row[columns[a]] = 1.0
+            delta = np.asarray(s.entered_xyz) - coords[a]
+            row[len(ids) + j * dimension:len(ids) + (j + 1) * dimension] = (
+                delta[:dimension] / max(float(np.linalg.norm(delta)), 1e-12))
+            rows.append(row)
+    for t in tapes:
+        row = np.zeros(unknowns)
+        row[columns[t.anchor_id]] = 1.0
+        rows.append(row)
+    return np.asarray(rows).reshape((-1, unknowns)) if unknowns else np.empty((0, 0))
+
+
+def _matrix_rank(matrix):
+    unknowns = matrix.shape[1]
+    if not unknowns or not matrix.shape[0]:
+        return 0, unknowns, math.inf
+    norm = np.linalg.norm(matrix, axis=0)
+    scaled = matrix / np.where(norm > 0, norm, 1.0)
+    s = np.linalg.svd(scaled, compute_uv=False)
+    rank = int(np.count_nonzero(s > 1e-9 * s[0])) if s[0] > 0 else 0
+    return rank, unknowns, float(s[0] / s[-1]) if rank == unknowns else math.inf
 
 
 def data_identifiability(
@@ -198,7 +285,10 @@ def data_identifiability(
     Expected for the 07/11 rig (8 anchors): 1 spot -> (8, 11, inf);
     2 spots -> (14, 14, finite); 4 spots -> (20, 20, ~10). In 2D: (8, 10), (12, 12).
     """
-    raise NotImplementedError("G0.1: data_identifiability")
+    if dimension not in (2, 3):
+        raise ValueError("dimension must be 2 or 3")
+    coords, spots, tapes = _clean_inputs(anchors, spots, tapes)
+    return _matrix_rank(_data_matrix(coords, spots, tapes, dimension))
 
 
 def suggest_calibration_spots(
@@ -218,7 +308,21 @@ def suggest_calibration_spots(
     The first two already have different heights and make the problem
     identifiable. Round to 3 decimals. ValueError when no anchor is enabled.
     """
-    raise NotImplementedError("G0.1: suggest_calibration_spots")
+    if count not in range(2, 7):
+        raise ValueError("count must be between 2 and 6")
+    xyz = [(a.x, a.y, a.z) for a in anchors if getattr(a, "enabled", True)
+           and all(_finite(v) for v in (a.x, a.y, a.z))]
+    if not xyz:
+        raise ValueError("No enabled anchor with finite coordinates")
+    lo, hi = np.min(xyz, axis=0), np.max(xyz, axis=0)
+    a, b = xy_fractions
+    xl, yl = lo[:2] + a * (hi[:2] - lo[:2])
+    xh, yh = lo[:2] + b * (hi[:2] - lo[:2])
+    zl, zh = (lo[2] + np.asarray(z_fractions) * (hi[2] - lo[2])
+              if hi[2] - lo[2] >= 0.3 else (lo[2] + 0.8, lo[2] + 1.4))
+    xc, yc = (lo[:2] + hi[:2]) / 2.0
+    points = [(xl, yl, zl), (xh, yh, zh), (xh, yl, zl), (xl, yh, zh), (xc, yc, zl), (xc, yc, zh)]
+    return [tuple(round(float(v), 3) for v in p) for p in points[:count]]
 
 
 def solve_joint_calibration(
@@ -278,4 +382,174 @@ def solve_joint_calibration(
     """
     if dimension not in (2, 3):
         raise ValueError("dimension must be 2 or 3")
-    raise NotImplementedError("G0.1: solve_joint_calibration")
+    coords, spots, tapes = _clean_inputs(anchors, spots, tapes)
+    warnings = []
+    kept = []
+    for s in spots:
+        if len(s.median_raw_mm) < dimension + 1:
+            warnings.append(CalibrationWarning("SPOT_FEW_ANCHORS",
+                            f"Spot #{s.spot_index} has fewer than {dimension + 1} usable anchors; excluded.",
+                            spot_index=s.spot_index))
+        else:
+            kept.append(s)
+    spots = kept
+    ids = sorted({a for s in spots for a in s.median_raw_mm} | {t.anchor_id for t in tapes})
+    legacy = {a: [] for a in ids}
+    for s in spots:
+        for a, measured in s.median_raw_mm.items():
+            legacy[a].append(measured - float(np.linalg.norm(np.asarray(s.entered_xyz) - coords[a])) * 1000)
+    for t in tapes:
+        legacy[t.anchor_id].append(t.median_raw_mm - t.reference_mm)
+    rank, unknowns, condition = _matrix_rank(_data_matrix(coords, spots, tapes, dimension))
+
+    def fallback(method):
+        biases = {a: JointAnchorBias(a, float(np.median(legacy[a])), 30.0,
+                  sum(a in s.median_raw_mm for s in spots), sum(t.anchor_id == a for t in tapes),
+                  float(np.median(legacy[a])), None) for a in ids}
+        return JointCalibrationResult(bool(biases), method, dimension, biases, (), None, 0,
+                                      False, rank, unknowns, condition, tuple(warnings), settings)
+
+    if not ids:
+        warnings.append(CalibrationWarning("NO_DATA", "No usable spot or tape observations."))
+        return fallback("failed")
+    if len(spots) < settings.min_spots:
+        if spots:
+            warnings.append(CalibrationWarning("SINGLE_SPOT", "Joint solve needs at least 2 spot captures; using per-spot median."))
+        return fallback("single_spot_fallback")
+
+    bias_columns = {a: i for i, a in enumerate(ids)}
+    n_bias = len(ids)
+    entered = np.asarray([s.entered_xyz for s in spots], dtype=float)
+    theta = np.concatenate(([np.median(legacy[a]) / 1000 for a in ids], entered[:, :dimension].ravel()))
+    records = [(j, a, m / 1000, _row_sigma(s.sigma_mm.get(a), s.samples.get(a), settings.systematic_sigma_mm))
+               for j, s in enumerate(spots) for a, m in s.median_raw_mm.items()]
+    n_spot_rows = len(records)
+    n_data = n_spot_rows + len(tapes)
+
+    def evaluate(values):
+        positions = entered.copy()
+        positions[:, :dimension] = values[n_bias:].reshape((-1, dimension))
+        residual = []
+        jac = []
+        for j, a, measured, sigma in records:
+            delta = positions[j] - coords[a]
+            distance = float(np.linalg.norm(delta))
+            row = np.zeros(unknowns)
+            row[bias_columns[a]] = 1.0 / sigma
+            start = n_bias + j * dimension
+            row[start:start + dimension] = delta[:dimension] / max(distance, 1e-12) / sigma
+            residual.append((measured - distance - values[bias_columns[a]]) / sigma)
+            jac.append(row)
+        for t in tapes:
+            sigma = _row_sigma(t.sigma_mm, t.samples, settings.tape_sigma_mm)
+            row = np.zeros(unknowns)
+            row[bias_columns[t.anchor_id]] = 1.0 / sigma
+            residual.append((t.median_raw_mm / 1000 - t.reference_mm / 1000 - values[bias_columns[t.anchor_id]]) / sigma)
+            jac.append(row)
+        for j in range(len(spots)):
+            for c in range(dimension):
+                col = n_bias + j * dimension + c
+                row = np.zeros(unknowns)
+                row[col] = 1.0 / settings.spot_prior_sigma_m
+                residual.append((entered[j, c] - values[col]) / settings.spot_prior_sigma_m)
+                jac.append(row)
+        for col in range(n_bias):
+            row = np.zeros(unknowns)
+            row[col] = 1000.0 / settings.bias_prior_sigma_mm
+            residual.append(-values[col] * row[col])
+            jac.append(row)
+        r, J = np.asarray(residual), np.asarray(jac)
+        w = np.ones(len(r))
+        robust = np.abs(r[:-n_bias])
+        w[:-n_bias] = np.minimum(1.0, settings.huber_k / np.maximum(robust, 1e-15))
+        return positions, r, J, w
+
+    try:
+        positive = (settings.spot_prior_sigma_m, settings.systematic_sigma_mm, settings.tape_sigma_mm,
+                    settings.bias_prior_sigma_mm, settings.huber_k, settings.step_tolerance_m)
+        if not all(_finite(v) and v > 0 for v in positive) or settings.max_iterations < 1:
+            raise ValueError("Invalid joint calibration settings")
+        iterations = 0
+        for iterations in range(1, settings.max_iterations + 1):
+            _, r, J, w = evaluate(theta)
+            normal = J.T @ (w[:, None] * J)
+            step = np.linalg.solve(normal, J.T @ (w * r))
+            if not np.all(np.isfinite(step)):
+                raise ValueError("Non-finite joint calibration step")
+            theta += step
+            if float(np.max(np.abs(step))) < settings.step_tolerance_m:
+                break
+        positions, r, J, w = evaluate(theta)
+        covariance = np.linalg.inv(J.T @ (w[:, None] * J))
+        covariance *= max(1.0, float(np.sum(w[:n_data] * r[:n_data] ** 2)) / max(1, n_data - unknowns))
+        if not np.all(np.isfinite(theta)) or not np.all(np.isfinite(covariance)):
+            raise ValueError("Non-finite joint calibration solution")
+        solved_spots = [replace(s, entered_xyz=tuple(p)) for s, p in zip(spots, positions)]
+        rank, unknowns, condition = _matrix_rank(_data_matrix(coords, solved_spots, tapes, dimension))
+    except (np.linalg.LinAlgError, ValueError, FloatingPointError, OverflowError):
+        warnings.append(CalibrationWarning("NOT_IDENTIFIABLE", "Joint solve failed; review geometry and observations."))
+        return fallback("failed")
+
+    residuals = {(j, a): float(r[k] * sigma * 1000) for k, (j, a, _, sigma) in enumerate(records)}
+    outlier = np.abs(r[:n_data]) > settings.residual_warn_sigma
+    all_good = []
+    anchor_good = {a: [] for a in ids}
+    spot_results = []
+    row_index = 0
+    for j, (s, position) in enumerate(zip(spots, positions)):
+        good, bad = [], []
+        for a in s.median_raw_mm:
+            value = residuals[j, a]
+            if outlier[row_index]:
+                bad.append(a)
+                warnings.append(CalibrationWarning("RESIDUAL_OUTLIER", f"Spot #{s.spot_index}, A{a}: residual {value:+.0f} mm.", s.spot_index, a))
+            else:
+                good.append(value)
+                anchor_good[a].append(value)
+                all_good.append(value)
+            row_index += 1
+        start = n_bias + j * dimension
+        block = covariance[start:start + dimension, start:start + dimension]
+        std = math.sqrt(max(0.0, float(np.linalg.eigvalsh(block)[-1])))
+        offset = float(np.linalg.norm(position - entered[j]))
+        if offset > max(settings.spot_offset_warn_m, 3 * std):
+            warnings.append(CalibrationWarning("SPOT_OFFSET", f"Spot #{s.spot_index} is {offset:.3f} m from the entered coordinates; check its surveyed position.", s.spot_index))
+        spot_results.append(JointSpotResult(s.spot_index, s.entered_xyz, tuple(float(v) for v in position),
+                            offset, std, tuple(sorted(s.median_raw_mm)),
+                            {a: residuals[j, a] for a in s.median_raw_mm}, _rms(good) or 0.0, tuple(sorted(bad))))
+    for k, t in enumerate(tapes, n_spot_rows):
+        value = float(r[k] * _row_sigma(t.sigma_mm, t.samples, settings.tape_sigma_mm) * 1000)
+        if outlier[k]:
+            warnings.append(CalibrationWarning("RESIDUAL_OUTLIER", f"Tape #{t.capture_index}, A{t.anchor_id}: residual {value:+.0f} mm.", anchor_id=t.anchor_id))
+        else:
+            anchor_good[t.anchor_id].append(value)
+            all_good.append(value)
+    biases = {}
+    for a, col in bias_columns.items():
+        bias = float(theta[col] * 1000)
+        ns, nt = sum(a in s.median_raw_mm for s in spots), sum(t.anchor_id == a for t in tapes)
+        biases[a] = JointAnchorBias(a, bias, math.sqrt(max(0.0, float(covariance[col, col]))) * 1000,
+                                    ns, nt, float(np.median(legacy[a])), _rms(anchor_good[a]))
+        if abs(bias) > settings.bias_warn_mm:
+            warnings.append(CalibrationWarning("BIAS_LARGE", f"A{a}: bias {bias:+.0f} mm exceeds {settings.bias_warn_mm:.0f} mm.", anchor_id=a))
+        if ns == 1 and not nt:
+            warnings.append(CalibrationWarning("ANCHOR_ONE_SPOT", f"A{a} appears at only one spot; collect another spot or tape capture.", anchor_id=a))
+    rms = _rms(all_good)
+    if rms is not None and rms > settings.residual_rms_warn_mm:
+        warnings.append(CalibrationWarning("RESIDUAL_RMS", f"Joint residual RMS {rms:.0f} mm exceeds {settings.residual_rms_warn_mm:.0f} mm."))
+    if rank < unknowns:
+        warnings.append(CalibrationWarning("NOT_IDENTIFIABLE", f"Data-only Jacobian rank {rank}/{unknowns}; collect more diverse spots."))
+    if dimension == 3 and np.ptp(positions[:, 2]) < settings.min_height_span_m:
+        warnings.append(CalibrationWarning("FLAT_HEIGHTS", "Spot heights are too similar; collect spots at different heights."))
+    return JointCalibrationResult(True, "joint", dimension, biases, tuple(spot_results), rms, iterations,
+                                  rank == unknowns, rank, unknowns, condition, tuple(warnings), settings)
+
+
+def _row_sigma(sigma, samples, floor_mm):
+    median_error = MEDIAN_EFFICIENCY * float(sigma) / math.sqrt(float(samples)) if (
+        _finite(sigma) and _finite(samples) and float(sigma) > 0 and float(samples) > 0) else 0.0
+    return math.hypot(median_error, floor_mm) / 1000.0
+
+
+def _rms(values):
+    return float(np.sqrt(np.mean(np.square(values)))) if values else None
