@@ -224,15 +224,21 @@ def _clean_inputs(anchors, spots, tapes):
               if getattr(a, "enabled", True) and all(_finite(v) for v in (a.x, a.y, a.z))}
     clean_spots = []
     for spot in spots:
-        if len(spot.entered_xyz) != 3 or not all(_finite(v) for v in spot.entered_xyz):
+        try:
+            entered = np.asarray(spot.entered_xyz, dtype=float)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if entered.shape != (3,) or not np.all(np.isfinite(entered)) or not isinstance(spot.median_raw_mm, Mapping):
             continue
         med = {a: float(v) for a, v in spot.median_raw_mm.items()
                if a in coords and _finite(v) and float(v) > 10.0}
         if med:
-            clean_spots.append(replace(spot, entered_xyz=tuple(float(v) for v in spot.entered_xyz),
-                                       median_raw_mm=med))
-    clean_tapes = [t for t in tapes if t.anchor_id in coords and _finite(t.median_raw_mm)
-                   and float(t.median_raw_mm) > 10.0 and _finite(t.reference_mm) and t.reference_mm > 0]
+            clean_spots.append(replace(spot, entered_xyz=tuple(float(v) for v in entered), median_raw_mm=med,
+                                       sigma_mm=spot.sigma_mm if isinstance(spot.sigma_mm, Mapping) else {},
+                                       samples=spot.samples if isinstance(spot.samples, Mapping) else {}))
+    clean_tapes = [replace(t, median_raw_mm=float(t.median_raw_mm), reference_mm=float(t.reference_mm))
+                   for t in tapes if t.anchor_id in coords and _finite(t.median_raw_mm)
+                   and float(t.median_raw_mm) > 10.0 and _finite(t.reference_mm) and float(t.reference_mm) > 0]
     return coords, clean_spots, clean_tapes
 
 
@@ -259,6 +265,8 @@ def _data_matrix(coords, spots, tapes, dimension):
 def _matrix_rank(matrix):
     unknowns = matrix.shape[1]
     if not unknowns or not matrix.shape[0]:
+        return 0, unknowns, math.inf
+    if not np.all(np.isfinite(matrix)):
         return 0, unknowns, math.inf
     norm = np.linalg.norm(matrix, axis=0)
     scaled = matrix / np.where(norm > 0, norm, 1.0)
@@ -412,6 +420,21 @@ def solve_joint_calibration(
     if not ids:
         warnings.append(CalibrationWarning("NO_DATA", "No usable spot or tape observations."))
         return fallback("failed")
+    positive_fields = ("spot_prior_sigma_m", "systematic_sigma_mm", "tape_sigma_mm",
+                       "bias_prior_sigma_mm", "huber_k", "step_tolerance_m")
+    threshold_fields = ("spot_offset_warn_m", "residual_warn_sigma", "residual_rms_warn_mm",
+                        "bias_warn_mm", "min_height_span_m")
+    valid_settings = all(isinstance(getattr(settings, name), (int, float, np.number))
+                         and _finite(getattr(settings, name))
+                         and getattr(settings, name) > 0 for name in positive_fields)
+    valid_settings = valid_settings and all(isinstance(getattr(settings, name), (int, float, np.number))
+                         and _finite(getattr(settings, name))
+                         and getattr(settings, name) >= 0 for name in threshold_fields)
+    valid_settings = valid_settings and all(isinstance(v, (int, np.integer)) and v >= 1
+                                           for v in (settings.max_iterations, settings.min_spots))
+    if not valid_settings:
+        warnings.append(CalibrationWarning("NOT_IDENTIFIABLE", "Invalid joint calibration settings; using legacy biases."))
+        return fallback("failed")
     if len(spots) < settings.min_spots:
         if spots:
             warnings.append(CalibrationWarning("SINGLE_SPOT", "Joint solve needs at least 2 spot captures; using per-spot median."))
@@ -465,10 +488,6 @@ def solve_joint_calibration(
         return positions, r, J, w
 
     try:
-        positive = (settings.spot_prior_sigma_m, settings.systematic_sigma_mm, settings.tape_sigma_mm,
-                    settings.bias_prior_sigma_mm, settings.huber_k, settings.step_tolerance_m)
-        if not all(_finite(v) and v > 0 for v in positive) or settings.max_iterations < 1:
-            raise ValueError("Invalid joint calibration settings")
         iterations = 0
         for iterations in range(1, settings.max_iterations + 1):
             _, r, J, w = evaluate(theta)

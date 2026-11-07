@@ -796,7 +796,6 @@ class UwbStateEngine:
         self._joint_cache_key = None
         self._joint_cache_captures: tuple[CalibrationSpotCapture, ...] = ()
         self._joint_cache_result: JointCalibrationResult | None = None
-        self._next_capture_index = 1
 
     def reset_live_state(self) -> None:
         self.live: dict[int, AnchorLiveState] = {
@@ -1117,7 +1116,7 @@ class UwbStateEngine:
             )
 
         capture = CalibrationSpotCapture(
-            spot_index=max(self._next_capture_index, max((c.spot_index for c in self.spot_captures), default=0) + 1),
+            spot_index=max((c.spot_index for c in self.spot_captures), default=0) + 1,
             spot_xyz=self._cal_spot_xyz,
             single_anchor_id=self._cal_single_aid,
             reference_distance_m=(self._cal_single_ref_mm / 1000.0) if self._cal_single_aid else None,
@@ -1126,7 +1125,6 @@ class UwbStateEngine:
             consistency=consistency,
         )
         self.spot_captures.append(capture)
-        self._next_capture_index = capture.spot_index + 1
         return capture
 
     def set_calibration_method(self, method: str) -> None:

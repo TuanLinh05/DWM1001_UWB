@@ -1013,6 +1013,7 @@ class UwbFastGuiWindow(QMainWindow):
         self.cal_spot_table.verticalHeader().setVisible(False)
         self.cal_spot_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.cal_spot_table.setMinimumHeight(120)
+        self.cal_spot_table.setMaximumHeight(200)
         vbox.addWidget(self.cal_spot_table, 1)
         self._cal_spot_table_key = None
 
@@ -1054,7 +1055,7 @@ class UwbFastGuiWindow(QMainWindow):
             ]
         )
         self.cal_table.verticalHeader().setVisible(False)
-        self.cal_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.cal_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.cal_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.cal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.cal_table.setAlternatingRowColors(True)
@@ -1842,8 +1843,8 @@ class UwbFastGuiWindow(QMainWindow):
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, capture.spot_index)
                 if capture.spot_index in flagged:
-                    item.setBackground(QColor("#802b36"))
-                    item.setForeground(QColor("#ffffff"))
+                    item.setBackground(QColor("#FEE2E2"))
+                    item.setForeground(QColor("#991B1B"))
                 self.cal_spot_table.setItem(row, col, item)
             if capture.spot_index == selected_id:
                 self.cal_spot_table.selectRow(row)
