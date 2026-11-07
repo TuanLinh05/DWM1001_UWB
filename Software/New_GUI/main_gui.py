@@ -1824,7 +1824,8 @@ class UwbFastGuiWindow(QMainWindow):
                                           " ".join(w.message for w in result.warnings))
         else:
             self.lbl_joint_status.setText(f"Joint solve needs at least 2 spot captures (have {len(captures)}) — using per-spot median")
-        key = (tuple(id(c) for c in captures), id(result))
+        dark = self.theme_manager is not None and self.theme_manager.is_dark
+        key = (tuple(id(c) for c in captures), id(result), dark)
         if key == self._cal_spot_table_key:
             return
         selected = self.cal_spot_table.item(self.cal_spot_table.currentRow(), 0)
@@ -1843,7 +1844,7 @@ class UwbFastGuiWindow(QMainWindow):
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, capture.spot_index)
                 if capture.spot_index in flagged:
-                    item.setBackground(QColor("#FEE2E2"))
+                    item.setBackground(QColor("#7F1D1D" if dark else "#FEE2E2"))
                     item.setForeground(QColor("#991B1B"))
                 self.cal_spot_table.setItem(row, col, item)
             if capture.spot_index == selected_id:
