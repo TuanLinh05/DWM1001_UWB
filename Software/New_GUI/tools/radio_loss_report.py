@@ -114,8 +114,8 @@ def load_session(path: Path) -> SessionData:
             boots.append(int(number(row.get("boot_id"), 0)))
             seqs.append(int(number(row.get("cycle_seq"), 0)))
             periods.append(number(row.get("period_us"), float("nan")))
-            ranges.append([number(row.get(f"a{a}_mm"), 0) > 10 for a in range(1, N_ANCHORS + 1)])
-            polls.append([bool(row.get(f"a{a}_status_code", "").strip()) if has_status else True
+            ranges.append([bool((row.get(f"a{a}_mm") or "").strip()) for a in range(1, N_ANCHORS + 1)])
+            polls.append([bool((row.get(f"a{a}_status_code") or "").strip()) if has_status else True
                           for a in range(1, N_ANCHORS + 1)])
             lates.append([bool(int(number(row.get(f"a{a}_flags"), 0)) & LATE_FLAG)
                           for a in range(1, N_ANCHORS + 1)])
