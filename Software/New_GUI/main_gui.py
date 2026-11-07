@@ -96,6 +96,7 @@ from serial_worker import (  # noqa: E402
     available_serial_ports,
 )
 from widgets_canvas import FastRollingChart, PositionMapCanvas  # noqa: E402
+from multi_spot_calibration import suggest_calibration_spots  # noqa: E402
 
 
 class FloatInput(QLineEdit):
@@ -795,6 +796,17 @@ class UwbFastGuiWindow(QMainWindow):
         vbox.setContentsMargins(SPACING_MD, SPACING_MD, SPACING_MD, SPACING_MD)
         vbox.setSpacing(SPACING_SM)
 
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Calibration method:"))
+        self.combo_cal_method = QComboBox()
+        self.combo_cal_method.addItem("Joint multi-spot (recommended)", "joint")
+        self.combo_cal_method.addItem("Median per spot (legacy)", "median")
+        self.combo_cal_method.setCurrentIndex(self.combo_cal_method.findData(self.engine.calibration_method))
+        self.combo_cal_method.currentIndexChanged.connect(self._on_calibration_method_changed)
+        method_row.addWidget(self.combo_cal_method)
+        method_row.addStretch(1)
+        vbox.addLayout(method_row)
+
         modes_hbox = QHBoxLayout()
         modes_hbox.setSpacing(SPACING_SM)
 
@@ -845,6 +857,10 @@ class UwbFastGuiWindow(QMainWindow):
         self.btn_capture_spot.clicked.connect(self._start_spot_calibration)
         s_btns.addWidget(self.btn_capture_spot)
 
+        self.btn_suggest_spots = QPushButton("Suggest spots")
+        self.btn_suggest_spots.clicked.connect(self._suggest_calibration_spots)
+        s_btns.addWidget(self.btn_suggest_spots)
+
         btn_room_center = QPushButton("Preset: Room (3.6, 1.8, 0.48)")
         btn_room_center.clicked.connect(lambda: self._set_spot_xyz(3.60, 1.80, 0.48))
         s_btns.addWidget(btn_room_center)
@@ -858,6 +874,10 @@ class UwbFastGuiWindow(QMainWindow):
         s_btns.addWidget(btn_box_center)
         s_btns.addStretch(1)
         s_vbox.addLayout(s_btns)
+
+        self.lbl_spot_plan = QLabel("")
+        self.lbl_spot_plan.setWordWrap(True)
+        s_vbox.addWidget(self.lbl_spot_plan)
 
         modes_hbox.addWidget(spot_card, 3)
 
@@ -971,6 +991,26 @@ class UwbFastGuiWindow(QMainWindow):
         self.lbl_cal_warning.setWordWrap(True)
         self.lbl_cal_warning.setVisible(False)
         vbox.addWidget(self.lbl_cal_warning)
+
+        joint_row = QHBoxLayout()
+        self.lbl_joint_status = QLabel("Joint solve needs at least 2 spot captures (have 0) — using per-spot median")
+        self.lbl_joint_status.setWordWrap(True)
+        joint_row.addWidget(self.lbl_joint_status, 1)
+        self.btn_remove_spot = QPushButton("Remove selected spot")
+        self.btn_remove_spot.clicked.connect(self._remove_selected_calibration_spot)
+        joint_row.addWidget(self.btn_remove_spot)
+        vbox.addLayout(joint_row)
+        self.cal_spot_table = QTableWidget(0, 6, page)
+        self.cal_spot_table.setHorizontalHeaderLabels(
+            ["#", "Entered XYZ (m)", "Estimated XYZ (m)", "Offset (cm)", "Resid RMS (mm)", "Outliers"])
+        self.cal_spot_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.cal_spot_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.cal_spot_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.cal_spot_table.verticalHeader().setVisible(False)
+        self.cal_spot_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.cal_spot_table.setMinimumHeight(120)
+        vbox.addWidget(self.cal_spot_table, 1)
+        self._cal_spot_table_key = None
 
         # Calibration Results Table (9 spacious columns — zero truncation)
         res_card = QFrame(page)
@@ -1658,6 +1698,7 @@ class UwbFastGuiWindow(QMainWindow):
 
     def _update_calibration_page(self) -> None:
         eng = self.engine
+        self._update_joint_calibration_table()
         done = eng.cal_collected
         target = eng.cal_target_samples
         if eng.calibration_active:
@@ -1719,7 +1760,9 @@ class UwbFastGuiWindow(QMainWindow):
                 self.cal_table.item(row, 4).setText(f"{rec.median_raw_mm / 1000.0:.4f}")
                 self.cal_table.item(row, 5).setText(f"{rec.bias_mm:+.2f}")
                 self.cal_table.item(row, 6).setText(
-                    f"{agg_entry[0]:+.2f} ({agg_entry[2]}x)" if agg_entry is not None else f"{rec.bias_mm:+.2f}"
+                    (f"{agg_entry[0]:+.1f} ±{eng.joint_calibration().biases[aid].std_mm:.0f} J"
+                     if eng.active_calibration_method() == "joint" else f"{agg_entry[0]:+.1f} ({agg_entry[2]}x) M")
+                    if agg_entry is not None else "--"
                 )
                 self.cal_table.item(row, 7).setText(f"{rec.sigma_mm:.2f}")
                 self.cal_table.item(row, 8).setText(
@@ -1736,6 +1779,71 @@ class UwbFastGuiWindow(QMainWindow):
                 self.cal_table.item(row, 8).setText(
                     f"Host:{cfg.bias_mm:+.1f}mm | FW:{cfg.fw_bias_mm:+.1f}mm ({'CAL' if cfg.fw_calibrated else 'UNCAL'})"
                 )
+
+    def _on_calibration_method_changed(self) -> None:
+        self.engine.set_calibration_method(self.combo_cal_method.currentData())
+        self._update_calibration_page()
+
+    def _suggest_calibration_spots(self) -> None:
+        try:
+            points = suggest_calibration_spots(list(self.engine.anchors.values()), 4)
+        except ValueError as exc:
+            self.lbl_spot_plan.setText(str(exc))
+            return
+        self.lbl_spot_plan.setText(" · ".join(f"P{i}: ({x:.3f}, {y:.3f}, {z:.3f}) m"
+                                               for i, (x, y, z) in enumerate(points, 1)))
+        captured = [c.spot_xyz for c in self.engine.spot_captures if c.spot_xyz is not None]
+        first = next((p for p in points if not any(sum((p[k] - c[k]) ** 2 for k in range(3)) < 0.01 ** 2
+                                                 for c in captured)), points[0])
+        self._set_spot_xyz(*first)
+
+    def _remove_selected_calibration_spot(self) -> None:
+        row = self.cal_spot_table.currentRow()
+        if row >= 0:
+            item = self.cal_spot_table.item(row, 0)
+            if item is not None:
+                self.engine.remove_capture(item.data(Qt.ItemDataRole.UserRole))
+                self._update_calibration_page()
+
+    def _update_joint_calibration_table(self) -> None:
+        eng = self.engine
+        result = eng.joint_calibration()
+        captures = [c for c in eng.spot_captures if c.spot_xyz is not None and c.single_anchor_id is None]
+        if result is not None and result.method == "joint":
+            rms = f"{result.residual_rms_mm:.1f}" if result.residual_rms_mm is not None else "--"
+            cond = f"{result.condition_number:.1f}" if result.identifiable else "infinite"
+            self.lbl_joint_status.setText(f"Joint: {len(result.spots)} spots · rank {result.rank}/{result.unknowns} · "
+                                          f"cond {cond} · RMS {rms} mm · applying {eng.active_calibration_method()}")
+        elif result is not None and result.method == "failed":
+            self.lbl_joint_status.setText("Joint solve unavailable — using per-spot median. " +
+                                          " ".join(w.message for w in result.warnings))
+        else:
+            self.lbl_joint_status.setText(f"Joint solve needs at least 2 spot captures (have {len(captures)}) — using per-spot median")
+        key = (tuple(id(c) for c in captures), id(result))
+        if key == self._cal_spot_table_key:
+            return
+        selected = self.cal_spot_table.item(self.cal_spot_table.currentRow(), 0)
+        selected_id = selected.data(Qt.ItemDataRole.UserRole) if selected else None
+        self.cal_spot_table.setRowCount(len(captures))
+        solved = {s.spot_index: s for s in result.spots} if result is not None else {}
+        flagged = {w.spot_index for w in result.warnings if w.code == "SPOT_OFFSET"} if result is not None else set()
+        for row, capture in enumerate(captures):
+            s = solved.get(capture.spot_index)
+            xyz = lambda p: ", ".join(f"{v:.3f}" for v in p)
+            texts = [str(capture.spot_index), xyz(capture.spot_xyz), xyz(s.estimated_xyz) if s else "--",
+                     f"{s.offset_m * 100:.1f}" if s else "--", f"{s.residual_rms_mm:.1f}" if s else "--",
+                     ", ".join(f"A{a}" for a in s.outlier_anchor_ids) if s else "--"]
+            for col, value in enumerate(texts):
+                item = QTableWidgetItem(value)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, capture.spot_index)
+                if capture.spot_index in flagged:
+                    item.setBackground(QColor("#802b36"))
+                    item.setForeground(QColor("#ffffff"))
+                self.cal_spot_table.setItem(row, col, item)
+            if capture.spot_index == selected_id:
+                self.cal_spot_table.selectRow(row)
+        self._cal_spot_table_key = key
 
     def _update_diagnostics_page(self) -> None:
         eng = self.engine
@@ -1969,6 +2077,7 @@ class UwbFastGuiWindow(QMainWindow):
         if path.suffix.lower() == ".json":
             data = {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "calibration_summary": self.engine.calibration_summary(),
                 "aggregated_biases_mm": {
                     str(k): {"median_bias_mm": v[0], "mean_sigma_mm": v[1], "spots": v[2]}
                     for k, v in self.engine.aggregated_calibration().items()
@@ -1996,7 +2105,7 @@ class UwbFastGuiWindow(QMainWindow):
                     for c in self.engine.spot_captures
                 ],
             }
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(data, indent=2, allow_nan=False), encoding="utf-8")
         else:
             with path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
