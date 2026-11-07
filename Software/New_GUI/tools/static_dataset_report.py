@@ -302,8 +302,9 @@ def build_report(session: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
     manifest = _validate_manifest(manifest)
     rows = load_rows(session)
     anchors = anchors_from_metadata(session)
+    input_warnings = _restore_firmware_raw_ranges(session, rows, anchors)
     report = {"tool": "static_dataset_report", "version": "g0-static-dataset-v1", "session": Path(session).name,
-              "segments": []}
+              "segments": [], "input_warnings": input_warnings}
     for seg in find_segments(rows, manifest):
         report["segments"].append({"point": seg.point, "xyz": list(seg.xyz),
              "rows": seg.end_row - seg.start_row + 1, "start_row": seg.start_row, "end_row": seg.end_row,
@@ -312,6 +313,38 @@ def build_report(session: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
              "position": asdict(segment_position_stats(rows, seg))})
     report["acceptance"] = acceptance(report)
     return strict_value(report)
+
+
+def _restore_firmware_raw_ranges(session, rows, anchors):
+    """Undo optional TAG offsets: schema-5 a<N>_mm stores the wire range.
+
+    When CAL_OK (0x04) is set, the wire value is already firmware-corrected.
+    Restore its pre-offset value before subtracting the active host bias.
+    Without per-row flags, older logs use the metadata calibration state.
+    Unknown firmware offsets invalidate those samples instead of certifying
+    a residual with an unknown correction. Input CSV files are never changed.
+    """
+    with (Path(session) / "session_metadata.json").open(encoding="utf-8-sig") as fh:
+        metadata = json.load(fh)
+    configs = {int(a.get("anchor_id", a.get("id", 0))): a for a in metadata.get("anchors", [])}
+    unknown = set()
+    for aid in anchors:
+        config = configs.get(aid, {})
+        firmware_bias = number(config.get("fw_bias_mm"))
+        for row in rows:
+            value = number(row.get(f"a{aid}_mm"))
+            if value is None:
+                continue
+            flags = number(row.get(f"a{aid}_flags"))
+            calibrated = bool(int(flags) & 0x04) if flags is not None else bool(config.get("fw_calibrated", False))
+            if calibrated:
+                if firmware_bias is None:
+                    row[f"a{aid}_mm"] = ""
+                    unknown.add(aid)
+                else:
+                    row[f"a{aid}_mm"] = str(value + firmware_bias)
+    return [f"A{a}: firmware-corrected ranges have no known fw_bias_mm; affected samples excluded."
+            for a in sorted(unknown)]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -336,6 +369,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     writer.writerow({"point": seg["point"], **st})
         passed = report["acceptance"]["pass"]
         print(f"{report['session']}: {'PASS' if passed else 'FAIL'} ({len(report['segments'])} static segments)")
+        for warning in report["input_warnings"]:
+            print(f"  {warning}")
         for point, verdict in report["acceptance"]["points"].items():
             for reason in verdict["reasons"]:
                 print(f"  {point}: {reason}")
