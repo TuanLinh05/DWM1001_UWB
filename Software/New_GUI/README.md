@@ -200,3 +200,140 @@ python tools/replay_filter_benchmark.py logs/uwb_fast_20261107_081749_COM14 --ou
 See `RADIO_QUALITY_VALIDATION.md` for validation and limitations. Signal-weighting
 improvements should be measured against independently known positions; smoother
 output or smaller solver residual alone does not establish position accuracy.
+
+## Joint multi-spot calibration
+
+The Calibration page defaults to **Joint multi-spot (recommended)**. It jointly
+estimates an independent bias for each enabled anchor and the true TAG position
+at each captured spot. Entered coordinates are robust priors (50 mm per axis),
+so one badly entered point does not have to become a false anchor bias. The
+sign convention is **measured = true + bias**; the host subtracts the bias.
+The solver uses numpy only, Huber weights on ranges and position priors, and a
+20 mm systematic range uncertainty in addition to the median sampling error.
+Bias uncertainties are scaled covariance estimates under this model.
+
+1. Check anchor coordinates, enabled anchors and the sidebar's 2D/3D setting.
+   In 2D each spot keeps exactly its entered Z; verify that height carefully.
+2. Press **Suggest spots** for four locations at 25%/75% of the anchor box with
+   two heights. It loads the first location not already captured. Measure each
+   TAG antenna centre with a tape/laser, keep its flight orientation and enter
+   the measured coordinates. Suggestions are planning aids, not surveyed truth.
+3. Capture P1–P4 with **Samples >= 1000**. A joint solution needs at least two
+   usable spots and full data-only Jacobian rank. Each spot needs at least four
+   anchors in 3D or three in 2D. Tape captures can constrain individual biases.
+4. Inspect **rank**, condition number, residual RMS and the spot table's entered
+   versus estimated XYZ, offset, residual and outlier anchor IDs. Red rows have
+   a significant `SPOT_OFFSET`. Check the physical location, select the row and
+   **Remove selected spot**, then capture again if necessary.
+5. Resolve warnings and **Apply to Host Solver**. Only the existing explicit
+   Apply action saves the rig configuration. Metadata records the applied
+   method, solver version, biases and solution. Export Calibration JSON also
+   includes the selected/active method, aggregate and joint diagnostics.
+
+With fewer than two usable spots, a failed solution or deficient rank, the
+active biases fall back to the original per-spot median. **Median per spot
+(legacy)** selects those original numbers explicitly. The aggregate bias column
+shows `J` with the estimated bias standard deviation for joint, or `M` with the
+capture count for median; the noise column still describes sample noise.
+
+| Warning code | Meaning / action |
+| --- | --- |
+| `NO_DATA` | No usable spot/tape result; collect data and check enabled anchors. |
+| `SINGLE_SPOT` | Fewer than two spots; the legacy median is used. |
+| `SPOT_FEW_ANCHORS` | A spot has insufficient usable anchors and is excluded. |
+| `NOT_IDENTIFIABLE` | Data rank is insufficient or solving failed; collect more spatially diverse spots. |
+| `SPOT_OFFSET` | Estimated position differs by more than max(10 cm, three position standard deviations); check the survey. |
+| `RESIDUAL_OUTLIER` | An anchor/spot or tape row exceeds three normalized standard deviations; inspect NLOS and the survey. |
+| `RESIDUAL_RMS` | Non-outlier residual RMS exceeds 50 mm; check layout and multipath. |
+| `BIAS_LARGE` | A bias exceeds ±300 mm; check distances and geometry. |
+| `FLAT_HEIGHTS` | 3D spot heights span less than 30 cm; add another height. |
+| `ANCHOR_ONE_SPOT` | An anchor is seen at one spot with no tape constraint; capture it elsewhere. |
+
+Existing per-capture sanity warnings remain available alongside joint warnings.
+Verify the calibration at independent surveyed **V1/V2**, excluded from the
+calibration captures, before treating its bias accuracy as established.
+
+## G0 tools
+
+Run these commands from `Software/New_GUI`. Both tools use only numpy and the
+standard library, leave input logs intact, close their files and write strict
+JSON (unavailable/non-finite statistics are `null`). Keep the CSV, metadata,
+`rx_quality.jsonl` and `diag.jsonl` together.
+
+### Radio loss
+
+```powershell
+python tools/radio_loss_report.py logs/uwb_fast_20261107_123110_COM14 logs/uwb_fast_20261107_131601_COM14 --bin-s 5 --out logs/g0_validation
+```
+
+Without `--out`, each session gets `radio_loss_report.json` and
+`radio_loss_bins.csv`; with `--out`, filenames are prefixed by the session name.
+The report contains polling/range/RESP/late percentages, outage runs >= 0.2 s,
+the longest outage, the 0–8 anchors-per-cycle histogram, cycle-sequence gaps,
+time bins with TAG temperature/voltage and Pearson temperature correlation.
+`share_cycles_ge` values are percentages. RESP statistics use the sampled
+RX_QUALITY anchor entries; they need not equal full-rate range percentages.
+Missing RX_QUALITY leaves RESP/environment statistics unavailable. Older CSVs
+without status-code columns assume all eight anchors were polled.
+
+Classification uses failure rates among polled cycles: 1–2 anchors losing >=5%
+are `anchor_specific`; with >=3 bad anchors, co-failure lift >=1.5 means
+`common_cause`, <1.2 means `independent`, otherwise `mixed`. A lift near 1 means
+little extra simultaneous failure beyond the individual link failure rates.
+These are diagnostic categories, not proof of a hardware root cause; check
+per-anchor results too. `none` means no measured conditional failure rate
+crosses the threshold, and does not establish health for unpolled anchors.
+Temperature correlation does not establish causation, especially in short logs.
+
+### Static dataset and acceptance
+
+Keep the TAG on a tripod in its flight orientation; survey the antenna centre
+from two walls and the floor. After calibration, record at least 60 s at each
+P1–P4 and independent V1/V2. Enter `P1_start` beside **Mark Point**, then press it
+at the beginning; the field advances to `P1_end` for the final marker. Repeat
+for each point. Empty labels keep the usual W1/W2 labels. People should stand
+away from the radio paths. Record an additional 10 minutes stationary LOS for
+radio acceptance (mean >=7/8 anchors per cycle).
+
+Copy `tools/dataset_manifest_example.json`, replace every coordinate with the
+survey and run:
+
+```powershell
+python tools/static_dataset_report.py logs/<session> surveyed_manifest.json --out logs/static_validation
+```
+
+The optional `segments` list supplies explicit label pairs; otherwise every
+point uses `<point>_start` / `<point>_end`. Default `trim_s=2` discards walking
+time at both ends. Missing labels, reversed times and empty trimmed segments
+are reported as errors. Outputs are `static_dataset_report.json` and
+`static_dataset_anchors.csv`: sample/success counts, raw median, population
+sigma, MAD sigma, FFT 1/e autocorrelation time, surveyed distance, raw bias,
+active host bias and residual after correction. Per-row bias columns take
+precedence over metadata when available; this also handles bias changes while
+logging. If the TAG already applied a firmware offset (per-row CAL_OK flag, or
+metadata for older logs), the tool first restores the raw range with metadata's
+`fw_bias_mm`. Unknown firmware offsets exclude affected samples and appear in
+`input_warnings`; keep firmware offsets constant throughout the recording so
+the snapshot describes them. Position statistics compare the logged fix with the surveyed point.
+Correlation time uses successful samples and a sampling period adjusted for
+missing ranges; long structured outages limit that approximation.
+
+Exit **0** means every requested segment passes: each enabled anchor's absolute
+corrected residual <=50 mm, mean position error <=0.10 m, mean anchor success
+>=87.5%. Missing ranges/fixes fail acceptance. Exit **1** means acceptance
+failed; exit **2** means an input/output error. V1/V2 are mandatory in the final
+hardware acceptance manifest even though the tool also supports smaller
+manifests during diagnosis. Old logs without the surveyed labels cannot certify
+this acceptance. Raw recordings remain the reference dataset for later filters.
+
+### G0 automated validation
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+On a restricted runner, point `TEMP` and `TMP` at a writable directory before
+running. Existing UDP loopback tests also require local socket access. No COM
+connection or Apply action is needed. See `G0_CHANGE_DESCRIPTION.md` for the
+implementation validation and the two recorded-session radio summaries.
