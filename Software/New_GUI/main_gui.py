@@ -603,6 +603,10 @@ class UwbFastGuiWindow(QMainWindow):
         self.chk_stability_colors.toggled.connect(self._on_canvas_overlay_changed)
         canvas_bar.addWidget(self.chk_stability_colors)
 
+        self.edit_waypoint_label = QLineEdit()
+        self.edit_waypoint_label.setPlaceholderText("label (e.g. P1_start)")
+        self.edit_waypoint_label.setMaximumWidth(180)
+        canvas_bar.addWidget(self.edit_waypoint_label)
         btn_mark_wp = QPushButton("Mark Point")
         btn_mark_wp.setToolTip("Drop a numbered waypoint marker (W1, W2...) on the 2D/3D map and record it in CSV log")
         btn_mark_wp.clicked.connect(self._mark_live_waypoint)
@@ -1904,8 +1908,11 @@ class UwbFastGuiWindow(QMainWindow):
         self.map_canvas.update()
 
     def _mark_live_waypoint(self) -> None:
-        wp = self.engine.mark_waypoint()
+        label = self.edit_waypoint_label.text().strip()
+        wp = self.engine.mark_waypoint(label)
         if wp is not None:
+            if label.endswith("_start"):
+                self.edit_waypoint_label.setText(label[:-6] + "_end")
             self._log_event(f"Marked Waypoint {wp[1]} at ({wp[2]:+.3f}, {wp[3]:+.3f}, {wp[4]:+.3f}) m")
             if self.csv_logger is not None:
                 self.csv_logger._write_metadata_snapshot()
