@@ -105,6 +105,7 @@ class FastCsvLogger:
                 "dropped_diag_records": self.dropped_diag_records,
                 "diag_sidecar": self.diag_path.name,
                 "power_info_flags": eng.info_flags,
+                "calibration": eng.last_applied_calibration,
                 "solver": {
                     "dimension": eng.solver_dimension,
                     "fixed_z_m": eng.fixed_z_m,

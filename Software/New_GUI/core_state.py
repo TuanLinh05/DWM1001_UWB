@@ -15,6 +15,7 @@ import re
 import statistics
 import struct
 import sys
+import time
 from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -29,6 +30,9 @@ from host_range_filter import HostRangeFilter  # noqa: E402
 from robust_range_ekf import RobustRangeEkf, RangeObservation  # noqa: E402
 from radio_quality import RadioQualityModel, QualityResult, QualityReplay, nlos_variance_scale  # noqa: E402
 from diag_rates import DiagTracker  # noqa: E402
+from multi_spot_calibration import (JointCalibrationResult, JointCalibrationSettings,
+                                    SOLVER_VERSION, observations_from_captures,
+                                    solve_joint_calibration)  # noqa: E402
 
 
 MAX_ANCHORS = 8
@@ -43,6 +47,8 @@ NLOS_ALERT_DB = 10.0
 SPOT_OFFSET_WARN_M = 0.25        # ranges imply the TAG is this far from the entered spot
 SPOT_RESIDUAL_WARN_MM = 150.0    # anchors disagree even after a shift + common offset
 CAL_BIAS_WARN_MM = 300.0         # per-anchor DS-TWR bias is normally well inside this
+CALIBRATION_METHODS = ("joint", "median")
+JOINT_WARNING_CODES = ("SPOT_OFFSET", "RESIDUAL_OUTLIER", "RESIDUAL_RMS", "BIAS_LARGE", "NOT_IDENTIFIABLE")
 SPOT_BIAS_SPREAD_M = 0.05        # assumed per-anchor bias spread for the offset uncertainty
 
 
@@ -784,6 +790,13 @@ class UwbStateEngine:
 
         self.reset_live_state()
         self.spot_captures: list[CalibrationSpotCapture] = []
+        self.calibration_method: str = "joint"
+        self.joint_settings = JointCalibrationSettings()
+        self.last_applied_calibration: dict | None = None
+        self._joint_cache_key = None
+        self._joint_cache_captures: tuple[CalibrationSpotCapture, ...] = ()
+        self._joint_cache_result: JointCalibrationResult | None = None
+        self._next_capture_index = 1
 
     def reset_live_state(self) -> None:
         self.live: dict[int, AnchorLiveState] = {
@@ -1104,7 +1117,7 @@ class UwbStateEngine:
             )
 
         capture = CalibrationSpotCapture(
-            spot_index=len(self.spot_captures) + 1,
+            spot_index=max(self._next_capture_index, max((c.spot_index for c in self.spot_captures), default=0) + 1),
             spot_xyz=self._cal_spot_xyz,
             single_anchor_id=self._cal_single_aid,
             reference_distance_m=(self._cal_single_ref_mm / 1000.0) if self._cal_single_aid else None,
@@ -1113,9 +1126,62 @@ class UwbStateEngine:
             consistency=consistency,
         )
         self.spot_captures.append(capture)
+        self._next_capture_index = capture.spot_index + 1
         return capture
 
+    def set_calibration_method(self, method: str) -> None:
+        if method not in CALIBRATION_METHODS:
+            raise ValueError(f"Unknown calibration method: {method}")
+        self.calibration_method = method
+
+    def joint_calibration(self) -> JointCalibrationResult | None:
+        """Solve once per capture identity, anchor geometry, dimension and settings."""
+        if not self.spot_captures:
+            self._joint_cache_key = None
+            self._joint_cache_captures = ()
+            self._joint_cache_result = None
+            return None
+        key = (tuple(id(c) for c in self.spot_captures),
+               tuple((a.anchor_id, a.x, a.y, a.z, a.enabled) for a in sorted(self.anchors.values(), key=lambda a: a.anchor_id)),
+               self.solver_dimension, self.joint_settings)
+        if key != self._joint_cache_key:
+            anchors = [a for a in self.anchors.values() if a.enabled]
+            spots, tapes = observations_from_captures(self.spot_captures, (a.anchor_id for a in anchors))
+            self._joint_cache_result = solve_joint_calibration(anchors, spots, tapes, self.solver_dimension, self.joint_settings)
+            self._joint_cache_captures = tuple(self.spot_captures)
+            self._joint_cache_key = key
+        return self._joint_cache_result
+
+    def active_calibration_method(self) -> str:
+        result = self.joint_calibration() if self.calibration_method == "joint" else None
+        return "joint" if result is not None and result.ok and result.method == "joint" and result.identifiable else "median"
+
+    def remove_capture(self, spot_index: int) -> bool:
+        for i, capture in enumerate(self.spot_captures):
+            if capture.spot_index == spot_index:
+                del self.spot_captures[i]
+                return True
+        return False
+
     def aggregated_calibration(self) -> dict[int, tuple[float, float, int]]:
+        """Return active biases, sample noise and number of usable captures."""
+        legacy = self._median_aggregated_calibration()
+        if self.active_calibration_method() != "joint":
+            return legacy
+        result = self.joint_calibration()
+        return {a: (b.bias_mm, legacy.get(a, (0.0, 30.0, 0))[1], b.spots_used + b.tape_used)
+                for a, b in result.biases.items()}
+
+    def calibration_summary(self) -> dict:
+        result = self.joint_calibration()
+        aggregated = self.aggregated_calibration()
+        return {"method_selected": self.calibration_method, "method_applied": self.active_calibration_method(),
+                "aggregated": {str(a): {"bias_mm": float(b) if math.isfinite(b) else None,
+                                       "sigma_mm": float(s) if math.isfinite(s) else None, "captures": n}
+                               for a, (b, s, n) in aggregated.items()},
+                "joint": result.to_dict() if result is not None else None}
+
+    def _median_aggregated_calibration(self) -> dict[int, tuple[float, float, int]]:
         """Return {anchor_id: (median_bias_mm, mean_sigma_mm, spot_count)} across all captures."""
         out: dict[int, tuple[float, float, int]] = {}
         for aid in range(1, MAX_ANCHORS + 1):
@@ -1139,6 +1205,9 @@ class UwbStateEngine:
                 continue
             for msg in cap.consistency.warnings:
                 out.append(f"Capture #{cap.spot_index}: {msg}")
+        result = self.joint_calibration() if self.calibration_method == "joint" else None
+        if result is not None and result.method == "joint":
+            out.extend(f"Joint solve: {w.message}" for w in result.warnings if w.code in JOINT_WARNING_CODES)
         return out
 
     def apply_calibration_to_host(self) -> dict[int, float]:
@@ -1149,6 +1218,15 @@ class UwbStateEngine:
             self.anchors[aid].bias_mm = bias_mm
             self.anchors[aid].sigma_mm = sigma_mm
             applied[aid] = bias_mm
+        method = self.active_calibration_method()
+        result = self.joint_calibration()
+        self.last_applied_calibration = {
+            "applied_unix_s": time.time(), "method": method,
+            "version": SOLVER_VERSION if method == "joint" else "per-spot-median-v1",
+            "biases_mm": {str(a): float(b) if math.isfinite(b) else None for a, b in applied.items()},
+            "spots": sum(c.spot_xyz is not None and c.single_anchor_id is None for c in self.spot_captures),
+            "joint": result.to_dict() if result is not None else None,
+        }
         return applied
 
     def start_accuracy_eval(
