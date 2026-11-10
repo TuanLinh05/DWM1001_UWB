@@ -32,6 +32,13 @@ class ImuSampleClock:
         self.last_us, self.last_mono_ns = device_us, monotonic_ns
         return device_us * 1000 + self.offset_ns
 
+    def to_stamp(self, device_us):
+        """Map another PX4 boot timestamp using the IMU offset, without mutating it."""
+        if type(device_us) is not int or device_us < 0 or self.offset_ns is None:
+            return None
+        stamp = device_us * 1000 + self.offset_ns
+        return stamp if 0 <= stamp < 2**63 else None
+
 
 def highres_imu_sample(msg, receive_ns, monotonic_ns, clock):
     # Bits 0..5 report fresh x/y/z acceleration and angular velocity.
@@ -44,3 +51,18 @@ def highres_imu_sample(msg, receive_ns, monotonic_ns, clock):
     if stamp is None:
         return None
     return stamp, values[:3], values[3:]
+
+
+def odometry_attitude(msg, clock):
+    """Device-stamped Hamilton quaternion: body FRD -> PX4 local NED."""
+    try:
+        q = tuple(float(v) for v in msg.q)
+        if len(q) != 4 or not all(math.isfinite(v) for v in q):
+            return None
+        norm = math.sqrt(sum(v*v for v in q))
+        stamp = clock.to_stamp(msg.time_usec)
+        if not .5 < norm < 2 or stamp is None:
+            return None
+        return stamp, tuple(v/norm for v in q)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None

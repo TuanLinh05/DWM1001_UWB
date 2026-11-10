@@ -17,6 +17,7 @@ import threading
 import rclpy
 from builtin_interfaces.msg import Time
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import QuaternionStamped
 from sensor_msgs.msg import Imu
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -24,7 +25,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String, UInt64
 
 from .px4_link import DEFAULT_RATES, Px4Link, parse_rates
-from .imu_bridge import ImuSampleClock, highres_imu_sample
+from .imu_bridge import ImuSampleClock, highres_imu_sample, odometry_attitude
 from .session import AlreadyRunning, bind_or_explain, single_instance, PX4_PORT_PATTERNS, find_port, session_dir, write_json
 
 
@@ -62,8 +63,10 @@ class Px4LoggerNode(Node):
         self._snapshot = self.create_publisher(String, "/px4/snapshot", qos)
         self._imu = self.create_publisher(Imu, "/px4/imu_frd", qos)
         self._imu_device_time = self.create_publisher(UInt64, "/px4/imu_device_time_us", qos)
+        self._attitude = self.create_publisher(QuaternionStamped, "/px4/attitude_frd", qos)
         self._imu_clock = ImuSampleClock()
         self._imu_samples = self._imu_rejected = 0
+        self._attitude_samples = self._attitude_rejected = 0
 
         self.link = Px4Link(
             device_resolver=lambda: find_port(config["px4_port"], PX4_PORT_PATTERNS),
@@ -104,6 +107,18 @@ class Px4LoggerNode(Node):
             return
         if msg.get_type() != "ODOMETRY":
             return
+        attitude = odometry_attitude(msg, self._imu_clock)
+        if attitude is None:
+            self._attitude_rejected += 1
+        else:
+            stamp, q = attitude
+            measured = QuaternionStamped()
+            measured.header.stamp = stamp_from_ns(stamp)
+            measured.header.frame_id = "px4_local_ned"
+            # q: body FRD -> local NED; no frame conversion at the bridge.
+            measured.quaternion.w, measured.quaternion.x, measured.quaternion.y, measured.quaternion.z = q
+            self._attitude.publish(measured)
+            self._attitude_samples += 1
         odom = Odometry()
         odom.header.stamp = stamp_from_ns(realtime_ns)
         odom.header.frame_id = f"px4_frame_{msg.frame_id}"
@@ -133,6 +148,9 @@ class Px4LoggerNode(Node):
         status["imu_bridge"] = {"samples": self._imu_samples, "rejected": self._imu_rejected,
                                 "clock_resets": self._imu_clock.resets, "frame": "px4_imu_frd",
                                 "clock": "device intervals anchored to UP7000 receive time"}
+        status["attitude_bridge"] = {"samples": self._attitude_samples, "rejected": self._attitude_rejected,
+                                     "frame": "px4_local_ned", "quaternion": "body FRD -> local NED (w,x,y,z)",
+                                     "clock": "PX4 device time using HIGHRES_IMU offset"}
         self._status.publish(String(data=json.dumps(status, default=str)))
 
     def shutdown(self) -> None:

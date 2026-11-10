@@ -19,7 +19,8 @@ px4_logger:
     px4_baud: 921600              # ignored by USB CDC, kept for a TELEM UART
     ulog_stream: true             # needs PX4 SDLOG_BACKEND with bit 1 (MAVLink)
     message_rates: ["ODOMETRY:50", "ATTITUDE_QUATERNION:50", "LOCAL_POSITION_NED:50",
-                    "HIGHRES_IMU:50", "ESTIMATOR_STATUS:10", "VIBRATION:5", "EXTENDED_SYS_STATE:2"]
+                    "HIGHRES_IMU:200", "ESTIMATOR_STATUS:10", "VIBRATION:5", "EXTENDED_SYS_STATE:2",
+                    "OPTICAL_FLOW_RAD:50", "DISTANCE_SENSOR:50"]
     timesync_hz: 2.0
     forward_mavlink: true         # QGroundControl on the ground PC, UDP 14550
     ground_host: ""               # "" = follow the address found by uwb_relay

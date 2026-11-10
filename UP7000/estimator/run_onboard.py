@@ -19,7 +19,7 @@ DATA = MOUNT / 'onboard_20261107/thoa'
 BASE = DATA / 'drone_tools/eskf'
 LOGS = DATA / 'flight_logs/eskf'
 EXECUTABLE = Path('/home/thoa/ros2_px4_v2/install/uwb_eskf/lib/uwb_eskf/uwb_eskf_node')
-TOPICS = ['/px4/imu_frd', '/px4/imu_device_time_us', '/px4/odometry', '/px4/status',
+TOPICS = ['/px4/imu_frd', '/px4/imu_device_time_us', '/px4/odometry', '/px4/status', '/px4/attitude_frd',
           '/px4/snapshot',
           '/uwb/cycle_seq', '/uwb/tag_time_us', '/uwb/device_info', '/uwb/burst_metadata',
           '/uwb_relay/status', '/uwb_eskf/odom', '/uwb_eskf/status', '/uwb_eskf/session']
