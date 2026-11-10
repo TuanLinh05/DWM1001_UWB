@@ -1,4 +1,4 @@
-"""Joint multi-spot UWB range-bias calibration (G0.1).
+"""Joint multi-spot UWB range-bias calibration with prior release (G0.1b).
 
 Plan: Plan/G0_KE_HOACH_HIEU_CHUAN_DA_DIEM_VA_DU_LIEU_CHUAN.md (section G0.1).
 Contract: tests/test_g0_multi_spot_solver.py. Do not loosen the tests.
@@ -19,6 +19,12 @@ produced +/-0.5 m "biases"). With two or more spots the data-only Jacobian is
 full rank, so this module estimates the biases b_i and the spot positions p_j
 together; the typed coordinates e_j are only a (robust) prior.
 
+After each solve, significantly displaced spots can be solved again with their
+position priors removed entirely, starting from the preceding solution. At most
+half the spots are released by default, over at most three total passes. Too
+many displaced spots produce MANY_SPOT_OFFSETS instead of masking a wrong rig
+origin or anchor coordinates. Released spots remain flagged for survey review.
+
 Tape (1D) captures add direct rows m_k = d_k + b_i + e_k (d_k = tape distance).
 
 Pure numpy, no Qt, no import of core_state (core_state imports this module).
@@ -34,7 +40,7 @@ from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 
-SOLVER_VERSION = "multi-spot-joint-v1"
+SOLVER_VERSION = "multi-spot-joint-v2"
 # Standard error of a median of N Gaussian samples = 1.2533 * sigma / sqrt(N).
 MEDIAN_EFFICIENCY = 1.2533
 
@@ -50,6 +56,7 @@ WARNING_CODES = (
     "BIAS_LARGE",         # |bias| above settings.bias_warn_mm
     "FLAT_HEIGHTS",       # 3D: all spots at about one height (common bias vs. height weakly separated)
     "ANCHOR_ONE_SPOT",    # an anchor was seen at only one spot and has no tape capture
+    "MANY_SPOT_OFFSETS",  # releasing the flagged spots would exceed the configured fraction
 )
 
 
@@ -96,6 +103,9 @@ class JointCalibrationSettings:
     residual_rms_warn_mm: float = 50.0
     bias_warn_mm: float = 300.0
     min_height_span_m: float = 0.30
+    release_flagged_spot_priors: bool = True
+    max_released_fraction: float = 0.5
+    max_passes: int = 3                     # total solve passes, including the first
 
 
 @dataclass(frozen=True)
@@ -128,6 +138,7 @@ class JointSpotResult:
     residuals_mm: dict[int, float]              # measured - model, per anchor
     residual_rms_mm: float                      # over the non-outlier anchors of this spot
     outlier_anchor_ids: tuple[int, ...]
+    prior_released: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,6 +157,8 @@ class JointCalibrationResult:
     warnings: tuple[CalibrationWarning, ...]
     settings: JointCalibrationSettings
     version: str = SOLVER_VERSION
+    passes: int = 0
+    released_spot_indices: tuple[int, ...] = ()
 
     def warning_codes(self) -> tuple[str, ...]:
         return tuple(w.code for w in self.warnings)
@@ -154,11 +167,12 @@ class JointCalibrationResult:
         """JSON-ready dict; json.dumps(result.to_dict(), allow_nan=False) must work.
 
         Keys: version, ok, method, dimension, identifiable, rank, unknowns,
-        condition_number, iterations, residual_rms_mm,
+        condition_number, iterations, passes, released_spot_indices, residual_rms_mm,
         biases {"<aid>": {bias_mm, std_mm, spots_used, tape_used,
                           per_spot_median_bias_mm, residual_rms_mm}},
         spots [{spot_index, entered_xyz, estimated_xyz, offset_m, offset_std_m,
-                anchors_used, residuals_mm {"<aid>": mm}, residual_rms_mm, outlier_anchor_ids}],
+                anchors_used, residuals_mm {"<aid>": mm}, residual_rms_mm,
+                outlier_anchor_ids, prior_released}],
         warnings [{code, message, spot_index, anchor_id}],
         settings {field: value}.
         Dict keys are strings; non-finite floats (nan, inf) become None.
@@ -176,6 +190,8 @@ def _json_value(value: Any) -> Any:
         return float(value) if math.isfinite(value) else None
     if isinstance(value, np.integer):
         return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
     return value
 
 
@@ -378,13 +394,25 @@ def solve_joint_calibration(
        spot_index and anchor_id set); residual RMS values exclude outliers
        identifiable / rank / condition: data-only Jacobian at the solution
        (same recipe as data_identifiability)
-    5. Warnings (one per item, with spot_index/anchor_id where relevant):
+    5. Release passes: start with no released spots. After every pass, flag
+       offsets above max(spot_offset_warn_m, 3 * offset_std_m), using that
+       pass's covariance. Stop if release is disabled, max_passes is reached,
+       or no new spot is flagged. If the union of flagged and released spots
+       exceeds floor(max_released_fraction * n_spots), keep the current solve
+       and warn MANY_SPOT_OFFSETS (check anchor coordinates and rig origin).
+       Otherwise remove all position-prior rows of that union and solve again,
+       starting from the preceding theta. Data rows and weak bias priors remain.
+       All output diagnostics use the final pass; iterations counts every
+       Gauss-Newton step across passes. Fallback/failed results have passes=0
+       and no released spots. In 2D even released spots keep their entered Z.
+    6. Warnings (one per item, with spot_index/anchor_id where relevant):
        SPOT_OFFSET when offset_m > max(spot_offset_warn_m, 3 * offset_std_m);
+       released spots keep this warning, with an explanation of the release;
        RESIDUAL_RMS when the overall RMS > residual_rms_warn_mm;
        BIAS_LARGE when |bias| > bias_warn_mm; ANCHOR_ONE_SPOT;
        NOT_IDENTIFIABLE when rank < unknowns;
        FLAT_HEIGHTS (3D) when the estimated spot heights span < min_height_span_m.
-    6. If the normal matrix is singular or the iteration produces non-finite
+    7. If the normal matrix is singular or the iteration produces non-finite
        numbers, return the legacy numbers with method="failed", ok=True when any
        bias exists, plus NOT_IDENTIFIABLE.
     """
@@ -432,6 +460,11 @@ def solve_joint_calibration(
                          and getattr(settings, name) >= 0 for name in threshold_fields)
     valid_settings = valid_settings and all(isinstance(v, (int, np.integer)) and v >= 1
                                            for v in (settings.max_iterations, settings.min_spots))
+    valid_settings = valid_settings and type(settings.release_flagged_spot_priors) is bool
+    valid_settings = valid_settings and isinstance(settings.max_passes, (int, np.integer)) \
+        and not isinstance(settings.max_passes, (bool, np.bool_)) and settings.max_passes >= 1
+    valid_settings = valid_settings and isinstance(settings.max_released_fraction, (int, float, np.number)) \
+        and _finite(settings.max_released_fraction) and 0 <= settings.max_released_fraction <= 1
     if not valid_settings:
         warnings.append(CalibrationWarning("NOT_IDENTIFIABLE", "Invalid joint calibration settings; using legacy biases."))
         return fallback("failed")
@@ -448,6 +481,7 @@ def solve_joint_calibration(
                for j, s in enumerate(spots) for a, m in s.median_raw_mm.items()]
     n_spot_rows = len(records)
     n_data = n_spot_rows + len(tapes)
+    released = set()
 
     def evaluate(values):
         positions = entered.copy()
@@ -470,6 +504,8 @@ def solve_joint_calibration(
             residual.append((t.median_raw_mm / 1000 - t.reference_mm / 1000 - values[bias_columns[t.anchor_id]]) / sigma)
             jac.append(row)
         for j in range(len(spots)):
+            if j in released:
+                continue
             for c in range(dimension):
                 col = n_bias + j * dimension + c
                 row = np.zeros(unknowns)
@@ -489,20 +525,41 @@ def solve_joint_calibration(
 
     try:
         iterations = 0
-        for iterations in range(1, settings.max_iterations + 1):
-            _, r, J, w = evaluate(theta)
-            normal = J.T @ (w[:, None] * J)
-            step = np.linalg.solve(normal, J.T @ (w * r))
-            if not np.all(np.isfinite(step)):
-                raise ValueError("Non-finite joint calibration step")
-            theta += step
-            if float(np.max(np.abs(step))) < settings.step_tolerance_m:
+        release_limit = math.floor(settings.max_released_fraction * len(spots))
+        for passes in range(1, settings.max_passes + 1):
+            for _ in range(settings.max_iterations):
+                iterations += 1
+                _, r, J, w = evaluate(theta)
+                normal = J.T @ (w[:, None] * J)
+                step = np.linalg.solve(normal, J.T @ (w * r))
+                if not np.all(np.isfinite(step)):
+                    raise ValueError("Non-finite joint calibration step")
+                theta += step
+                if float(np.max(np.abs(step))) < settings.step_tolerance_m:
+                    break
+            positions, r, J, w = evaluate(theta)
+            covariance = np.linalg.inv(J.T @ (w[:, None] * J))
+            covariance *= max(1.0, float(np.sum(w[:n_data] * r[:n_data] ** 2)) / max(1, n_data - unknowns))
+            if not np.all(np.isfinite(theta)) or not np.all(np.isfinite(covariance)):
+                raise ValueError("Non-finite joint calibration solution")
+            offsets = np.linalg.norm(positions - entered, axis=1)
+            offset_stds = []
+            for j in range(len(spots)):
+                start = n_bias + j * dimension
+                block = covariance[start:start + dimension, start:start + dimension]
+                offset_stds.append(math.sqrt(max(0.0, float(np.linalg.eigvalsh(block)[-1]))))
+            flagged = {j for j, (offset, std) in enumerate(zip(offsets, offset_stds))
+                       if offset > max(settings.spot_offset_warn_m, 3 * std)}
+            if not settings.release_flagged_spot_priors or passes == settings.max_passes or flagged <= released:
                 break
-        positions, r, J, w = evaluate(theta)
-        covariance = np.linalg.inv(J.T @ (w[:, None] * J))
-        covariance *= max(1.0, float(np.sum(w[:n_data] * r[:n_data] ** 2)) / max(1, n_data - unknowns))
-        if not np.all(np.isfinite(theta)) or not np.all(np.isfinite(covariance)):
-            raise ValueError("Non-finite joint calibration solution")
+            candidates = released | flagged
+            if len(candidates) > release_limit:
+                action = "No additional spot prior was released." if released else "No spot prior was released."
+                warnings.append(CalibrationWarning("MANY_SPOT_OFFSETS",
+                    "Too many spots disagree with their entered coordinates; check anchor coordinates "
+                    f"and the rig origin/axes. {action}"))
+                break
+            released = candidates
         solved_spots = [replace(s, entered_xyz=tuple(p)) for s, p in zip(spots, positions)]
         rank, unknowns, condition = _matrix_rank(_data_matrix(coords, solved_spots, tapes, dimension))
     except (np.linalg.LinAlgError, ValueError, FloatingPointError, OverflowError):
@@ -527,15 +584,16 @@ def solve_joint_calibration(
                 anchor_good[a].append(value)
                 all_good.append(value)
             row_index += 1
-        start = n_bias + j * dimension
-        block = covariance[start:start + dimension, start:start + dimension]
-        std = math.sqrt(max(0.0, float(np.linalg.eigvalsh(block)[-1])))
-        offset = float(np.linalg.norm(position - entered[j]))
-        if offset > max(settings.spot_offset_warn_m, 3 * std):
-            warnings.append(CalibrationWarning("SPOT_OFFSET", f"Spot #{s.spot_index} is {offset:.3f} m from the entered coordinates; check its surveyed position.", s.spot_index))
+        std, offset = offset_stds[j], float(offsets[j])
+        if j in flagged:
+            message = f"Spot #{s.spot_index} is {offset:.3f} m from the entered coordinates; check its surveyed position."
+            if j in released:
+                message += " Its prior was released; position estimated from ranges only."
+            warnings.append(CalibrationWarning("SPOT_OFFSET", message, s.spot_index))
         spot_results.append(JointSpotResult(s.spot_index, s.entered_xyz, tuple(float(v) for v in position),
                             offset, std, tuple(sorted(s.median_raw_mm)),
-                            {a: residuals[j, a] for a in s.median_raw_mm}, _rms(good) or 0.0, tuple(sorted(bad))))
+                            {a: residuals[j, a] for a in s.median_raw_mm}, _rms(good) or 0.0,
+                            tuple(sorted(bad)), prior_released=j in released))
     for k, t in enumerate(tapes, n_spot_rows):
         value = float(r[k] * _row_sigma(t.sigma_mm, t.samples, settings.tape_sigma_mm) * 1000)
         if outlier[k]:
@@ -561,7 +619,8 @@ def solve_joint_calibration(
     if dimension == 3 and np.ptp(positions[:, 2]) < settings.min_height_span_m:
         warnings.append(CalibrationWarning("FLAT_HEIGHTS", "Spot heights are too similar; collect spots at different heights."))
     return JointCalibrationResult(True, "joint", dimension, biases, tuple(spot_results), rms, iterations,
-                                  rank == unknowns, rank, unknowns, condition, tuple(warnings), settings)
+                                  rank == unknowns, rank, unknowns, condition, tuple(warnings), settings,
+                                  passes=passes, released_spot_indices=tuple(sorted(spots[j].spot_index for j in released)))
 
 
 def _row_sigma(sigma, samples, floor_mm):

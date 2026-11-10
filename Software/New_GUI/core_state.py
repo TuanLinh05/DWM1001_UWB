@@ -48,7 +48,7 @@ SPOT_OFFSET_WARN_M = 0.25        # ranges imply the TAG is this far from the ent
 SPOT_RESIDUAL_WARN_MM = 150.0    # anchors disagree even after a shift + common offset
 CAL_BIAS_WARN_MM = 300.0         # per-anchor DS-TWR bias is normally well inside this
 CALIBRATION_METHODS = ("joint", "median")
-JOINT_WARNING_CODES = ("SPOT_OFFSET", "RESIDUAL_OUTLIER", "RESIDUAL_RMS", "BIAS_LARGE", "NOT_IDENTIFIABLE")
+JOINT_WARNING_CODES = ("SPOT_OFFSET", "RESIDUAL_OUTLIER", "RESIDUAL_RMS", "BIAS_LARGE", "NOT_IDENTIFIABLE", "MANY_SPOT_OFFSETS")
 SPOT_BIAS_SPREAD_M = 0.05        # assumed per-anchor bias spread for the offset uncertainty
 
 
