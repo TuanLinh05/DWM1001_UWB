@@ -16,9 +16,11 @@ force in body FLU (m/s^2), gyro in rad/s. PX4 FRD -> FLU: diag(1, -1, -1).
 State p is the IMU/body origin; the TAG is at p + R @ lever_flu.
 
 Equations: copy filter.hpp exactly (same F, Q, Huber asymmetry, gate, Joseph
-form, injection). One intended difference: at initialization the body
-position is tag0 - R0 @ lever (the C++ node currently uses tag0 directly;
-report this in the change description so the C++ node can be fixed later).
+form, injection). Body initialization is tag0 - R0 @ lever. The request
+contrasted this with an older node using tag0 directly; the current workspace
+node already contains the lever correction. No onboard source is changed.
+The requested offline event driver assumes an initially static IMU averaging
+window and omits live ROS arrival-age/configuration/publication-time guards.
 """
 
 from __future__ import annotations

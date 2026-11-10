@@ -30,11 +30,12 @@ shadowing, and is only allowed when the data contain enough distinct headings.
 Units: metres and radians. Ranges columns follow the order of `anchors`.
 Pure numpy; no Qt; no import of core_state.
 
-Weight convention: the supplied numerical reference uses the Huber factor
-min(1, huber_m / abs(residual)) as a row multiplier, on BOTH the Jacobian and
-residual (and on design/target in regression). Thus its normal-equation weight
-is the square of that factor, stronger than standard square-root-weight Huber
-M-estimation. This convention is kept explicit for reproducibility.
+Weight convention: min(1, huber_m / abs(residual)) is a row multiplier on BOTH
+the Jacobian and residual (and on design/target in regression). Its normal-
+equation weight is the square of that factor, stronger than standard square-
+root-weight Huber M-estimation. This convention reproduces the supplied
+numerical examples and is explicit for reproducibility; it is not a claim
+about the reviewer's unavailable implementation.
 """
 
 from __future__ import annotations
@@ -179,11 +180,12 @@ def _solve_positions(xyz, ranges, seeds, huber_m, dimension=3, fixed_z=None):
     observations = ranges[indices]
     mask = valid[indices]
     for _ in range(12):
-        delta = positions[:, None, :] - xyz[None, :, :]
+        active = np.all(np.isfinite(positions), axis=1)
+        delta = np.where(active[:, None, None], positions[:, None, :] - xyz[None, :, :], 0.0)
         distances = np.linalg.norm(delta, axis=2)
-        residual = np.where(mask, observations - distances, 0.0)
+        residual = np.where(mask & active[:, None], observations - distances, 0.0)
         jac = delta[:, :, :dimension] / np.maximum(distances[:, :, None], 1e-12)
-        row_factor = mask * np.minimum(1.0, huber_m / np.maximum(np.abs(residual), 1e-15))
+        row_factor = (mask & active[:, None]) * np.minimum(1.0, huber_m / np.maximum(np.abs(residual), 1e-15))
         weights = row_factor ** 2
         normal = np.einsum("nai,na,naj->nij", jac, weights, jac)
         rhs = np.einsum("nai,na,na->ni", jac, weights, residual)
