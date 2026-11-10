@@ -171,5 +171,7 @@ nhiễu `sig_r` chung, không áp dụng host bias thêm lần nữa.
 
 `uwb_eskf/` trong thư mục này là nguồn ESKF đã triển khai. Trên UP7000 nó nằm
 ở `~/ros2_px4_v2/src/uwb_eskf`; phần IMU logger nằm trong package
-`~/UP4000/ros2_ws/src/uwb_px4_logger`. Các bản trước thay đổi nằm trên HDD tại
+`UP7000/ros2_ws/src/uwb_px4_logger` trong repo. Bản đã cài trước E2.2 trên máy vẫn có thể ở
+`~/UP4000/ros2_ws/src/uwb_px4_logger`; đổi tên thư mục tại PC không sửa máy đang chạy.
+Xem [E2.2](../../Software/New_GUI/E22_CHANGE_DESCRIPTION.md) để build và smoke bằng nguồn mới. Các bản trước thay đổi nằm trên HDD tại
 `~/drone_tools/eskf/backups/`.

@@ -1,8 +1,10 @@
-# UP4000 — ghi log UWB + PX4 trên drone, xem UWB qua WiFi
+# UP7000 — ghi log UWB + PX4 trên drone, xem UWB qua WiFi
+
+Thư mục này đã được đổi tên từ `UP4000` sang `UP7000`; logger và ESKF vẫn là mã đang dùng trên UP7000. Tên giao thức `up4000_status` giữ để tương thích. Các phần đo cũ bên dưới mô tả cấu hình/lần đo trước khi chuyển máy. E2.2 và lệnh build/smoke mới: [E22_CHANGE_DESCRIPTION.md](../Software/New_GUI/E22_CHANGE_DESCRIPTION.md).
 
 ```
 TAG DevKit ──micro-USB──┐                       WiFi (cùng mạng)
-                        ├── UP4000 (Ubuntu 22.04, ROS 2 Humble) ───UDP 15555──► New_GUI (Windows)
+                        ├── UP7000 (Ubuntu 22.04, ROS 2 Humble) ───UDP 15555──► New_GUI (Windows)
 Pixhawk 6C ──USB-C──────┘   ~/flight_logs/<ngày_giờ>/           ───UDP 14550──► QGroundControl
 ```
 
@@ -27,9 +29,9 @@ Dữ liệu EKF được lưu trên UP4000; UWB được ghi đầy đủ trên 
 | `timesync.csv` | Ánh xạ đồng hồ PX4 ↔ UP4000 để ghép ULog với UWB |
 | `px4_status.json`, `*_config.json` | Trạng thái và tham số đã dùng |
 
-## 1. Cài trên UP4000
+## 1. Cài trên UP7000
 
-Chép cả thư mục `UP4000` lên UP4000 (git clone hoặc scp), rồi:
+Chép cả thư mục `UP7000` lên UP7000 (git clone hoặc scp), rồi:
 
 ```bash
 bash UP7000/scripts/install.sh
