@@ -25,14 +25,14 @@ window and omits live ROS arrival-age/configuration/publication-time guards.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 import math
 from typing import Any, Sequence
 
 import numpy as np
 
-REPLAY_VERSION = "eskf-a-replay-v1"
+REPLAY_VERSION = "eskf-a-replay-v2"
 GRAVITY = np.array([0.0, 0.0, -9.81])
 
 
@@ -58,6 +58,12 @@ class EskfParams:
     sig_th0_deg: tuple[float, float, float] = (5.0, 5.0, 30.0)
     sig_ba0: float = 0.2
     sig_bg0_deg: float = 1.0
+    # Offline E2.1 extensions; defaults retain E2.0 dynamics and event handling.
+    min_anchor_interval_s: float = 0.0
+    reinit_keep_attitude: bool = False
+    att_sig_deg: tuple[float, float, float] = (2.0, 2.0, 5.0)
+    att_gate: float = 25.0
+    att_min_interval_s: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,12 @@ class RangeSample:
     t: float
     anchor_id: int
     range_m: float                         # already calibrated range (do not subtract a bias again)
+
+
+@dataclass(frozen=True)
+class AttitudeSample:
+    t: float
+    R: Any                                 # body FLU -> rig, proper orthonormal 3x3
 
 
 @dataclass
@@ -90,6 +102,10 @@ class ReplayResult:
     init_time: float | None     # time of the FIRST initialization
     reinits: int                # number of drops after reinit_after_rejects consecutive refusals
     version: str = REPLAY_VERSION
+    skipped_ranges: int = 0
+    att_update_t: np.ndarray = field(default_factory=lambda: np.empty(0))
+    att_accepted: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    att_nis: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def acceptance_ratio(self) -> float:
         return float(np.mean(self.update_accepted)) if len(self.update_accepted) else 0.0
@@ -108,6 +124,27 @@ def so3_exp(phi) -> np.ndarray:
         return np.eye(3) + skew(phi)
     k = skew(phi / angle)
     return np.eye(3) + math.sin(angle) * k + (1 - math.cos(angle)) * (k @ k)
+
+
+def log_so3(R) -> np.ndarray:
+    """Principal rotation vector, including stable small-angle and pi branches.
+
+    At exactly pi the axis sign is intrinsically ambiguous; choose a deterministic
+    eigenvector sign. On approach to pi use the skew part to retain its sign.
+    """
+    R = np.asarray(R, dtype=float)
+    sine_axis = np.array([R[2, 1]-R[1, 2], R[0, 2]-R[2, 0], R[1, 0]-R[0, 1]]) * .5
+    sine = float(np.linalg.norm(sine_axis))
+    angle = math.atan2(sine, float(np.clip((np.trace(R)-1)*.5, -1., 1.)))
+    if angle < 1e-9:
+        return sine_axis
+    if math.pi - angle < 1e-6:
+        _, vectors = np.linalg.eigh((R + R.T) * .5)
+        axis = vectors[:, -1]
+        if (sine > 1e-14 and axis @ sine_axis < 0) or (sine <= 1e-14 and axis[np.argmax(np.abs(axis))] < 0):
+            axis = -axis
+        return angle * axis
+    return sine_axis * (angle / sine)
 
 
 def attitude_from_accel(f, yaw: float) -> np.ndarray:
@@ -208,6 +245,28 @@ class ESKF:
             self.bg += dx[12:15]
         return accepted, nis, innovation
 
+    def update_attitude(self, measured_R, params):
+        """Body-frame SO(3) residual and full-state Joseph/injection update."""
+        residual = log_so3(self.R.T @ measured_R)
+        H = np.zeros((3, 15))
+        H[:, 6:9] = np.eye(3)
+        Rn = np.diag(np.square(np.radians(params.att_sig_deg)))
+        PH = self.P @ H.T
+        S = H @ PH + Rn
+        nis = float(residual @ np.linalg.solve(S, residual))
+        if nis > params.att_gate:
+            return False, nis
+        K = np.linalg.solve(S, PH.T).T
+        dx = K @ residual
+        IKH = np.eye(15) - K @ H
+        self.P = IKH @ self.P @ IKH.T + K @ Rn @ K.T
+        self.p += dx[:3]
+        self.v += dx[3:6]
+        self.R = self.R @ so3_exp(dx[6:9])
+        self.ba += dx[9:12]
+        self.bg += dx[12:15]
+        return True, nis
+
 
 def _geometry_ok(xyz):
     span = float(np.max(np.ptp(xyz, axis=0)))
@@ -217,7 +276,8 @@ def _geometry_ok(xyz):
 
 
 def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Sequence[RangeSample],
-                    lever_flu, yaw0_rad: float, params: EskfParams = EskfParams()) -> ReplayResult:
+                    lever_flu, yaw0_rad: float, params: EskfParams = EskfParams(),
+                    attitude: Sequence[AttitudeSample] = ()) -> ReplayResult:
     """Replay IMU and ranges in time order and return the filter trajectory.
 
     Input handling: drop samples with non-finite values, ranges of unknown/disabled anchors and
@@ -244,6 +304,13 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
         raise ValueError("Expected a finite FLU lever and initial rig yaw")
     if params.sig_r <= 0 or params.gate <= 0 or params.k_pos <= 0 or params.k_neg <= 0:
         raise ValueError("Range noise, gate and Huber thresholds must be positive")
+    if not math.isfinite(params.min_anchor_interval_s) or params.min_anchor_interval_s < 0:
+        raise ValueError("Expected a finite nonnegative per-anchor range interval")
+    if not math.isfinite(params.att_min_interval_s) or params.att_min_interval_s < 0 \
+            or not math.isfinite(params.att_gate) or params.att_gate <= 0 \
+            or np.shape(params.att_sig_deg) != (3,) or not np.isfinite(params.att_sig_deg).all() \
+            or min(params.att_sig_deg) <= 0:
+        raise ValueError("Expected finite positive attitude sigmas/gate and a nonnegative attitude interval")
     anchor_map = {a.anchor_id: np.array((a.x, a.y, a.z), dtype=float) for a in anchors
                   if getattr(a, "enabled", True) and np.all(np.isfinite((a.x, a.y, a.z)))}
     events = []
@@ -255,18 +322,35 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
     for sample in ranges:
         if math.isfinite(sample.t) and math.isfinite(sample.range_m) and sample.range_m > 0.01 and sample.anchor_id in anchor_map:
             events.append((sample.t, 1, sample.anchor_id, (sample.range_m,), sample))
+    for sample in attitude:
+        try:
+            R = np.asarray(sample.R, dtype=float)
+            valid = math.isfinite(sample.t) and R.shape == (3, 3) and np.isfinite(R).all() \
+                and np.allclose(R.T @ R, np.eye(3), atol=1e-6, rtol=0) and np.linalg.det(R) > 0
+        except (ValueError, TypeError):
+            valid = False
+        if valid:
+            events.append((sample.t, 2, 0, tuple(R.ravel()), AttitudeSample(sample.t, R)))
     events.sort(key=lambda e: e[:4])
     filter_ = None
     first_imu, previous_imu, init_time = None, None, None
     acc_sum, gyro_sum, count = np.zeros(3), np.zeros(3), 0
     attitude_ready = False
     R0, bg0 = np.eye(3), np.zeros(3)
+    held_R, held_bg = None, None
+    last_range, last_attitude = {}, -math.inf
+    skipped_ranges = 0
     latest = {}
     rejected_run = reinits = 0
-    rows, updates = [], []
+    rows, updates, att_updates = [], [], []
     enabled_xyz = np.asarray(list(anchor_map.values()), dtype=float).reshape((-1, 3))
     minimum = min(params.init_min_anchors, len(anchor_map))
     for time_, kind, _, _, sample in events:
+        if kind == 1:
+            if time_ - last_range.get(sample.anchor_id, -math.inf) < params.min_anchor_interval_s - 1e-9:
+                skipped_ranges += 1
+                continue
+            last_range[sample.anchor_id] = time_
         if kind == 0:
             if first_imu is None:
                 first_imu = time_
@@ -282,7 +366,14 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
                 filter_.predict(sample.acc, sample.gyro, time_ - previous_imu, params)
                 rows.append((time_, filter_.p.copy(), filter_.v.copy(), filter_.R.copy(),
                              filter_.p + filter_.R @ lever, np.sqrt(np.maximum(np.diag(filter_.P)[:3], 0.0))))
+            elif held_R is not None and previous_imu is not None and time_ > previous_imu:
+                held_R = held_R @ so3_exp((np.asarray(sample.gyro) - held_bg) * (time_ - previous_imu))
             previous_imu = time_
+        elif kind == 2:
+            if filter_ is not None and time_ - last_attitude >= params.att_min_interval_s - 1e-9:
+                last_attitude = time_
+                accepted, nis = filter_.update_attitude(sample.R, params)
+                att_updates.append((time_, accepted, nis))
         elif attitude_ready:
             if filter_ is None:
                 latest[sample.anchor_id] = (time_, sample.range_m)
@@ -298,7 +389,8 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
                 if not np.all(np.isfinite(tag0)) or rms > 3 * params.sig_r \
                         or np.any(tag0 < enabled_xyz.min(axis=0) - 2) or np.any(tag0 > enabled_xyz.max(axis=0) + 2):
                     continue
-                filter_ = ESKF(tag0 - R0 @ lever, R0, bg0, params)
+                init_R, init_bg = (held_R, held_bg) if held_R is not None else (R0, bg0)
+                filter_ = ESKF(tag0 - init_R @ lever, init_R, init_bg, params)
                 if init_time is None:
                     init_time = float(time_)
                 rejected_run = 0
@@ -307,6 +399,8 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
                 updates.append((time_, sample.anchor_id, accepted, nis, innovation))
                 rejected_run = 0 if accepted else rejected_run + 1
                 if rejected_run > params.reinit_after_rejects:
+                    if params.reinit_keep_attitude:
+                        held_R, held_bg = filter_.R.copy(), filter_.bg.copy()
                     filter_ = None
                     latest.clear()
                     reinits += 1
@@ -317,4 +411,6 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
         np.array([r[4] for r in rows]).reshape((-1, 3)), np.array([r[5] for r in rows]).reshape((-1, 3)),
         np.array([u[0] for u in updates]), np.array([u[1] for u in updates], dtype=int),
         np.array([u[2] for u in updates], dtype=bool), np.array([u[3] for u in updates]),
-        np.array([u[4] for u in updates]), init_time, reinits)
+        np.array([u[4] for u in updates]), init_time, reinits, skipped_ranges=skipped_ranges,
+        att_update_t=np.array([u[0] for u in att_updates]),
+        att_accepted=np.array([u[1] for u in att_updates], dtype=bool), att_nis=np.array([u[2] for u in att_updates]))
