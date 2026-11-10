@@ -586,7 +586,7 @@ def solve_joint_calibration(
                 all_good.append(value)
             row_index += 1
         std, offset = offset_stds[j], float(offsets[j])
-        if j in flagged:
+        if j in flagged or j in released:
             message = f"Spot #{s.spot_index} is {offset:.3f} m from the entered coordinates; check its surveyed position."
             if j in released:
                 message += " Its prior was released; position estimated from ranges only."

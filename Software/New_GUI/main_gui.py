@@ -1850,7 +1850,7 @@ class UwbFastGuiWindow(QMainWindow):
                     item.setToolTip("Prior released: position estimated from ranges only")
                 if capture.spot_index in flagged:
                     item.setBackground(QColor("#7F1D1D" if dark else "#FEE2E2"))
-                    item.setForeground(QColor("#991B1B"))
+                    item.setForeground(QColor("#FEE2E2" if dark else "#991B1B"))
                 self.cal_spot_table.setItem(row, col, item)
             if capture.spot_index == selected_id:
                 self.cal_spot_table.selectRow(row)
