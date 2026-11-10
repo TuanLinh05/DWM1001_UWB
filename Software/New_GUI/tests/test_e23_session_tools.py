@@ -147,6 +147,49 @@ class DeploymentTests(unittest.TestCase):
                 run.assert_not_called()
             for key,path in live.items():
                 self.assertEqual((path/'logger.py').read_text() if key=='logger' else path.read_text(),'old '+key)
+            (backup/'logger/logger.py').write_text('corrupted backup')
+            with self.assertRaises(ValueError):deploy.restore_backup(backup,live)
+            self.assertEqual(live['binary'].read_text(),'old binary')  # Reject before any replacement.
+
+    def test_install_preserves_machine_config_and_complete_rollback(self):
+        try:import yaml
+        except ImportError:self.skipTest('PyYAML used only by apply in ROS environment')
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);live=deploy.targets('/home/thoa',root)
+            runner="UUID = 'machine-specific'\nTOPICS = ['/px4/status']\n"
+            for key,path in live.items():
+                path.parent.mkdir(parents=True,exist_ok=True)
+                if key=='logger':path.mkdir()
+                else:path.write_text(runner if key=='runner' else 'old '+key)
+            original_runner_bytes=live['runner'].read_bytes()
+            cfg=Path('share/uwb_px4_logger/config/logger.yaml')
+            config=dict(uwb_relay=dict(ros__parameters=dict(tag_port='/dev/custom-tag')),
+                        px4_logger=dict(ros__parameters=dict(px4_port='/dev/custom-px4',message_rates=['HIGHRES_IMU:50','ODOMETRY:25'])))
+            (live['logger']/cfg).parent.mkdir(parents=True)
+            (live['logger']/cfg).write_text(yaml.safe_dump(config))
+            source=root/'source';workspace=root/'overlay'
+            new_schema=source/'Software/New_GUI/eskf_config.py';new_schema.parent.mkdir(parents=True);new_schema.write_text('new schema')
+            binary=workspace/'install/uwb_eskf/lib/uwb_eskf/uwb_eskf_node';binary.parent.mkdir(parents=True);binary.write_text('new binary')
+            logger=workspace/'install/uwb_px4_logger';(logger/cfg).parent.mkdir(parents=True)
+            (logger/cfg).write_text(yaml.safe_dump(config));(logger/'logger.py').write_text('new logger')
+            backup=root/'backup'
+            with patch.object(deploy.subprocess,'run') as run:
+                deploy.install_live(source,workspace,live,backup)
+                run.assert_not_called()
+                self.assertEqual(live['binary'].read_text(),'new binary')
+                self.assertEqual(live['schema'].read_text(),'new schema')
+                self.assertEqual(live['runner'].read_text().replace(", '/px4/attitude_frd'",''),runner)
+                self.assertEqual(live['runner'].read_bytes().replace(b", '/px4/attitude_frd'",b''),original_runner_bytes)
+                updated=yaml.safe_load((live['logger']/cfg).read_text())
+                self.assertEqual(updated['uwb_relay'],config['uwb_relay'])
+                self.assertEqual(updated['px4_logger']['ros__parameters']['px4_port'],'/dev/custom-px4')
+                self.assertEqual(updated['px4_logger']['ros__parameters']['message_rates'],['ODOMETRY:25','HIGHRES_IMU:200','ATTITUDE_QUATERNION:50'])
+                deploy.restore_backup(backup,live)
+                run.assert_not_called()
+            self.assertEqual(yaml.safe_load((live['logger']/cfg).read_text()),config)
+            self.assertEqual(live['runner'].read_text(),runner)
+            self.assertEqual(live['binary'].read_text(),'old binary')
+            self.assertEqual(live['schema'].read_text(),'old schema')
 
 
 if __name__=='__main__':unittest.main()

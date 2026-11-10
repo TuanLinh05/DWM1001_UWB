@@ -127,12 +127,23 @@ def backup_live(live, folder):
             if path.is_symlink():raise ValueError('Logger prefix is symlinked; inspect deployment manually')
             # Dereference internal symlinks so rollback does not depend on an old build overlay.
             shutil.copytree(path,folder/key,symlinks=False)
+            entry['sha256']=tree_digest(folder/key)
         else:
             shutil.copy2(path,folder/key)
             entry['sha256']=hashlib.sha256((folder/key).read_bytes()).hexdigest()
         manifest['targets'][key]=entry
     (folder/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
+
+
+def tree_digest(root):
+    digest=hashlib.sha256()
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():raise ValueError('Unexpected symlink in materialized backup')
+        digest.update(str(path.relative_to(root)).replace('\\','/').encode('utf-8')+b'\0')
+        digest.update(str(path.stat().st_mode&0o777).encode()+b'\0')
+        if path.is_file():digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def replace_logger(source, destination, suffix):
@@ -157,12 +168,14 @@ def restore_backup(folder, live, restart=False):
     for key,path in live.items():
         if entries[key]['path']!=str(path) or not (folder/key).exists():
             raise ValueError('Rollback paths must exactly match the four known live targets')
-        if key!='logger' and hashlib.sha256((folder/key).read_bytes()).hexdigest()!=entries[key]['sha256']:
+        actual=tree_digest(folder/key) if key=='logger' else hashlib.sha256((folder/key).read_bytes()).hexdigest()
+        if actual!=entries[key]['sha256']:
             raise ValueError('Backup checksum mismatch: '+key)
     suffix=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     for key,path in live.items():
         if key=='logger':replace_logger(folder/key,path,'rollback-'+suffix)
-        elif entries[key]['symlink'] is not None:
+        elif entries[key]['symlink'] is not None and (path.parent/entries[key]['symlink']).is_file() and \
+                hashlib.sha256((path.parent/entries[key]['symlink']).read_bytes()).hexdigest()==entries[key]['sha256']:
             # Restore original leaf link; its previous target was never overwritten.
             name=path.with_name(path.name+'.e23-link-'+suffix)
             if os.access(path.parent,os.W_OK):
@@ -179,7 +192,7 @@ def install_live(source, workspace, live, backup):
     """Install validated overlay with existing logger configs and runner guards intact."""
     manifest=backup_live(live,backup)  # All four complete before the first replacement.
     runner=patch_runner(live['runner'].read_bytes().decode('utf-8'))
-    runner_file=workspace/'runner-preserving-machine-guards.py';runner_file.write_text(runner)
+    runner_file=workspace/'runner-preserving-machine-guards.py';runner_file.write_bytes(runner.encode('utf-8'))
     logger=workspace/'install/uwb_px4_logger'
     old_config=live['logger']/'share/uwb_px4_logger/config'
     # Preserve machine-specific ports/configs. Only update the two E2.2 message
@@ -233,6 +246,8 @@ def main(argv=None):
         plan=dict(mode='rollback' if args.rollback else 'apply' if args.apply else 'build-only' if args.build_only else 'dry-run',
                   live_targets={k:str(v) for k,v in live.items()},workspace=str(workspace),
                   archive=['git','-c','core.autocrlf=false','archive','--format=tar',args.ref,'--',*SOURCE_PATHS],
+                  source_archive=str(args.source_archive) if args.source_archive else None,
+                  archive_sha256=args.archive_sha256,
                   commands=build_commands(workspace/'source',workspace,args.home),
                   test_environment='PYTHONPATH=$HOME/drone_tools/python; same --base-paths for build and test',
                   restart_units=UNITS if args.restart else [],
@@ -275,7 +290,8 @@ def main(argv=None):
         if counts['uwb_eskf']<4 or counts['uwb_px4_logger']<1:
             raise ValueError('Missing test results for one or both packages: '+str(counts))
         if args.apply:
-            backup=args.home/'e23_backups'/workspace.name
+            stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            backup=args.home/'e23_backups'/('backup_'+stamp+'_'+workspace.name)
             backup.parent.mkdir(parents=True,exist_ok=True)
             install_live(source,workspace,live,backup)
             print('Backup/rollback manifest: '+str(backup/'manifest.json'),flush=True)

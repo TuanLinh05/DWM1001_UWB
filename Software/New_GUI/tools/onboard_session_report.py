@@ -25,7 +25,7 @@ from onboard_session_io import read_session, read_tlog
 from onboard_replay import (compare_tracks, node_config, node_events, parse_rig,
                             replay_node, stream_stats)
 from eskf_config import PARAMETERS, aided_bias_rows
-from eskf_replay import px4_attitude_to_rig
+from eskf_replay import px4_yaw_ned
 from eskf_tuning import estimate_imu_noise, normalized_errors
 from eskf_a_replay import _metrics, _sample_track
 from eskf_tuning_report import _attitude_errors, _attitude_stats
@@ -360,7 +360,13 @@ def main(argv=None):
             params={**session.ros_params,**{k:v[0] for k,v in PARAMETERS.items()},
                     'configuration_confirmed':True,'lever':list(args.lever),'ignore_rig_bias':True}
             if args.yaw0_from_flight:
-                t0=session.boot_seconds(session.att_ns,session.att_log_ns)[0]
+                first_valid=None
+                for i,q in enumerate(session.att_q):
+                    try:px4_yaw_ned(q)
+                    except ValueError:continue
+                    first_valid=i;break
+                if first_valid is None:raise ValueError('No valid recorded attitude for --yaw0-from-flight')
+                t0=session.boot_seconds(session.att_ns,session.att_log_ns)[first_valid]
                 finite=np.isfinite(data.yaw_rig)&np.isfinite(data.t)
                 params['yaw0_deg']=float(np.degrees(np.interp(t0,data.t[finite],np.unwrap(data.yaw_rig[finite]))))
                 report['yaw0_source']=dict(method='Training-only GNSS-aligned rig yaw at first recorded attitude',boot_s=t0,fit_intervals_s=args.train)

@@ -84,13 +84,7 @@ def run(args):
     command=([str(args.node_exe.resolve())] if args.node_exe else ['ros2','run','uwb_eskf','uwb_eskf_node'])
     command+=['--ros-args','--params-file',str(config)]
     log=(out/'node.txt').open('w')
-    process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT)
-    if session:
-        recorder_log=(out/'recorder.txt').open('w')
-        recorder=subprocess.Popen(['ros2','bag','record','-s','mcap','-o',str(session/'bag'),
-                                   '--max-cache-size','33554432',*TOPICS],
-                                  stdout=recorder_log,stderr=subprocess.STDOUT)
-    rclpy.init()
+    process=None
 
     class Smoke(Node):
         def __init__(self):
@@ -170,6 +164,13 @@ def run(args):
 
     node=None
     try:
+        process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT)
+        if session:
+            recorder_log=(out/'recorder.txt').open('w')
+            recorder=subprocess.Popen(['ros2','bag','record','-s','mcap','-o',str(session/'bag'),
+                                       '--max-cache-size','33554432',*TOPICS],
+                                      stdout=recorder_log,stderr=subprocess.STDOUT)
+        rclpy.init()
         node=Smoke()
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
@@ -218,13 +219,14 @@ def run(args):
                 try:recorder.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     recorder.terminate();recorder.wait(timeout=5)
-            recorder_log.close()
-            session_info.update(closed=recorder.returncode==0 and (session/'bag/metadata.yaml').is_file(),
-                                recorder_returncode=recorder.returncode,stopped_unix_s=time.time())
+        if recorder_log is not None:recorder_log.close()
+        if session is not None:
+            session_info.update(closed=recorder is not None and recorder.returncode==0 and (session/'bag/metadata.yaml').is_file(),
+                                recorder_returncode=recorder.returncode if recorder is not None else None,stopped_unix_s=time.time())
             (session/'session.json').write_text(json.dumps(session_info,indent=2))
         if node is not None:node.destroy_node()
-        rclpy.try_shutdown()
-        if process.poll() is None:
+        if rclpy.ok():rclpy.try_shutdown()
+        if process is not None and process.poll() is None:
             process.send_signal(signal.SIGINT)
             try:process.wait(timeout=10)
             except subprocess.TimeoutExpired:
