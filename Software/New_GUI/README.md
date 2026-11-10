@@ -201,6 +201,77 @@ See `RADIO_QUALITY_VALIDATION.md` for validation and limitations. Signal-weighti
 improvements should be measured against independently known positions; smoother
 output or smaller solver residual alone does not establish position accuracy.
 
+## E2.1 offline IMU noise and ESKF tuning
+
+E2.1 studies flight vibration on the IMU stream actually consumed by replay.
+Run these commands from `Software/New_GUI`; `Logs/...` resolves from the repository
+root. Optional readers/plots use the same `pyulog`, `mcap`, `scipy` and `matplotlib`
+environment as E2.0. No GUI or onboard configuration is applied by these tools.
+
+```powershell
+python tools/imu_noise_report.py Logs/10112026/Test_1 --windows 75:195 --out Logs/10112026/Test_1/analysis/e21_imu_noise_native
+python tools/imu_noise_report.py Logs/10112026/Test_1 --windows 75:195 --stream-hz 50 --decimate pick --out Logs/10112026/Test_1/analysis/e21_imu_noise_pick50
+python tools/imu_noise_report.py Logs/10112026/Test_1 --windows 75:195 --stream-hz 50 --decimate mean --out Logs/10112026/Test_1/analysis/e21_imu_noise_mean50
+python tools/eskf_tuning_report.py Logs/10112026/Test_1 --lever -0.09,0,0.31 --train 75:195 --test 198:218,235:300 --imu-stream-hz 50 --imu-decimate mean --params-json Logs/10112026/Test_1/analysis/e21_imu_noise_mean50/recommended_params.json --out Logs/10112026/Test_1/analysis/e21_eskf_mean50
+python tools/eskf_tuning_report.py Logs/10112026/Test_1 --lever -0.09,0,0.31 --train 75:195 --test 198:218,235:300 --imu-stream-hz 50 --imu-decimate pick --params-json Logs/10112026/Test_1/analysis/e21_imu_noise_pick50/recommended_params.json --out Logs/10112026/Test_1/analysis/e21_eskf_pick50
+```
+
+Noise outputs: `imu_noise.json`, `recommended_params.json`, `windows.csv`, `psd.png`.
+The density is the worst-axis detrended sample standard deviation divided by
+the square root of the measured stream rate. Detrending never crosses a data
+gap or a selected interval edge. `pick` retains the first sample in each 20 ms
+bin; `mean` averages the bin, including its timestamp. Native sample timing
+remains irregular. Test_1 produces approximately:
+
+| Stream | na (m/s²/sqrtHz) | ng (rad/s/sqrtHz) | Warnings |
+| --- | ---: | ---: | --- |
+| Native, median 221.63 Hz | 0.4619 | 0.01506 | VIBRATION_HIGH, IRREGULAR_RATE |
+| Pick50, median 51.16 Hz | 0.8966 | 0.02790 | VIBRATION_HIGH, IRREGULAR_RATE, STREAM_ALIASING |
+| Mean50, median 49.88 Hz | 0.2932 | 0.01074 | VIBRATION_HIGH, IRREGULAR_RATE |
+
+The PX4 section reports each IMU instance's measured vibration statistics,
+clipping counter increments, recorded filter parameters and arming evidence.
+No additional threshold is applied to those PX4 metrics. The recording starts
+already armed, so it cannot provide a stationary pre-arm noise baseline.
+
+`recommended_params.json` has exactly `params` (every `EskfParams` field) and
+`provenance` (flight, windows, requested/measured stream rate, decimation, margin,
+version). The replay tool rejects unknown/missing fields, invalid types, nonfinite
+values, or provenance that differs from its training windows and IMU stream.
+Recommendations preserve the other defaults, set `min_anchor_interval_s=0.02`
+and `reinit_keep_attitude=True`, and never reduce noise below the supplied base.
+
+Replay outputs: `report.json`, `comparison.md/.csv`, `trajectories.npz`,
+`z_sigma.png`, `yaw_vs_px4.png`.
+NPZ state/event keys use `variant__field`, for example `tuned_att__update_t`;
+this keeps range and attitude event times in distinct namespaces.
+The variants share the same decimated IMU and training-only aided K=0 range correction:
+`default` uses `EskfParams()`,
+`tuned` uses the recommendation, and `tuned_att` also uses PX4 attitude at 50 Hz.
+The per-anchor interval and attitude noise/gate/interval are fixed design choices;
+there is no holdout parameter search. Inspect `report.json` → `acceptance` for
+every unchanged section 5 threshold, including any failed sanity check.
+
+On Test_1, both tuned variants pass the requested position/consistency bounds.
+Pick50 passes all acceptance checks. Mean50 retains one failed baseline sanity
+check: its mandatory `EskfParams()` baseline uses every range and does not diverge
+as much as the reference expected. A separate diagnostic with the reference's
+fixed 0.02 s interval reproduces one reinit and 1.58 m final-window XY RMSE.
+The required default and all acceptance thresholds remain as specified.
+
+`normalized_z` interpolates the estimate and body-position sigma at usable RF
+epochs, excludes RF age >0.5 s and estimate gaps >0.1 s, and reports coverage and
+RMS error/sigma. It omits lever-arm attitude covariance. Innovation correlation
+is reported per anchor at 0.1/0.5/1 s. PX4 attitude and IMU are correlated inputs.
+RF is the same source used to learn calibration, and GNSS is aligned on training
+data: neither reference is surveyed ground truth. Pick50 without attitude aiding
+still exhibits substantial yaw drift even when its position metrics pass.
+
+New tools only write below this flight's `analysis/e21_*`; they reject E2.0 and
+original-data destinations. `eskf_replay` is now `eskf-a-replay-v2`; its default
+trajectories retain E2.0 numerical behavior, with version/new-field metadata added.
+See [E21_CHANGE_DESCRIPTION.md](E21_CHANGE_DESCRIPTION.md) for validation and limitations.
+
 ## E2.0 offline tools
 
 These tools read a recorded flight and generate files under its
