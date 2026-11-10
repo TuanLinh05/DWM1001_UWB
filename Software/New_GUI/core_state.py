@@ -1141,7 +1141,8 @@ class UwbStateEngine:
             return None
         key = (tuple(id(c) for c in self.spot_captures),
                tuple((a.anchor_id, a.x, a.y, a.z, a.enabled) for a in sorted(self.anchors.values(), key=lambda a: a.anchor_id)),
-               self.solver_dimension, self.joint_settings)
+               self.solver_dimension, self.joint_settings,
+               tuple(type(value) for value in vars(self.joint_settings).values()))
         if key != self._joint_cache_key:
             anchors = [a for a in self.anchors.values() if a.enabled]
             spots, tapes = observations_from_captures(self.spot_captures, (a.anchor_id for a in anchors))
