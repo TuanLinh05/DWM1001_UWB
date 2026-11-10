@@ -212,6 +212,26 @@ The solver uses numpy only, Huber weights on ranges and position priors, and a
 20 mm systematic range uncertainty in addition to the median sampling error.
 Bias uncertainties are scaled covariance estimates under this model.
 
+Version `multi-spot-joint-v2` can run additional solve passes when a small
+number of spots have significant `SPOT_OFFSET` warnings. It removes those
+spots' position priors entirely and starts the next pass from the preceding
+solution. By default at most `floor(max_released_fraction * usable_spots)`
+priors are released (`max_released_fraction=0.5`), with at most three passes in
+total (`max_passes=3`). Setting `release_flagged_spot_priors=False` keeps the
+original single-pass numerical behavior. In 2D a released spot still keeps its
+entered Z. The status line lists released spot IDs; their offset cells show
+`(released)` and explain that position was estimated from ranges only. The
+offset warning remains available for survey review. A spot with no non-outlier
+residuals shows `--` for RMS and exports JSON `null`.
+
+If releasing all flagged spots would exceed the configured fraction, the solver
+keeps the current pass and reports `MANY_SPOT_OFFSETS`; check anchor coordinates
+and the rig origin/axes. Applied metadata and calibration JSON record the
+solver version, total passes, released spot IDs and each spot's release state.
+Prior release is a safety net: the correct response to a red spot remains to
+remeasure its position, or remove it and capture it again, then verify accuracy
+at independent surveyed points.
+
 1. Check anchor coordinates, enabled anchors and the sidebar's 2D/3D setting.
    In 2D each spot keeps exactly its entered Z; verify that height carefully.
 2. Press **Suggest spots** for four locations at 25%/75% of the anchor box with
@@ -243,6 +263,7 @@ capture count for median; the noise column still describes sample noise.
 | `SPOT_FEW_ANCHORS` | A spot has insufficient usable anchors and is excluded. |
 | `NOT_IDENTIFIABLE` | Data rank is insufficient or solving failed; collect more spatially diverse spots. |
 | `SPOT_OFFSET` | Estimated position differs by more than max(10 cm, three position standard deviations); check the survey. |
+| `MANY_SPOT_OFFSETS` | Releasing flagged priors would exceed the allowed fraction; check anchor coordinates and rig origin/axes. |
 | `RESIDUAL_OUTLIER` | An anchor/spot or tape row exceeds three normalized standard deviations; inspect NLOS and the survey. |
 | `RESIDUAL_RMS` | Non-outlier residual RMS exceeds 50 mm; check layout and multipath. |
 | `BIAS_LARGE` | A bias exceeds ±300 mm; check distances and geometry. |

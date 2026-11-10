@@ -1,5 +1,145 @@
 # G0: joint multi-spot calibration and dataset diagnostics
 
+## G0.1b — release passes (10 November 2026)
+
+`multi-spot-joint-v2` removes the position-prior rows of significantly displaced
+spots and solves again from the preceding solution. Defaults allow at most
+`floor(0.5 * usable_spots)` released spots and three total passes. All range
+rows and weak bias priors remain; Huber weights and covariance scaling are
+recomputed per pass. The final pass supplies biases, covariance, residuals,
+outliers and data-only identifiability. `iterations` sums all solve steps.
+
+If a proposed release exceeds the configured fraction, the current solution is
+kept and `MANY_SPOT_OFFSETS` asks the user to check **anchor coordinates** and
+the rig origin/axes. Points already released retain their `SPOT_OFFSET` warning
+and explain that their position was estimated from ranges only. This preserves
+the need to remeasure them rather than silently accepting the entered survey.
+In 2D even released spots retain their entered Z. Disabling release reproduces
+the original single-pass numerical results.
+
+Settings validate the actual boolean release flag, integer/non-boolean
+`max_passes >= 1`, and finite `max_released_fraction` in [0, 1]. Invalid settings
+return the existing failed/`NOT_IDENTIFIABLE` result. Failed/fallback results
+have zero passes and an empty released set. A spot whose every range is an
+outlier now has RMS `None` (JSON `null`) instead of an incorrect 0.0.
+
+The engine forwards the new warning to Apply/Write confirmation. Applied
+metadata, logger metadata and calibration JSON include the v2 version, pass
+count, released IDs and per-spot `prior_released`. The calibration page lists
+released IDs in its rank status, shows `(released)` with a tooltip in the offset
+cell, keeps the row red in both themes and displays `--` for unavailable RMS.
+No new rig-persistence calls, dependencies, firmware changes or COM connections
+were introduced. Prior release is a safety net; remeasurement and independent
+surveyed-point validation remain the normal workflow.
+
+### G0.1b contract and regression verification
+
+The 15 supplied `test_g0b_spot_prior_release.py` tests failed initially (6
+failures, 9 errors) and now all pass unchanged. The original 128 test identities
+from commit `4b93400` plus these 15 are present in the current discovered suite:
+**143/143 requested tests are covered**. The workspace also contains 21 tests
+from concurrent onboard/MCAP/configuration work, plus one new cache regression
+test, giving **165/165 passing tests**.
+None of the original contract/fixture files or
+`tests/test_calibration_regressions.py` was edited.
+
+```powershell
+cd "Software/New_GUI"
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Restricted-runner TEMP/TMP point to `logs/g0b_test_tmp`; existing UDP loopback
+tests run with local socket access. One initial full invocation exited with
+native Windows code `0xC0000005` and no Python traceback. A subsequent verbose
+fault-handler run and the standard-command rerun each completed all 164 tests.
+The initial native exit was not reproduced in those runs; it has no established
+root cause. Raw outputs, including the final verification, are retained in
+`logs/g0b_validation/full_suite*.txt`.
+
+Self-review found and fixed a cache-validation edge case: dataclass equality
+treats `True == 1` and `3 == 3.0` as equal, so a cached valid solve could be
+reused after assigning a wrong-typed release flag or pass limit. The cache key
+now includes setting value types. The added
+`tests/test_calibration_prior_release_cache.py` covers four type-coercing cases,
+verifies failed diagnostics and median fallback, and leaves the supplied tests
+and the original regression file untouched. The final source verification is
+`logs/g0b_validation/full_suite_final_165.txt`.
+
+Additional review assertions cover 15 invalid setting combinations, strict JSON
+for each failure, three no-data/single-spot/tape fallback cases, and pass-budget
+boundaries. A sequential-flag case (P2 X offset -0.65 m, P4 X offset -0.124 m)
+requires three passes and releases #2 then #4. With fraction 0.25 it stops after
+two passes, keeps only #2 released and warns that no **additional** prior was
+released. A two-pass cap stops before that budget warning; fraction zero
+releases nothing. Results: `logs/g0b_validation/release_limits_review.json`.
+
+### G0.1b numerical comparison
+
+Both implementations receive identical observations. The comparison uses an
+untouched pre-edit copy of `multi_spot_calibration.py`, not an emulation of v1.
+The deterministic fixture results reproduce the request's reference values:
+
+| Maximum anchor bias error | Original single pass | Release passes |
+| --- | ---: | ---: |
+| Exact ranges, P2 entered 0.65 m off | 10.519 mm | **0.015 mm** |
+| Fixture median noise, P2 entered wrong | 14.484 mm | **4.042 mm** |
+| Fixture median noise, P2 and P4 entered wrong | 27.665 mm | **4.477 mm** |
+| Two captures, P2 entered wrong | 55.777 mm | **6.091 mm** |
+| Clean fixture | 3.456 mm | **3.456 mm** (one pass) |
+
+Paired Monte Carlo uses seed `20261110`, the eight-anchor fixture rig, 200
+trials per scenario, independent 5 mm Gaussian errors on range medians and
+independent 2 cm/axis perturbations of true spot positions around the entered
+base points. Gross errors are P2 X -0.65 m, P4 X -0.60 m and, in the majority
+case, P3 Y +0.50 m. The wrong-rig case shifts every anchor X by +0.50 m. Each
+trial's same noise and true positions are reused across scenarios and solvers.
+
+| p95 of maximum anchor bias error (200 trials each) | Before | After |
+| --- | ---: | ---: |
+| Clean | 14.512 mm | 14.512 mm |
+| One mistyped point | 24.007 mm | **15.920 mm** |
+| Two mistyped points | 37.912 mm | **16.865 mm** |
+| Majority mistyped | 39.536 mm | 39.536 mm; warns, releases nothing |
+| Wrong rig origin | 77.921 mm | 77.921 mm; warns, releases nothing |
+
+All 1,000 trials returned identifiable joint results and the expected released
+set. No clean point was released; every majority/wrong-origin trial kept its
+warning. With release disabled, maximum numerical bias difference from the
+original implementation was **0.0 mm** across all 1,000 inputs. These random
+trials use the documented seed above, not the reviewer's unavailable private
+input set; they establish a paired before/after comparison rather than an exact
+comparison to that private Monte Carlo run.
+
+Reproduction script: `logs/g0b_validation/validate_before_after.py`; machine
+results: `before_after_results.json` in the same directory. These are synthetic
+checks; hardware range accuracy, NLOS and radio packet loss still need the
+existing independent-point and LOS tests.
+
+### G0.1b GUI, metadata and preservation checks
+
+The offscreen GUI was fed four engine captures with P2 entered 0.65 m wrong.
+Both light and dark Calibration pages were rendered and inspected at
+1700 x 1100: status includes `rank 20/20` and `priors released: #2`, the red
+offset cell reads `65.0 (released)` with the required tooltip, and bias estimates
+are close to known truth. Images:
+`logs/g0b_validation/calibration_released_light.png` and
+`logs/g0b_validation/calibration_released_dark.png`.
+
+GUI smoke checks also verified strict calibration JSON export, missing-RMS
+dashes, and v2 release metadata after applying to the in-memory engine and
+writing a temporary logger session. `_persist_rig_config` was patched to reject
+implicit saves. The current pre-existing `last_rig_config.json` was left intact;
+its SHA-256 at task start is
+`8c7479bd038232478580e13c2f905be6ca95067aa39becf45be8722cbbac4d70`.
+
+Before-edit snapshots/hashes are in `logs/g0b_validation/before/` and
+`baseline_hashes.json`. Only G0.1b hunks of the already-modified GUI/README are
+included in commits. Concurrent GUI/UP7000/MCAP work and its test edits remain
+in the working tree. Commit `2718d80` records the supplied new contract without
+changing it; implementation diffs against that baseline leave every protected
+contract/fixture file untouched. The earlier G0 results below are historical.
+
 ## Change description / PR body
 
 Single-spot calibration treated entered TAG coordinates as exact, so a misplaced
