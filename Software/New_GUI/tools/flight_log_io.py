@@ -102,7 +102,7 @@ def resolve_input(path):
 
 
 def output_directory(data, requested, default_name):
-    """Keep generated files in the flight's analysis/e20_* directories."""
+    """Keep generated files in the flight's analysis/e20_* or analysis/e21_* directories."""
     if requested is None:
         path = data.root / "analysis" / default_name
     else:
@@ -112,8 +112,8 @@ def output_directory(data, requested, default_name):
     path = path.resolve()
     analysis = (data.root / "analysis").resolve()
     if not path.is_relative_to(analysis) or not path.relative_to(analysis).parts \
-            or not path.relative_to(analysis).parts[0].startswith("e20_"):
-        raise ValueError("Offline outputs must be under this flight's analysis/e20_* directory")
+            or not path.relative_to(analysis).parts[0].startswith(("e20_", "e21_")):
+        raise ValueError("Offline outputs must be under this flight's analysis/e20_* or analysis/e21_* directory")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -338,6 +338,65 @@ def attitude_rotations(query, bridge, datasets):
     if len(times) < 2:
         raise ValueError("Insufficient valid attitude quaternions")
     return transform.Slerp(times, transform.Rotation.from_quat(quats))(np.clip(query, times[0], times[-1])).as_matrix()
+
+
+def rig_attitude_rotations(query, bridge, datasets, rig_yaw_offset):
+    """PX4 FRD->NED attitude expressed as body FLU->rig (E2.1)."""
+    angle = rig_yaw_offset - math.pi / 2
+    c, s = math.cos(angle), math.sin(angle)
+    Rz = np.array([[c, -s, 0.], [s, c, 0.], [0., 0., 1.]])
+    ned_to_enu = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
+    return (Rz @ ned_to_enu) @ attitude_rotations(query, bridge, datasets) @ np.diag([1., -1., -1.])
+
+
+def read_px4_diagnostics(path, intervals):
+    """Lazily read numeric PX4 vibration/filter/arming evidence; no heuristic thresholds.
+
+    Clipping fields are cumulative counters: sum positive counter increments
+    inside the selected windows (also report their maxima), never sum snapshots.
+    An armed_time earlier than the recording start is evidence of an already
+    armed recording; it is not an inferred pre-arm noise baseline.
+    """
+    ulog = dependency("pyulog").ULog(str(path))
+    status = {}
+    for dataset in ulog.data_list:
+        if dataset.name != "vehicle_imu_status":
+            continue
+        d = dataset.data
+        selected = interval_mask(d["timestamp"] / 1e6, intervals)
+        metrics = {}
+        for key in ("accel_vibration_metric", "gyro_vibration_metric"):
+            values = np.asarray(d.get(key, []), float)
+            values = values[selected] if len(values) == len(selected) else np.empty(0)
+            values = values[np.isfinite(values)]
+            metrics[key] = dict(median=float(np.median(values)) if len(values) else None,
+                                p95=float(np.percentile(values, 95)) if len(values) else None)
+        clipping, maxima = {}, {}
+        for sensor in ("accel", "gyro"):
+            totals, peaks = [], []
+            for axis in range(3):
+                values = np.asarray(d.get(f"{sensor}_clipping[{axis}]", np.zeros(len(selected))), float)
+                increments = np.maximum(np.diff(values, prepend=values[0]), 0.) if len(values) else values
+                totals.append(float(increments[selected].sum()))
+                peaks.append(float(values[selected].max()) if selected.any() else None)
+            clipping[sensor], maxima[sensor] = totals, peaks
+        status[str(dataset.multi_id)] = {**metrics, "samples": int(selected.sum()),
+                                        "clipping_increments_xyz": clipping, "clipping_counter_max_xyz": maxima,
+                                        "total_clipping": sum(sum(v) for v in clipping.values())}
+    names = ("IMU_GYRO_NF0_FRQ", "IMU_GYRO_NF0_BW", "IMU_GYRO_CUTOFF", "IMU_ACCEL_CUTOFF",
+             "IMU_GYRO_DNF_EN", "IMU_INTEG_RATE", "IMU_GYRO_RATEMAX", "SDLOG_PROFILE", "SDLOG_MODE")
+    arming = {"log_start_s": ulog.start_timestamp / 1e6, "armed_at_first_record": None,
+              "armed_time_s": None, "log_start_after_arm_s": None}
+    for dataset in ulog.data_list:
+        d = dataset.data
+        if dataset.name == "actuator_armed" and len(d["timestamp"]):
+            arming["armed_at_first_record"] = bool(d["armed"][0])
+        if dataset.name == "vehicle_status" and len(d["timestamp"]) and "armed_time" in d and d["armed_time"][0] > 0:
+            arming["armed_time_s"] = float(d["armed_time"][0] / 1e6)
+            arming["log_start_after_arm_s"] = arming["log_start_s"] - arming["armed_time_s"]
+    return {"vehicle_imu_status": status, "parameters": {n: ulog.initial_parameters.get(n) for n in names},
+            "arming": arming, "windows_s": intervals,
+            "clipping_definition": "Positive cumulative counter increments in selected windows; maxima also retained"}
 
 
 def height_reference(t, rotations, bridge, datasets, parameters, lever_flu, ground_tag_height_m=.51,

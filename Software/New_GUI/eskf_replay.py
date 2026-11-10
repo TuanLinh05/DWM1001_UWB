@@ -1,4 +1,4 @@
-"""Offline ESKF-A replay (E2.0-B).
+"""Offline ESKF-A replay (E2.0-B equations, opt-in E2.1 extensions).
 
 Plan: Plan/E2_0_YEU_CAU_HIEU_CHUAN_CO_CAM_BIEN_VA_REPLAY_ESKF_A.md (section 4).
 Contract: tests/test_e20_eskf_replay.py. Do not loosen the tests.
@@ -21,6 +21,9 @@ contrasted this with an older node using tag0 directly; the current workspace
 node already contains the lever correction. No onboard source is changed.
 The requested offline event driver assumes an initially static IMU averaging
 window and omits live ROS arrival-age/configuration/publication-time guards.
+E2.1 adds per-anchor rate limiting, propagated attitude carry-over on reinit,
+and optional body-frame PX4 attitude Joseph updates. Defaults retain the
+E2.0 numerical trajectories; version metadata is now v2.
 """
 
 from __future__ import annotations
@@ -282,7 +285,9 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
 
     Input handling: drop samples with non-finite values, ranges of unknown/disabled anchors and
     ranges <= 0.01 m. Merge and sort by (t, IMU before range, anchor_id) so the result does not
-    depend on input order.
+    depend on input order. Valid attitude events follow IMU and range events
+    at equal times. Rate limiting counts all valid retained ranges, including
+    those before initialization; skipped ranges are absent from update arrays.
 
     IMU event:
       - before attitude init: accumulate acc/gyro; once t - t_first >= init_static_s:
@@ -298,6 +303,13 @@ def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Se
       - initialized: ESKF::update (asymmetric Huber, gate, Joseph form, injection) and log
         (t, anchor, accepted, nis, innovation). After more than reinit_after_rejects consecutive
         refusals: drop the filter, clear the init buffer, reinits += 1.
+        With reinit_keep_attitude, retain the dropped filter's R/bg and propagate
+        R at subsequent IMU events until it is used for position reinitialization.
+    Attitude event:
+      - only after position init and at most once per att_min_interval_s since
+        the last offered attitude (accepted or rejected); body-frame log residual,
+        NIS gate and full 15-state Joseph/injection. It does not change the range
+        rejection streak. Invalid rotation samples are silently omitted.
     """
     lever = np.asarray(lever_flu, dtype=float)
     if lever.shape != (3,) or not np.all(np.isfinite(lever)) or not math.isfinite(yaw0_rad):
