@@ -102,7 +102,7 @@ def resolve_input(path):
 
 
 def output_directory(data, requested, default_name):
-    """Keep generated files in the flight's analysis/e20_* or analysis/e21_* directories."""
+    """Keep generated files in the flight's analysis/e20_*, e21_* or e23_* directories."""
     if requested is None:
         path = data.root / "analysis" / default_name
     else:
@@ -112,8 +112,8 @@ def output_directory(data, requested, default_name):
     path = path.resolve()
     analysis = (data.root / "analysis").resolve()
     if not path.is_relative_to(analysis) or not path.relative_to(analysis).parts \
-            or not path.relative_to(analysis).parts[0].startswith(("e20_", "e21_")):
-        raise ValueError("Offline outputs must be under this flight's analysis/e20_* or analysis/e21_* directory")
+            or not path.relative_to(analysis).parts[0].startswith(("e20_", "e21_", "e23_")):
+        raise ValueError("Offline outputs must be under this flight's analysis/e20_*, e21_* or e23_* directory")
     path.mkdir(parents=True, exist_ok=True)
     return path
 

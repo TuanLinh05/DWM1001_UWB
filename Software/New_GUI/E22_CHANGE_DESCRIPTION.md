@@ -199,7 +199,15 @@ trễ lịch mô phỏng hơn 50 ms. Script so body origin với truth, không n
 
 ## Lệnh để người dùng chạy trên UP7000
 
-Chép bản repo này vào `~/Github Clone UWB Test` trên UP7000. Không cần đổi/xóa
+Xuất bản đã commit với LF từ PC, gồm cả `UP7000/scripts/reset_tag_usb.py`:
+
+```powershell
+git -c core.autocrlf=false archive --format=tar --output=e22_source.tar HEAD UP7000/estimator UP7000/ros2_ws/src/uwb_px4_logger UP7000/scripts Software/New_GUI/eskf_config.py
+```
+
+Giải nén archive vào `~/Github Clone UWB Test` trên UP7000; kiểm nguồn không có CR.
+Không chép working tree Windows trực tiếp vì `core.autocrlf=true` có thể tạo CRLF.
+Không cần đổi/xóa
 `~/UP4000` đang được service cũ sử dụng. Chạy tại terminal **trên UP7000**:
 
 ```bash
@@ -210,9 +218,16 @@ mkdir -p "$HOME/e22_validation_ws"
 cd "$HOME/e22_validation_ws"
 colcon build --base-paths "$E22_REPO/UP7000/estimator/uwb_eskf" "$E22_REPO/UP7000/ros2_ws/src/uwb_px4_logger" --packages-select uwb_eskf uwb_px4_logger --executor sequential --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
-colcon test --packages-select uwb_eskf uwb_px4_logger --return-code-on-test-failure --event-handlers console_direct+
+export PYTHONPATH="$HOME/drone_tools/python${PYTHONPATH:+:$PYTHONPATH}"
+colcon test --base-paths "$E22_REPO/UP7000/estimator/uwb_eskf" "$E22_REPO/UP7000/ros2_ws/src/uwb_px4_logger" --packages-select uwb_eskf uwb_px4_logger --return-code-on-test-failure --event-handlers console_direct+
 colcon test-result --verbose
 ```
+
+Giữ cùng `--base-paths` khi build/test để tránh colcon chạy 0 test. `PYTHONPATH`
+trên cung cấp pymavlink đã có trên máy. Test logger còn dùng script reset USB
+trong `UP7000/scripts`, nên không được bỏ thư mục đó khỏi archive. E2.3 bổ sung
+`UP7000/scripts/deploy_onboard_eskf.sh`: mặc định dry-run, build overlay riêng,
+`--apply` sao lưu đủ bốn phần đang dùng và chỉ restart khi có `--restart`.
 
 Nếu máy không có px4_msgs, đường MAVLink không cần nó: thêm
 `-DUWB_ESKF_WITH_PX4_MSGS=OFF` ở cuối lệnh build. Nhánh `imu=px4` trực tiếp

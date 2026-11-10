@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ def run(args):
     from geometry_msgs.msg import QuaternionStamped
     from nav_msgs.msg import Odometry
     from sensor_msgs.msg import Imu,Range
-    from std_msgs.msg import String
+    from std_msgs.msg import String, UInt64
 
     # This tool is intentionally isolated from any active onboard recording node.
     if os.environ.get('ROS_LOCALHOST_ONLY')!='1' or int(os.environ.get('ROS_DOMAIN_ID','0'))==0:
@@ -64,10 +65,31 @@ def run(args):
                 imu_timeout_s=.2,range_timeout_s=.5,max_input_age_s=.25,min_init_anchors=6)
     config=out/'smoke.yaml'
     config.write_text(json.dumps({'uwb_eskf':{'ros__parameters':params}},indent=2))
+    recorder = recorder_log = None
+    session = session_info = None
+    if args.record_session:
+        from run_onboard import TOPICS
+        session = args.record_session.expanduser().resolve()
+        if session.exists():
+            raise ValueError('--record-session must name a new directory (never overwrite a session)')
+        (session/'config').mkdir(parents=True)
+        shutil.copyfile(rig, session/'config/rig_onboard.txt')
+        session_params = {**params, 'rig_file': str(session/'config/rig_onboard.txt')}
+        (session/'config/eskf.yaml').write_text(json.dumps({'uwb_eskf': {'ros__parameters': session_params}}, indent=2))
+        (session/'config/gui_config.json').write_text('{}\n')
+        session_info = dict(schema=1, source='isolated-synthetic-smoke', started_unix_s=time.time(),
+                            closed=False, topics=TOPICS, ros_domain_id=os.environ['ROS_DOMAIN_ID'],
+                            recording_context={'synthetic': True, 'hardware_access': False})
+        (session/'session.json').write_text(json.dumps(session_info, indent=2))
     command=([str(args.node_exe.resolve())] if args.node_exe else ['ros2','run','uwb_eskf','uwb_eskf_node'])
     command+=['--ros-args','--params-file',str(config)]
     log=(out/'node.txt').open('w')
     process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT)
+    if session:
+        recorder_log=(out/'recorder.txt').open('w')
+        recorder=subprocess.Popen(['ros2','bag','record','-s','mcap','-o',str(session/'bag'),
+                                   '--max-cache-size','33554432',*TOPICS],
+                                  stdout=recorder_log,stderr=subprocess.STDOUT)
     rclpy.init()
 
     class Smoke(Node):
@@ -75,6 +97,7 @@ def run(args):
             super().__init__('eskf_synthetic_smoke')
             qos=QoSProfile(depth=100,reliability=ReliabilityPolicy.RELIABLE)
             self.imu=self.create_publisher(Imu,'/px4/imu_frd',qos)
+            self.device_time=self.create_publisher(UInt64,'/px4/imu_device_time_us',qos)
             self.att=self.create_publisher(QuaternionStamped,'/px4/attitude_frd',qos)
             self.ranges=[self.create_publisher(Range,f'/uwb/anchor_{i+1}/range',qos) for i in range(8)]
             self.create_subscription(Odometry,'/uwb_eskf/odom',self.odometry,qos)
@@ -131,6 +154,7 @@ def run(args):
                 msg.linear_acceleration.x,msg.linear_acceleration.y,msg.linear_acceleration.z=map(float,a)
                 msg.angular_velocity.x,msg.angular_velocity.y,msg.angular_velocity.z=map(float,w)
                 self.imu.publish(msg)
+                device=UInt64();device.data=round(t*1e6);self.device_time.publish(device)
             if self.step%4==0:
                 # Level FRD->NED: rig yaw offset=.2, so PX4 yaw=.2-rig_yaw.
                 yaw=.2-math.atan2(R[1,0],R[0,0])
@@ -150,13 +174,17 @@ def run(args):
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             if process.poll() is not None:raise RuntimeError('Estimator exited; see node.txt')
+            if recorder is not None and recorder.poll() is not None:raise RuntimeError('Recorder exited; see recorder.txt')
             rclpy.spin_once(node,timeout_sec=.01)
-            if all(p.get_subscription_count()>0 for p in [node.imu,node.att,*node.ranges]):break
+            needed = 2 if recorder else 1
+            if all(p.get_subscription_count()>=needed for p in [node.imu,node.att,*node.ranges]) and (
+                    not recorder or node.device_time.get_subscription_count()>0):break
         else:raise RuntimeError('Estimator subscriptions did not appear within 15 s')
         node.start_ns=node.get_clock().now().nanoseconds
         node.start_wall=time.monotonic()
         while node.step<6000:
             if process.poll() is not None:raise RuntimeError('Estimator exited during simulation')
+            if recorder is not None and recorder.poll() is not None:raise RuntimeError('Recorder exited during simulation')
             due=node.start_wall+node.step/200.
             now=time.monotonic()
             if now<due:
@@ -184,6 +212,16 @@ def run(args):
         print(json.dumps(result,indent=2))
         return 0 if result['passed'] else 1
     finally:
+        if recorder is not None:
+            if recorder.poll() is None:
+                recorder.send_signal(signal.SIGINT)
+                try:recorder.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    recorder.terminate();recorder.wait(timeout=5)
+            recorder_log.close()
+            session_info.update(closed=recorder.returncode==0 and (session/'bag/metadata.yaml').is_file(),
+                                recorder_returncode=recorder.returncode,stopped_unix_s=time.time())
+            (session/'session.json').write_text(json.dumps(session_info,indent=2))
         if node is not None:node.destroy_node()
         rclpy.try_shutdown()
         if process.poll() is None:
@@ -199,6 +237,7 @@ def main(argv=None):
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--imu-gap',action='store_true')
     parser.add_argument('--node-exe',type=Path,help='Optional explicit binary; otherwise ros2 run uwb_eskf')
+    parser.add_argument('--record-session',type=Path,help='New native MCAP/session directory; never overwrite; isolated ROS domain only')
     args=parser.parse_args(argv)
     try:return run(args)
     except (ImportError,OSError,ValueError,RuntimeError) as exc:

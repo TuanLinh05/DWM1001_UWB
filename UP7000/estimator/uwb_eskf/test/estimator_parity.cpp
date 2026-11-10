@@ -10,7 +10,7 @@ using uwb::V3;using uwb::M3;using Core=uwb::Estimator;
 
 static std::vector<std::string> cells(const std::string &line){
   std::vector<std::string> out;std::istringstream input(line);std::string s;
-  while(std::getline(input,s,','))out.push_back(s);return out;
+  while(std::getline(input,s,',')){if(!s.empty()&&s.back()=='\r')s.pop_back();out.push_back(s);}return out;
 }
 static std::vector<double> numbers(const std::string &line){
   std::vector<double> out;for(const auto &s:cells(line))out.push_back(std::stod(s));return out;

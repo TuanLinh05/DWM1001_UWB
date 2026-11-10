@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 from typing import Any, Mapping
 
 import numpy as np  # noqa: F401
 
-from eskf_replay import EskfParams  # noqa: F401
+from eskf_replay import (AttitudeSample, EskfParams, ImuSample, RangeSample,
+                         px4_attitude_to_rig, rig_yaw_offset_from_yaw0, run_eskf_replay)
 
 ONBOARD_REPLAY_VERSION = "onboard-replay-v1"
 
@@ -77,7 +79,29 @@ def parse_rig(text: str):
     commas are separators; anchor id = digits between "an" and the first "_".
     "anN_p, x, y, z" (>= 3 numbers) -> anchors[N] = (x, y, z); "anN_bias, b" -> bias[N] = b;
     anything else (comments, short lines) is ignored. Returns (anchors dict, bias dict)."""
-    raise NotImplementedError("E2.3: implement parse_rig")
+    anchors, biases = {}, {}
+    for line in text.splitlines():
+        fields = line.strip().replace(',', ' ').split()
+        if not fields:
+            continue
+        match = re.fullmatch(r'an(\d+)_(p|bias)', fields[0])
+        if not match:
+            continue
+        aid, kind = int(match[1]), match[2]
+        count = 3 if kind == 'p' else 1
+        if len(fields) <= count:
+            continue
+        try:
+            values = tuple(float(x) for x in fields[1:count+1])
+        except ValueError:
+            continue
+        if not all(math.isfinite(v) for v in values):
+            continue
+        if kind == 'p':
+            anchors[aid] = values
+        else:
+            biases[aid] = values[0]
+    return anchors, biases
 
 
 def node_config(ros_params: Mapping[str, Any], rig_text: str) -> NodeConfig:
@@ -92,7 +116,64 @@ def node_config(ros_params: Mapping[str, Any], rig_text: str) -> NodeConfig:
     ValueError: use_px4_attitude not 0/1; lever missing/empty or not 3 values (the URDF fallback is not
     replayed offline); imu_R not 9 values; confirmed with < 4 anchors.
     """
-    raise NotImplementedError("E2.3: implement node_config")
+    if not isinstance(ros_params, Mapping):
+        raise ValueError('Expected ROS parameter mapping')
+    p = {**NODE_DEFAULTS, **ros_params}
+    xyz, bias = parse_rig(rig_text)
+    anchors = tuple(RigAnchor(aid, *point) for aid, point in sorted(xyz.items()))
+    lever = p.get('lever', ())
+    if not isinstance(lever, (list, tuple, np.ndarray)) or np.shape(lever) != (3,) or not np.isfinite(lever).all():
+        raise ValueError('Offline replay needs an explicit finite 3-value lever; URDF fallback is not replayed')
+    if type(p['use_px4_attitude']) is not int or p['use_px4_attitude'] not in (0, 1):
+        raise ValueError('use_px4_attitude must be integer 0 or 1')
+    for key in ('configuration_confirmed', 'ignore_rig_bias', 'reinit_keep_attitude'):
+        if type(p[key]) is not bool:
+            raise ValueError(key + ' must be boolean')
+    minimum = p.get('min_init_anchors', max(4, min(6, len(anchors))))
+    if type(minimum) is not int or minimum < 4 or (p['configuration_confirmed'] and minimum > len(anchors)):
+        raise ValueError('Invalid min_init_anchors or too few confirmed anchors')
+    mode = p['imu']
+    if mode not in ('none', 'mavlink', 'px4', 'd435i'):
+        raise ValueError('Unknown IMU mode')
+    default_R = (0.,0.,1.,-1.,0.,0.,0.,-1.,0.) if mode == 'd435i' else MAVLINK_IMU_R
+    rotation = np.asarray(p.get('imu_R', default_R) if mode != 'px4' else MAVLINK_IMU_R, float)
+    if rotation.shape != (9,) or not np.isfinite(rotation).all():
+        raise ValueError('imu_R must contain 9 finite values')
+    R = rotation.reshape(3,3)
+    if np.max(np.abs(R.T @ R - np.eye(3))) > 1e-6 or np.linalg.det(R) <= 0:
+        raise ValueError('imu_R must be a proper rotation')
+    names = ('sig_r','gate','k_pos','k_neg','na','ng','nba','nbg','init_static_s','init_window_s',
+             'reinit_after_rejects','min_anchor_interval_s','reinit_keep_attitude','att_gate','att_min_interval_s',
+             'imu_average_s','static_acc_tol','static_gyro_tol')
+    kwargs = {name:p[name] for name in names}
+    kwargs.update(init_min_anchors=minimum, att_sig_deg=(p['att_sig_tilt_deg'],p['att_sig_tilt_deg'],p['att_sig_yaw_deg']),
+                  attitude_init='external' if p['use_px4_attitude'] else 'static', static_check=True,
+                  imu_gap_reset_s=p['imu_timeout_s'])
+    if not math.isfinite(p['yaw0_deg']):
+        raise ValueError('Initial yaw must be finite')
+    for key in ('imu_timeout_s','range_timeout_s','max_input_age_s','init_static_s','init_window_s'):
+        if not math.isfinite(p[key]) or p[key] <= 0:
+            raise ValueError(key + ' must be finite and positive')
+    # Reuse the numerical core's parameter validation without replaying any inputs.
+    from eskf_replay import EstimatorCore
+    params = EskfParams(**kwargs)
+    EstimatorCore(anchors, lever, math.radians(p['yaw0_deg']), params)
+    return NodeConfig(p['configuration_confirmed'],mode,anchors,bias,p['ignore_rig_bias'],tuple(map(float,lever)),
+                      math.radians(p['yaw0_deg']),tuple(rotation),bool(p['use_px4_attitude']),params,
+                      p['imu_timeout_s'],p['range_timeout_s'],p['max_input_age_s'],str(p['config_sha256']))
+
+
+def _stamp(value):
+    """Keep integer ns precision; invalid header stamps do not enter the driver."""
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    if isinstance(value, (int, np.integer)):
+        value = int(value)
+    elif isinstance(value, (float, np.floating)) and math.isfinite(value) and value.is_integer():
+        value = int(value)
+    else:
+        return None
+    return value if 0 <= value <= np.iinfo(np.int64).max else None
 
 
 def node_events(config: NodeConfig, imu_ns, acc, gyro, att_ns=(), att_q=(), ranges: Mapping[int, Any] | None = None,
@@ -109,23 +190,134 @@ def node_events(config: NodeConfig, imu_ns, acc, gyro, att_ns=(), att_q=(), rang
     rig yaw offset = rig_yaw_offset_from_yaw0(first valid q, yaw0); R = px4_attitude_to_rig(q, offset);
     invalid quaternions and non-increasing stamps are dropped (attitude).
     """
-    raise NotImplementedError("E2.3: implement node_events")
+    ranges = ranges or {}
+    imu_ns, acc, gyro = np.asarray(imu_ns), np.asarray(acc,float), np.asarray(gyro,float)
+    att_ns, att_q = np.asarray(att_ns), np.asarray(att_q,float)
+    if imu_ns.ndim != 1 or acc.shape != (len(imu_ns),3) or gyro.shape != acc.shape:
+        raise ValueError('Expected IMU ns (N,), acc/gyro (N,3)')
+    if att_ns.ndim != 1 or att_q.size and att_q.shape != (len(att_ns),4) or not att_q.size and len(att_ns):
+        raise ValueError('Expected attitude ns (N,), quaternion (N,4)')
+    if origin_ns is None:
+        first = []
+        for values in [imu_ns, att_ns, *(pair[0] for pair in ranges.values())]:
+            for value in values:
+                stamp = _stamp(value)
+                if stamp is not None:
+                    first.append(stamp)
+                    break
+        origin_ns = min(first) if first else 0
+    origin_ns = _stamp(origin_ns)
+    if origin_ns is None:
+        raise ValueError('Expected an int64 nanosecond origin')
+    dropped = dict(imu=0,ranges_unconfirmed=0,ranges_invalid=0,ranges_unknown_anchor=0,attitude=0)
+    result = NodeEvents([],[],[],origin_ns,None,dropped)
+    rotation = np.array(config.imu_R).reshape(3,3)
+    previous = None
+    for value,a,g in zip(imu_ns,acc,gyro):
+        stamp = _stamp(value)
+        if stamp is None or not np.isfinite(a).all() or not np.isfinite(g).all() or previous is not None and stamp<=previous:
+            dropped['imu'] += 1
+            continue
+        previous = stamp
+        result.imu.append(ImuSample((stamp-origin_ns)*1e-9,tuple(rotation@a),tuple(rotation@g)))
+    known = {a.anchor_id for a in config.anchors}
+    for aid,pair in sorted(ranges.items()):
+        stamps, values = pair
+        if len(stamps)!=len(values):
+            raise ValueError('Range stamp/value length mismatch')
+        if not config.confirmed:
+            dropped['ranges_unconfirmed'] += len(stamps)
+            continue
+        if aid not in known:
+            dropped['ranges_unknown_anchor'] += len(stamps)
+            continue
+        previous = None
+        for value, measured in zip(stamps,values):
+            stamp = _stamp(value)
+            if stamp is None or not math.isfinite(measured) or measured<=0 or measured>100 or previous is not None and stamp<=previous:
+                dropped['ranges_invalid'] += 1
+                continue
+            previous = stamp
+            corrected = measured if config.ignore_rig_bias else measured-config.bias_m.get(aid,0.)
+            if corrected<=0:
+                dropped['ranges_invalid'] += 1
+                continue
+            result.ranges.append(RangeSample((stamp-origin_ns)*1e-9,int(aid),float(corrected)))
+    result.ranges.sort(key=lambda s:(s.t,s.anchor_id,s.range_m))
+    if config.use_px4_attitude and config.imu_mode!='none':
+        previous = None
+        for value,q in zip(att_ns,att_q):
+            stamp = _stamp(value)
+            try:
+                if stamp is None or previous is not None and stamp<=previous:
+                    raise ValueError('Non-increasing attitude stamp')
+                offset = result.rig_yaw_offset_rad
+                if offset is None:
+                    offset = rig_yaw_offset_from_yaw0(q,config.yaw0_rad)
+                R = px4_attitude_to_rig(q,offset)
+            except (ValueError,TypeError):
+                dropped['attitude'] += 1
+                continue
+            previous = stamp
+            result.rig_yaw_offset_rad = offset
+            result.attitude.append(AttitudeSample((stamp-origin_ns)*1e-9,R))
+    else:
+        dropped['attitude_disabled'] = len(att_ns)
+    return result
 
 
 def replay_node(config: NodeConfig, events: NodeEvents):
     """run_eskf_replay(config.anchors, events.imu, events.ranges, lever, yaw0, config.params,
     attitude=events.attitude). ValueError for imu_mode "none" (the UWB-only CV branch is not replayed)."""
-    raise NotImplementedError("E2.3: implement replay_node")
+    if config.imu_mode=='none':
+        raise ValueError('The UWB-only CV branch is not replayed by this tool')
+    return run_eskf_replay(config.anchors,events.imu,events.ranges,config.lever_flu,config.yaw0_rad,
+                           config.params,attitude=events.attitude)
 
 
 def compare_tracks(t_a, p_a, t_b, p_b, max_gap_s: float = 0.1) -> dict[str, float]:
     """Distance between track a and track b interpolated at a's times (inside b's span, not across
     b gaps > max_gap_s). Returns {"n", "coverage" (fraction of a used), "median_m", "p95_m", "max_m"};
     NaN stats and n = 0 when nothing overlaps."""
-    raise NotImplementedError("E2.3: implement compare_tracks")
+    t_a,p_a,t_b,p_b = map(lambda x:np.asarray(x,float),(t_a,p_a,t_b,p_b))
+    if t_a.ndim!=1 or t_b.ndim!=1 or p_a.shape!=(len(t_a),3) or p_b.shape!=(len(t_b),3):
+        raise ValueError('Expected times (N,) and XYZ positions (N,3)')
+    if not math.isfinite(max_gap_s) or max_gap_s<=0:
+        raise ValueError('Interpolation gap must be finite and positive')
+    empty = dict(n=0,coverage=0.,median_m=float('nan'),p95_m=float('nan'),max_m=float('nan'))
+    good = np.isfinite(t_b) & np.isfinite(p_b).all(axis=1)
+    order = np.argsort(t_b[good],kind='stable')
+    t_b,p_b = t_b[good][order],p_b[good][order]
+    if len(t_b)<2 or not len(t_a):
+        return empty
+    unique = np.r_[True,np.diff(t_b)>0]
+    t_b,p_b = t_b[unique],p_b[unique]
+    if len(t_b)<2:
+        return empty
+    right = np.clip(np.searchsorted(t_b,t_a),1,len(t_b)-1)
+    exact = (t_a==t_b[right]) | (t_a==t_b[right-1])
+    selected = np.isfinite(t_a) & np.isfinite(p_a).all(axis=1) & (t_a>=t_b[0]) & (t_a<=t_b[-1]) \
+        & ((t_b[right]-t_b[right-1]<=max_gap_s) | exact)
+    interp = np.column_stack([np.interp(t_a[selected],t_b,p_b[:,k]) for k in range(3)])
+    distance = np.linalg.norm(p_a[selected]-interp,axis=1)
+    if not len(distance):
+        return empty
+    return dict(n=len(distance),coverage=len(distance)/len(t_a),median_m=float(np.median(distance)),
+                p95_m=float(np.percentile(distance,95)),max_m=float(distance.max()))
 
 
 def stream_stats(stamps_ns, gap_s: float = 0.2) -> dict[str, float]:
     """{"samples", "duration_s", "rate_hz" (1 / median positive dt), "dt_ms_p50", "dt_ms_p95",
     "dt_ms_max", "gaps" (dt > gap_s), "gap_time_s", "non_increasing" (dt <= 0)} of an int64 ns stream."""
-    raise NotImplementedError("E2.3: implement stream_stats")
+    stamps = np.asarray(stamps_ns,dtype=np.int64)
+    if stamps.ndim!=1 or not math.isfinite(gap_s) or gap_s<=0:
+        raise ValueError('Expected a 1-D ns stream and finite positive gap threshold')
+    dt = np.diff(stamps)*1e-9
+    positive = dt[dt>0]
+    median = float(np.median(positive)) if len(positive) else float('nan')
+    gaps = dt>gap_s
+    return dict(samples=len(stamps),duration_s=float((int(stamps[-1])-int(stamps[0]))*1e-9) if len(stamps)>1 else 0.,
+                rate_hz=1/median,dt_ms_p50=median*1000,
+                dt_ms_p95=float(np.percentile(positive,95)*1000) if len(positive) else float('nan'),
+                dt_ms_max=float(positive.max()*1000) if len(positive) else float('nan'),gaps=int(gaps.sum()),
+                gap_time_s=float(dt[gaps].sum()),non_increasing=int((dt<=0).sum()))

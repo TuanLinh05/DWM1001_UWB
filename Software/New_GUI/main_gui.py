@@ -61,7 +61,7 @@ import telemetry_protocol as tp  # noqa: E402
 from diag_rates import format_rates  # noqa: E402
 from rosbag_logger import Ros2BagRecorder, plotjuggler_command  # noqa: E402
 from onboard_recording import OnboardRecordingWorker, DEFAULT_HOST  # noqa: E402
-from eskf_config import normalize_config, config_hash, PARAMETERS as ESKF_PARAMETERS  # noqa: E402
+from eskf_config import normalize_config, config_hash, aided_bias_rows, PARAMETERS as ESKF_PARAMETERS  # noqa: E402
 from up4000_panel import Up4000Panel, Up4000StatusListener  # noqa: E402
 from core_state import (  # noqa: E402
     AnchorConfig,
@@ -2524,6 +2524,8 @@ class UwbFastGuiWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_eskf_config_panel(self) -> QFrame:
+        self._eskf_aided_bias_m = []
+        self._eskf_recording_warnings = []
         panel = QFrame()
         panel.setObjectName('sub_card')
         layout = QVBoxLayout(panel)
@@ -2565,7 +2567,58 @@ class UwbFastGuiWindow(QMainWindow):
         self.chk_eskf_confirmed.setToolTip('Leave unchecked while surveying: inputs are still recorded and ESKF waits for configuration.')
         self.chk_eskf_confirmed.toggled.connect(self._on_eskf_confirmation)
         layout.addWidget(self.chk_eskf_confirmed)
+        bias_buttons = QHBoxLayout()
+        self.btn_eskf_import_aided = QPushButton('Nhập hiệu chuẩn hỗ trợ…')
+        self.btn_eskf_import_aided.clicked.connect(self._import_eskf_aided_bias)
+        self.btn_eskf_clear_aided = QPushButton('Xóa bias hỗ trợ')
+        self.btn_eskf_clear_aided.clicked.connect(self._clear_eskf_aided_bias)
+        bias_buttons.addWidget(self.btn_eskf_import_aided); bias_buttons.addWidget(self.btn_eskf_clear_aided)
+        layout.addLayout(bias_buttons)
+        self.lbl_eskf_aided_bias = QLabel()
+        self.lbl_eskf_aided_bias.setWordWrap(True)
+        layout.addWidget(self.lbl_eskf_aided_bias)
+        self.lbl_eskf_recording_warning = QLabel()
+        self.lbl_eskf_recording_warning.setWordWrap(True)
+        self.lbl_eskf_recording_warning.setStyleSheet('color: #b45309; font-weight: bold;')
+        layout.addWidget(self.lbl_eskf_recording_warning)
+        self._refresh_eskf_aided_label()
         return panel
+
+    def _refresh_eskf_aided_label(self):
+        text = ' · '.join(f'A{aid}: {bias*1000:+.1f} mm' for aid, bias in self._eskf_aided_bias_m)
+        self.lbl_eskf_aided_bias.setText('Bias hỗ trợ: ' + (text or 'chưa bật'))
+        self.lbl_eskf_aided_bias.setToolTip('Đo = khoảng cách thật + bias. Onboard trừ bias đúng một lần; chỉ nhập hiệu chuẩn K=0 của cùng rig.')
+        self.btn_eskf_clear_aided.setEnabled(bool(self._eskf_aided_bias_m))
+
+    def _import_eskf_aided_bias(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Nhập aided_calibration.json (cùng rig, K=0)', '', 'JSON (*.json)')
+        if not path:
+            return
+        try:
+            document = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+            rows = aided_bias_rows(document, set(self.engine.anchors))
+            # Validate the complete proposed payload before changing any editor state.
+            normalize_config({**self._eskf_payload(confirmed=False), 'aided_bias_m': rows})
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, 'Hiệu chuẩn hỗ trợ không hợp lệ', str(exc))
+            return
+        self._eskf_aided_bias_m = rows
+        self._refresh_eskf_aided_label()
+        self._eskf_settings_changed()
+
+    def _clear_eskf_aided_bias(self):
+        self._eskf_aided_bias_m = []
+        self._refresh_eskf_aided_label()
+        self._eskf_settings_changed()
+
+    @staticmethod
+    def _eskf_start_warnings(config):
+        warnings = []
+        if not any(config['lever_flu_m']):
+            warnings.append({'code': 'ZERO_LEVER', 'message': 'TAG–IMU offset = (0,0,0): hãy nhập độ lệch anten TAG so với IMU đã đo.'})
+        if not config['confirmed']:
+            warnings.append({'code': 'UNCONFIRMED', 'message': 'Chưa xác nhận cấu hình ESKF: vẫn ghi log nhưng node sẽ chờ WAIT_CONFIGURATION, không xuất vị trí.'})
+        return warnings
 
     def _eskf_payload(self, *, confirmed=None) -> dict:
         for key, widget in self.eskf_inputs.items():
@@ -2578,6 +2631,8 @@ class UwbFastGuiWindow(QMainWindow):
                  'yaw0_deg': self.eskf_inputs['yaw0_deg'].value(),
                  'parameters': {**{key: self.eskf_inputs[key].value() for key in ESKF_PARAMETERS if key in self.eskf_inputs},
                                 'use_px4_attitude': int(self.chk_use_px4_attitude.isChecked())}}
+        if self._eskf_aided_bias_m:
+            value['aided_bias_m'] = [row[:] for row in self._eskf_aided_bias_m]
         return normalize_config(value)
 
     def _eskf_fingerprint(self):
@@ -2614,6 +2669,8 @@ class UwbFastGuiWindow(QMainWindow):
         self._eskf_loading = True
         try:
             saved = json.loads(path.read_text(encoding='utf-8')); value = normalize_config(saved['settings'])
+            self._eskf_aided_bias_m = value.get('aided_bias_m', [])
+            self._refresh_eskf_aided_label()
             for axis, item in zip('xyz', value['lever_flu_m']):self.eskf_inputs['lever_' + axis].setValue(item)
             self.eskf_inputs['yaw0_deg'].setValue(value['yaw0_deg'])
             for key, item in value['parameters'].items():
@@ -2644,12 +2701,17 @@ class UwbFastGuiWindow(QMainWindow):
                     return
             if sync_onboard and self.serial_worker is None:
                 self._toggle_serial_connection()
+            self._eskf_recording_warnings = self._eskf_start_warnings(self._remote_config_snapshot) if sync_onboard else []
+            self.lbl_eskf_recording_warning.setText('\n'.join(w['message'] for w in self._eskf_recording_warnings))
             log_root = NEW_GUI_DIR / "logs"
             port_label = "DEMO" if self.demo_worker is not None else str(self.port_combo.currentData() or "UART")
             self._recording_demo = self.demo_worker is not None
             try:
                 self.csv_logger = FastCsvLogger(log_root, port_label, engine=self.engine)
                 self.last_log_dir = self.csv_logger.session_dir
+                metadata = json.loads(self.csv_logger.meta_path.read_text(encoding='utf-8'))
+                metadata['eskf_configuration_warnings'] = self._eskf_recording_warnings
+                self.csv_logger.meta_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
                 if self.log_format_combo.currentData():
                     self.rosbag_logger = Ros2BagRecorder(self.last_log_dir)
                     metadata = json.loads(self.csv_logger.meta_path.read_text(encoding="utf-8"))
@@ -2742,6 +2804,10 @@ class UwbFastGuiWindow(QMainWindow):
     def _refresh_recording_status(self) -> None:
         bag = self.rosbag_logger
         warning = (bag.error or (f"MCAP dropped {bag.dropped_events} events" if bag.dropped_events else "")) if bag else ""
+        if self.csv_logger is not None:
+            warning = '\n'.join(filter(None, [warning, *[w['message'] for w in self._eskf_recording_warnings]]))
+            if not bag:
+                self.btn_csv_log.setToolTip(warning)
         if bag:
             self.btn_csv_log.setToolTip(
                 f"{bag.messages_written:,} ROS 2 messages; {bag.dropped_events} dropped events\n{bag.bag_dir}\n{warning}\nUP7000: {self._remote_details.get('session', self._remote_error)}")
@@ -2763,6 +2829,7 @@ class UwbFastGuiWindow(QMainWindow):
             return
         value = {'host': self._remote_log_host, 'recording_id': self._remote_recording_id,
                  'eskf_config': self._remote_config_snapshot,
+                 'eskf_configuration_warnings': self._eskf_recording_warnings,
                  'config_sha256': config_hash(self._remote_config_snapshot) if self._remote_config_snapshot else '',
                  'state': self._remote_state, 'error': self._remote_error,
                  'updated_unix_s': time.time(), 'onboard': self._remote_details,

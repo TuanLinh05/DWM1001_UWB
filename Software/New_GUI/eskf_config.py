@@ -77,8 +77,20 @@ def normalize_config(value):
             raise ValueError('3D ESKF requires enabled anchors with non-coplanar coordinates')
         if any(math.dist(a[1:4], b[1:4]) < 1e-6 for a, b in itertools.combinations(enabled, 2)):
             raise ValueError('Enabled anchors cannot have identical coordinates')
-    return {'schema': 1, 'confirmed': value['confirmed'], 'anchors': anchors,
-            'lever_flu_m': lever, 'yaw0_deg': yaw, 'parameters': parameters}
+    aided = value.get('aided_bias_m', [])
+    if not isinstance(aided,list):
+        raise ValueError('aided_bias_m must be a list of [anchor_id, bias_m]')
+    aided_rows, aided_seen = [], set()
+    for row in aided:
+        if not isinstance(row,list) or len(row)!=2 or type(row[0]) is not int or row[0] not in seen or row[0] in aided_seen:
+            raise ValueError('Aided bias IDs must be unique integers present in the rig')
+        aided_seen.add(row[0])
+        aided_rows.append([row[0],number(row[1],-.5,.5,'Aided bias m')])
+    result = {'schema': 1, 'confirmed': value['confirmed'], 'anchors': anchors,
+              'lever_flu_m': lever, 'yaw0_deg': yaw, 'parameters': parameters}
+    if aided_rows:
+        result['aided_bias_m'] = sorted(aided_rows)
+    return result
 
 
 def config_hash(value):
@@ -86,15 +98,41 @@ def config_hash(value):
     return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
+def aided_bias_rows(document, known_ids):
+    """Import the constant E2.0 correction only; never discard directional terms."""
+    if not isinstance(document, dict) or document.get('ok') is not True or document.get('harmonics_used') != 0:
+        raise ValueError('Require a successful aided_calibration.json with harmonics_used = 0')
+    corrections = document.get('corrections')
+    if not isinstance(corrections, dict) or not corrections:
+        raise ValueError('Aided calibration has no corrections')
+    rows, seen = [], set()
+    for key, correction in corrections.items():
+        if not isinstance(correction, dict):
+            raise ValueError('Invalid aided correction')
+        aid = correction.get('anchor_id')
+        if type(aid) is not int or aid not in known_ids or str(aid) != key or aid in seen:
+            raise ValueError('Aided anchor IDs must match the current rig and JSON keys')
+        if correction.get('cos_m') != [] or correction.get('sin_m') != []:
+            raise ValueError('Directional corrections cannot be represented by constant onboard bias')
+        seen.add(aid)
+        rows.append([aid, number(correction.get('bias_m'), -.5, .5, 'Aided bias m')])
+    return sorted(rows)
+
+
 def render_files(value, directory):
     value = normalize_config(value)
     digest = config_hash(value)
     rig = '# GUI configuration ' + digest + '\n# Calibrated /range input; host bias is NOT subtracted again.\n'
     rig += ''.join(f'an{a[0]}_p, {a[1]}, {a[2]}, {a[3]}\n' for a in value['anchors'] if a[4])
+    enabled = {a[0] for a in value['anchors'] if a[4]}
+    aided = [(aid,bias) for aid,bias in value.get('aided_bias_m',[]) if aid in enabled]
+    if aided:
+        rig += '# Sensor-aided EXTRA bias: measured = true + bias; node subtracts once.\n'
+        rig += ''.join(f'an{aid}_bias, {bias}\n' for aid,bias in aided)
     params = {'imu': 'mavlink', 'imu_topic': '/px4/imu_frd', 'attitude_topic': '/px4/attitude_frd', 'imu_link': 'px4_imu_flu',
               'imu_R': [1., 0., 0., 0., -1., 0., 0., 0., -1.], 'frame_id': 'uwb_rig',
               'rig_file': str(directory) + '/rig_onboard.txt', 'configuration_confirmed': value['confirmed'],
-              'ignore_rig_bias': True, 'lever': value['lever_flu_m'], 'yaw0_deg': value['yaw0_deg'],
+              'ignore_rig_bias': not bool(aided), 'lever': value['lever_flu_m'], 'yaw0_deg': value['yaw0_deg'],
               'config_sha256': digest, **value['parameters']}
     physical = {'configuration_confirmed': value['confirmed'], 'source': 'GUI', 'config_sha256': digest,
                 'lever_flu_m': value['lever_flu_m'], 'yaw0_deg': value['yaw0_deg'],

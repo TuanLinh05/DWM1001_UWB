@@ -37,6 +37,36 @@ Or double-click `CHAY_GUI_MOI.cmd`.
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
+## E2.3 onboard shadow sessions
+
+The UP7000 ESKF panel can import **aided_calibration.json** (E2.0 K=0, same
+rig) and display/clear its extra bias per anchor. This is opt-in; the node
+subtracts `bias_m` once. Enter the measured TAG minus IMU offset in body FLU
+and initial heading, then confirm the physical configuration. Starting a log
+with zero offset or no confirmation shows a nonblocking warning and saves it
+in the recording manifests. An unconfirmed node records inputs but waits at
+`WAIT_CONFIGURATION` without publishing positions.
+
+Read-only analysis from this directory:
+
+```powershell
+python tools/onboard_session_report.py Logs/10112026/Test_1/onboard/eskf/20261110_101854_5500 --flight Logs/10112026/Test_1 --tlog Logs/10112026/Test_1/onboard/20261110_100743/px4.tlog --train 75:195 --test 198:218,235:300 --what-if-confirm --lever -0.09,0,0.31 --yaw0-from-flight --aided-bias-json Logs/10112026/Test_1/analysis/e20_aided/aided_calibration.json --out Logs/10112026/Test_1/analysis/e23_onboard_session
+```
+
+Without `--flight`, a native synthetic `smoke_test_eskf.py --record-session`
+session can be analyzed directly. Outputs stay in `analysis/e23_*`. Offline
+replay excludes live freshness/timeouts and publication timing. Flow is only
+analyzed for feasibility; no PX4 vision input or flow fusion is enabled.
+
+Use `bash UP7000/scripts/deploy_onboard_eskf.sh` for a read-only deployment
+plan, `--build-only` for a separate validated overlay, and explicit `--apply`
+for backed-up installation. `--restart` is separate. The source archive uses
+`git -c core.autocrlf=false archive` and rejects CR, including CSV fixtures.
+Build and test must use the same `--base-paths`; logger tests need
+`PYTHONPATH=$HOME/drone_tools/python` and `UP7000/scripts/reset_tag_usb.py`.
+See [E23_CHANGE_DESCRIPTION.md](E23_CHANGE_DESCRIPTION.md) for results and
+deployment/rollback instructions.
+
 ## Position filters
 
 The sidebar defaults to **Robust Adaptive EKF**. It estimates XYZ and velocity
