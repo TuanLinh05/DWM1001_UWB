@@ -32,19 +32,30 @@ def _unique_keys(pairs):
 
 def load_params(path, flight, train, stream_hz, decimate):
     """Strict recommendation schema, types, finite values and training/stream provenance."""
-    def bad_constant(value):
-        raise ValueError(f"Non-finite JSON constant: {value}")
+    # E2.2's disabled gap threshold is +infinity. Validate this one field
+    # separately; every other numeric parameter remains strictly finite.
     with resolve_input(path).open(encoding="utf-8-sig") as fh:
-        document = json.load(fh, object_pairs_hook=_unique_keys, parse_constant=bad_constant)
+        document = json.load(fh, object_pairs_hook=_unique_keys)
     if not isinstance(document, dict) or set(document) != {"params", "provenance"}:
         raise ValueError("Parameter JSON must contain exactly params and provenance")
     values = document["params"]
     expected = {f.name for f in fields(EskfParams)}
-    if not isinstance(values, dict) or set(values) != expected:
+    extensions = {"imu_average_s", "attitude_init", "static_check", "static_acc_tol", "static_gyro_tol", "imu_gap_reset_s"}
+    required = expected - extensions
+    if not isinstance(values, dict) or not required.issubset(values) or set(values) - expected:
         actual = set(values) if isinstance(values, dict) else set()
-        raise ValueError(f"EskfParams keys: missing={sorted(expected-actual)}, unknown={sorted(actual-expected)}")
+        raise ValueError(f"EskfParams keys: missing={sorted(required-actual)}, unknown={sorted(actual-expected)}")
     for name, value in values.items():
-        if name == "reinit_keep_attitude":
+        if name == "imu_gap_reset_s":
+            # strict JSON reports encode the disabled (+inf) threshold as null.
+            if value is None:
+                values[name] = math.inf
+            elif type(value) not in (int, float) or math.isnan(value) or value <= 0:
+                raise ValueError("Invalid IMU gap threshold")
+        elif name == "attitude_init":
+            if value not in ("static", "external"):
+                raise ValueError("Invalid attitude initialization mode")
+        elif name in ("reinit_keep_attitude", "static_check"):
             if type(value) is not bool:
                 raise ValueError(f"{name} must be boolean")
         elif name in ("att_sig_deg", "sig_th0_deg"):
@@ -56,7 +67,7 @@ def load_params(path, flight, train, stream_hz, decimate):
             if type(value) is not int or value < (4 if name == "init_min_anchors" else 1):
                 raise ValueError(f"Invalid positive integer {name}")
         else:
-            zero_allowed = name in ("na", "ng", "nba", "nbg", "min_anchor_interval_s", "att_min_interval_s")
+            zero_allowed = name in ("na", "ng", "nba", "nbg", "min_anchor_interval_s", "att_min_interval_s", "imu_average_s", "static_acc_tol", "static_gyro_tol")
             if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or (not zero_allowed and value == 0):
                 raise ValueError(f"Invalid finite {'nonnegative' if zero_allowed else 'positive'} {name}")
     provenance = document["provenance"]

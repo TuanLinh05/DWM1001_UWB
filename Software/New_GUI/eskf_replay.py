@@ -4,9 +4,9 @@ Plan: Plan/E2_0_YEU_CAU_HIEU_CHUAN_CO_CAM_BIEN_VA_REPLAY_ESKF_A.md (section 4).
 Contract: tests/test_e20_eskf_replay.py. Do not loosen the tests.
 
 Purpose: a Python mirror of the onboard filter
-UP4000/estimator/uwb_eskf/include/uwb_eskf/filter.hpp (struct ESKF,
+UP7000/estimator/uwb_eskf/include/uwb_eskf/filter.hpp (struct ESKF,
 range_update, so3_exp, attitude_from_accel, gauss_newton) and of the node logic
-in UP4000/estimator/uwb_eskf/src/uwb_eskf_node.cpp (static attitude init,
+in UP7000/estimator/uwb_eskf/src/uwb_eskf_node.cpp (static attitude init,
 Gauss-Newton position init, re-init after consecutive rejections). It replays
 logged IMU + UWB ranges deterministically so the onboard filter can be studied,
 tuned and later checked for parity against the C++ code.
@@ -67,6 +67,12 @@ class EskfParams:
     att_sig_deg: tuple[float, float, float] = (2.0, 2.0, 5.0)
     att_gate: float = 25.0
     att_min_interval_s: float = 0.02
+    imu_average_s: float = 0.0
+    attitude_init: str = "static"
+    static_check: bool = False
+    static_acc_tol: float = 0.8
+    static_gyro_tol: float = 0.15
+    imu_gap_reset_s: float = math.inf
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,8 @@ class ReplayResult:
     att_update_t: np.ndarray = field(default_factory=lambda: np.empty(0))
     att_accepted: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
     att_nis: np.ndarray = field(default_factory=lambda: np.empty(0))
+    imu_gap_resets: int = 0
+    attitude_inits: int = 0
 
     def acceptance_ratio(self) -> float:
         return float(np.mean(self.update_accepted)) if len(self.update_accepted) else 0.0
@@ -148,6 +156,38 @@ def log_so3(R) -> np.ndarray:
             axis = -axis
         return angle * axis
     return sine_axis * (angle / sine)
+
+
+def quat_to_matrix(q_wxyz) -> np.ndarray:
+    """Normalized Hamilton quaternion, PX4 body FRD -> local NED."""
+    q = np.asarray(q_wxyz, dtype=float)
+    if q.shape != (4,) or not np.isfinite(q).all() or not .5 < np.linalg.norm(q) < 2:
+        raise ValueError("Expected a finite Hamilton quaternion with norm in (0.5, 2)")
+    w, x, y, z = q / np.linalg.norm(q)
+    return np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                     [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                     [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+
+
+def px4_yaw_ned(q_wxyz) -> float:
+    R = quat_to_matrix(q_wxyz)
+    return math.atan2(R[1, 0], R[0, 0])
+
+
+def px4_attitude_to_rig(q_wxyz, rig_yaw_offset) -> np.ndarray:
+    if not math.isfinite(rig_yaw_offset):
+        raise ValueError("Expected a finite rig yaw offset")
+    angle = rig_yaw_offset - math.pi / 2
+    c, s = math.cos(angle), math.sin(angle)
+    Rz = np.array([[c, -s, 0.], [s, c, 0.], [0., 0., 1.]])
+    ned_to_enu = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
+    return Rz @ ned_to_enu @ quat_to_matrix(q_wxyz) @ np.diag([1., -1., -1.])
+
+
+def rig_yaw_offset_from_yaw0(q_wxyz, yaw0) -> float:
+    if not math.isfinite(yaw0):
+        raise ValueError("Expected a finite initial rig yaw")
+    return yaw0 + px4_yaw_ned(q_wxyz)
 
 
 def attitude_from_accel(f, yaw: float) -> np.ndarray:
@@ -278,151 +318,250 @@ def _geometry_ok(xyz):
                for i, j, k, l in combinations(range(len(xyz)), 4))
 
 
-def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Sequence[RangeSample],
-                    lever_flu, yaw0_rad: float, params: EskfParams = EskfParams(),
-                    attitude: Sequence[AttitudeSample] = ()) -> ReplayResult:
-    """Replay IMU and ranges in time order and return the filter trajectory.
-
-    Input handling: drop samples with non-finite values, ranges of unknown/disabled anchors and
-    ranges <= 0.01 m. Merge and sort by (t, IMU before range, anchor_id) so the result does not
-    depend on input order. Valid attitude events follow IMU and range events
-    at equal times. Rate limiting counts all valid retained ranges, including
-    those before initialization; skipped ranges are absent from update arrays.
-
-    IMU event:
-      - before attitude init: accumulate acc/gyro; once t - t_first >= init_static_s:
-        R0 = attitude_from_accel(mean acc, yaw0), bg0 = mean gyro.
-      - when initialized and t > t_prev: predict(acc, gyro, t - t_prev) exactly as ESKF::predict,
-        then append one output row (t, p, v, R, tag = p + R lever, p_std).
-    Range event:
-      - attitude not ready: ignore.
-      - not initialized: keep the latest (t, r) per anchor; when >= min(init_min_anchors, n_enabled)
-        anchors are newer than init_window_s, tag0 = gauss_newton(from their centroid); reject the
-        candidate if non-finite, if rms residual > 3 * sig_r, or if outside the anchor box +- 2 m;
-        else init ESKF at p = tag0 - R0 @ lever with R0, bg = bg0 (other states as ESKF::init).
-      - initialized: ESKF::update (asymmetric Huber, gate, Joseph form, injection) and log
-        (t, anchor, accepted, nis, innovation). After more than reinit_after_rejects consecutive
-        refusals: drop the filter, clear the init buffer, reinits += 1.
-        With reinit_keep_attitude, retain the dropped filter's R/bg and propagate
-        R at subsequent IMU events until it is used for position reinitialization.
-    Attitude event:
-      - only after position init and at most once per att_min_interval_s since
-        the last offered attitude (accepted or rejected); body-frame log residual,
-        NIS gate and full 15-state Joseph/injection. It does not change the range
-        rejection streak. Invalid rotation samples are silently omitted.
-    """
-    lever = np.asarray(lever_flu, dtype=float)
-    if lever.shape != (3,) or not np.all(np.isfinite(lever)) or not math.isfinite(yaw0_rad):
-        raise ValueError("Expected a finite FLU lever and initial rig yaw")
-    if params.sig_r <= 0 or params.gate <= 0 or params.k_pos <= 0 or params.k_neg <= 0:
-        raise ValueError("Range noise, gate and Huber thresholds must be positive")
-    if not math.isfinite(params.min_anchor_interval_s) or params.min_anchor_interval_s < 0:
-        raise ValueError("Expected a finite nonnegative per-anchor range interval")
-    if not math.isfinite(params.att_min_interval_s) or params.att_min_interval_s < 0 \
-            or not math.isfinite(params.att_gate) or params.att_gate <= 0 \
-            or np.shape(params.att_sig_deg) != (3,) or not np.isfinite(params.att_sig_deg).all() \
-            or min(params.att_sig_deg) <= 0:
-        raise ValueError("Expected finite positive attitude sigmas/gate and a nonnegative attitude interval")
-    anchor_map = {a.anchor_id: np.array((a.x, a.y, a.z), dtype=float) for a in anchors
-                  if getattr(a, "enabled", True) and np.all(np.isfinite((a.x, a.y, a.z)))}
+def sorted_events(imu, ranges, attitude, anchor_map):
+    """Finite input events ordered by time, IMU/range/attitude, ID and payload."""
     events = []
     for sample in imu:
-        acc, gyro = np.asarray(sample.acc, dtype=float), np.asarray(sample.gyro, dtype=float)
+        acc, gyro = np.asarray(sample.acc, float), np.asarray(sample.gyro, float)
         if math.isfinite(sample.t) and acc.shape == (3,) and gyro.shape == (3,) \
-                and np.all(np.isfinite(acc)) and np.all(np.isfinite(gyro)):
+                and np.isfinite(acc).all() and np.isfinite(gyro).all():
             events.append((sample.t, 0, 0, tuple(acc) + tuple(gyro), sample))
     for sample in ranges:
-        if math.isfinite(sample.t) and math.isfinite(sample.range_m) and sample.range_m > 0.01 and sample.anchor_id in anchor_map:
+        if math.isfinite(sample.t) and math.isfinite(sample.range_m) and sample.range_m > .01 and sample.anchor_id in anchor_map:
             events.append((sample.t, 1, sample.anchor_id, (sample.range_m,), sample))
     for sample in attitude:
         try:
-            R = np.asarray(sample.R, dtype=float)
+            R = np.asarray(sample.R, float)
             valid = math.isfinite(sample.t) and R.shape == (3, 3) and np.isfinite(R).all() \
                 and np.allclose(R.T @ R, np.eye(3), atol=1e-6, rtol=0) and np.linalg.det(R) > 0
         except (ValueError, TypeError):
             valid = False
         if valid:
             events.append((sample.t, 2, 0, tuple(R.ravel()), AttitudeSample(sample.t, R)))
-    events.sort(key=lambda e: e[:4])
-    filter_ = None
-    first_imu, previous_imu, init_time = None, None, None
-    acc_sum, gyro_sum, count = np.zeros(3), np.zeros(3), 0
-    attitude_ready = False
-    R0, bg0 = np.eye(3), np.zeros(3)
-    held_R, held_bg = None, None
-    last_range, last_attitude = {}, -math.inf
-    skipped_ranges = 0
-    latest = {}
-    rejected_run = reinits = 0
-    rows, updates, att_updates = [], [], []
-    enabled_xyz = np.asarray(list(anchor_map.values()), dtype=float).reshape((-1, 3))
-    minimum = min(params.init_min_anchors, len(anchor_map))
-    for time_, kind, _, _, sample in events:
-        if kind == 1:
-            if time_ - last_range.get(sample.anchor_id, -math.inf) < params.min_anchor_interval_s - 1e-9:
-                skipped_ranges += 1
-                continue
-            last_range[sample.anchor_id] = time_
-        if kind == 0:
-            if first_imu is None:
-                first_imu = time_
-            if not attitude_ready:
-                acc_sum += sample.acc
-                gyro_sum += sample.gyro
-                count += 1
-                if time_ - first_imu >= params.init_static_s:
-                    R0 = attitude_from_accel(acc_sum / count, yaw0_rad)
-                    bg0 = gyro_sum / count
-                    attitude_ready = True
-            elif filter_ is not None and previous_imu is not None and time_ > previous_imu:
-                filter_.predict(sample.acc, sample.gyro, time_ - previous_imu, params)
-                rows.append((time_, filter_.p.copy(), filter_.v.copy(), filter_.R.copy(),
-                             filter_.p + filter_.R @ lever, np.sqrt(np.maximum(np.diag(filter_.P)[:3], 0.0))))
-            elif held_R is not None and previous_imu is not None and time_ > previous_imu:
-                held_R = held_R @ so3_exp((np.asarray(sample.gyro) - held_bg) * (time_ - previous_imu))
-            previous_imu = time_
-        elif kind == 2:
-            if filter_ is not None and time_ - last_attitude >= params.att_min_interval_s - 1e-9:
-                last_attitude = time_
-                accepted, nis = filter_.update_attitude(sample.R, params)
-                att_updates.append((time_, accepted, nis))
-        elif attitude_ready:
-            if filter_ is None:
-                latest[sample.anchor_id] = (time_, sample.range_m)
-                recent = sorted(a for a, (t, _) in latest.items() if 0 <= time_ - t < params.init_window_s)
-                if len(recent) < max(4, minimum):
-                    continue
-                xyz = np.array([anchor_map[a] for a in recent])
-                if not _geometry_ok(xyz):
-                    continue
-                measured = np.array([latest[a][1] for a in recent])
-                tag0 = gauss_newton(xyz, measured, xyz.mean(axis=0))
-                rms = float(np.sqrt(np.mean((np.linalg.norm(tag0 - xyz, axis=1) - measured) ** 2)))
-                if not np.all(np.isfinite(tag0)) or rms > 3 * params.sig_r \
-                        or np.any(tag0 < enabled_xyz.min(axis=0) - 2) or np.any(tag0 > enabled_xyz.max(axis=0) + 2):
-                    continue
-                init_R, init_bg = (held_R, held_bg) if held_R is not None else (R0, bg0)
-                filter_ = ESKF(tag0 - init_R @ lever, init_R, init_bg, params)
-                if init_time is None:
-                    init_time = float(time_)
-                rejected_run = 0
+    return sorted(events, key=lambda e: e[:4])
+
+
+class EstimatorCore:
+    """ROS-free chronological event core shared by replay and C++ parity export.
+
+    Callbacks do not reorder input. Online averaging emits a bin's mean at the
+    arrival of the first raw sample in the next bin; no final-bin flush. Rows
+    carry the mean sample time, while ranges/attitudes keep their arrival order.
+    reset_attitude retains the latest external R but requires a fresh attitude
+    callback after at least one raw IMU before external initialization can resume.
+    """
+
+    def __init__(self, anchors, lever_flu, yaw0_rad, params=EskfParams()):
+        self.lever = np.asarray(lever_flu, float)
+        if self.lever.shape != (3,) or not np.isfinite(self.lever).all() or not math.isfinite(yaw0_rad):
+            raise ValueError("Expected a finite FLU lever and initial rig yaw")
+        if not np.isfinite([params.sig_r, params.gate, params.k_pos, params.k_neg]).all() \
+                or min(params.sig_r, params.gate, params.k_pos, params.k_neg) <= 0:
+            raise ValueError("Range noise, gate and Huber thresholds must be positive")
+        if not math.isfinite(params.min_anchor_interval_s) or params.min_anchor_interval_s < 0:
+            raise ValueError("Expected a finite nonnegative per-anchor range interval")
+        if not math.isfinite(params.att_min_interval_s) or params.att_min_interval_s < 0 \
+                or not math.isfinite(params.att_gate) or params.att_gate <= 0 \
+                or np.shape(params.att_sig_deg) != (3,) or not np.isfinite(params.att_sig_deg).all() or min(params.att_sig_deg) <= 0:
+            raise ValueError("Expected finite positive attitude sigmas/gate and nonnegative interval")
+        if not math.isfinite(params.imu_average_s) or params.imu_average_s < 0:
+            raise ValueError("Expected a finite nonnegative IMU averaging interval")
+        if params.attitude_init not in ("static", "external"):
+            raise ValueError("attitude_init must be static or external")
+        if math.isnan(params.imu_gap_reset_s) or params.imu_gap_reset_s <= 0:
+            raise ValueError("Expected a positive IMU gap reset threshold (infinity disables it)")
+        if not np.isfinite([params.static_acc_tol, params.static_gyro_tol]).all() \
+                or min(params.static_acc_tol, params.static_gyro_tol) < 0:
+            raise ValueError("Static tolerances must be finite and nonnegative")
+        self.params, self.yaw0 = params, yaw0_rad
+        self.anchors = {a.anchor_id: np.array((a.x, a.y, a.z), float) for a in anchors
+                        if getattr(a, 'enabled', True) and np.isfinite((a.x, a.y, a.z)).all()}
+        self.enabled_xyz = np.asarray(list(self.anchors.values()), float).reshape((-1, 3))
+        self.minimum = min(params.init_min_anchors, len(self.anchors))
+        self.rows, self.updates, self.att_updates = [], [], []
+        self.filter = None
+        self.init_time = None
+        self.reinits = self.skipped_ranges = self.imu_gap_resets = self.attitude_inits = 0
+        self.initializations = self.accepted_ranges = self.accepted_attitudes = self.rejected_attitudes = 0
+        self.last_range, self.last_attitude = {}, -math.inf
+        self.external_R = None
+        self.last_update = None
+        self._clear_attitude_state()
+
+    def _clear_static(self):
+        self.first_imu = None
+        self.acc_sum, self.gyro_sum, self.count = np.zeros(3), np.zeros(3), 0
+
+    def _clear_attitude_state(self):
+        self.filter = None
+        self.attitude_ready = False
+        self.R0, self.bg0 = np.eye(3), np.zeros(3)
+        self.held_R = self.held_bg = None
+        self.raw_previous = self.previous_imu = None
+        self.average_origin = self.average_bin = None
+        self.average_count = 0
+        self.average_t = 0.
+        self.average_acc, self.average_gyro = np.zeros(3), np.zeros(3)
+        self.latest, self.rejected_run = {}, 0
+        self._clear_static()
+
+    def reset_attitude(self, imu_gap=True):
+        self._clear_attitude_state()
+        self.last_update = None
+        if imu_gap:
+            self.imu_gap_resets += 1
+
+    def reset_position(self):
+        if self.filter is not None and self.params.reinit_keep_attitude:
+            self.held_R, self.held_bg = self.filter.R.copy(), self.filter.bg.copy()
+        self.filter = None
+        self.latest.clear()
+        self.rejected_run = 0
+
+    def on_imu(self, t, acc, gyro):
+        self.last_update = None
+        acc, gyro = np.asarray(acc, float), np.asarray(gyro, float)
+        if not math.isfinite(t) or acc.shape != (3,) or gyro.shape != (3,) \
+                or not np.isfinite(acc).all() or not np.isfinite(gyro).all():
+            return
+        if self.raw_previous is not None and t - self.raw_previous > self.params.imu_gap_reset_s:
+            self.reset_attitude()
+        self.raw_previous = t
+        width = self.params.imu_average_s
+        if width > 0:
+            if self.average_origin is None:
+                self.average_origin = t
+            bin_ = math.floor((t - self.average_origin) / width + 1e-9)
+            if self.average_bin is not None and bin_ != self.average_bin:
+                n = self.average_count
+                self._process_imu(self.average_t / n, self.average_acc / n, self.average_gyro / n)
+                self.average_count, self.average_t = 0, 0.
+                self.average_acc, self.average_gyro = np.zeros(3), np.zeros(3)
+            self.average_bin = bin_
+            self.average_t += t
+            self.average_acc += acc
+            self.average_gyro += gyro
+            self.average_count += 1
+        else:
+            self._process_imu(t, acc, gyro)
+
+    def _process_imu(self, t, acc, gyro):
+        if self.first_imu is None:
+            self.first_imu = t
+        if not self.attitude_ready:
+            if self.params.attitude_init == "static":
+                if self.params.static_check and (abs(np.linalg.norm(acc) - 9.81) > self.params.static_acc_tol
+                                                 or np.linalg.norm(gyro) > self.params.static_gyro_tol):
+                    self._clear_static()
+                else:
+                    self.acc_sum += acc
+                    self.gyro_sum += gyro
+                    self.count += 1
+                    if t - self.first_imu >= self.params.init_static_s:
+                        self.R0 = attitude_from_accel(self.acc_sum / self.count, self.yaw0)
+                        self.bg0 = self.gyro_sum / self.count
+                        self.attitude_ready = True
+                        self.attitude_inits += 1
+        elif self.filter is not None and self.previous_imu is not None and t > self.previous_imu:
+            self.filter.predict(acc, gyro, t - self.previous_imu, self.params)
+            f = self.filter
+            self.rows.append((t, f.p.copy(), f.v.copy(), f.R.copy(), f.p + f.R @ self.lever,
+                              np.sqrt(np.maximum(np.diag(f.P)[:3], 0.))))
+        elif self.held_R is not None and self.previous_imu is not None and t > self.previous_imu:
+            self.held_R = self.held_R @ so3_exp((gyro - self.held_bg) * (t - self.previous_imu))
+        self.previous_imu = t
+
+    def on_range(self, aid, t, measured):
+        self.last_update = None
+        if aid not in self.anchors or not math.isfinite(t) or not math.isfinite(measured) or measured <= .01:
+            return
+        if t - self.last_range.get(aid, -math.inf) < self.params.min_anchor_interval_s - 1e-9:
+            self.skipped_ranges += 1
+            return
+        self.last_range[aid] = t
+        if not self.attitude_ready:
+            return
+        if self.filter is None:
+            self.latest[aid] = (t, measured)
+            recent = sorted(a for a, (stamp, _) in self.latest.items() if 0 <= t-stamp < self.params.init_window_s)
+            if len(recent) < max(4, self.minimum):
+                return
+            xyz = np.array([self.anchors[a] for a in recent])
+            if not _geometry_ok(xyz):
+                return
+            ranges = np.array([self.latest[a][1] for a in recent])
+            tag0 = gauss_newton(xyz, ranges, xyz.mean(axis=0))
+            rms = float(np.sqrt(np.mean((np.linalg.norm(tag0-xyz, axis=1)-ranges)**2)))
+            if not np.isfinite(tag0).all() or rms > 3*self.params.sig_r \
+                    or np.any(tag0 < self.enabled_xyz.min(axis=0)-2) or np.any(tag0 > self.enabled_xyz.max(axis=0)+2):
+                return
+            if self.params.attitude_init == "external":
+                R, bg = self.external_R, self.held_bg if self.held_bg is not None else np.zeros(3)
             else:
-                accepted, nis, innovation = filter_.update(anchor_map[sample.anchor_id], sample.range_m, lever, params)
-                updates.append((time_, sample.anchor_id, accepted, nis, innovation))
-                rejected_run = 0 if accepted else rejected_run + 1
-                if rejected_run > params.reinit_after_rejects:
-                    if params.reinit_keep_attitude:
-                        held_R, held_bg = filter_.R.copy(), filter_.bg.copy()
-                    filter_ = None
-                    latest.clear()
-                    reinits += 1
-                    rejected_run = 0
-    return ReplayResult(
-        np.array([r[0] for r in rows]), np.array([r[1] for r in rows]).reshape((-1, 3)),
-        np.array([r[2] for r in rows]).reshape((-1, 3)), np.array([r[3] for r in rows]).reshape((-1, 3, 3)),
-        np.array([r[4] for r in rows]).reshape((-1, 3)), np.array([r[5] for r in rows]).reshape((-1, 3)),
-        np.array([u[0] for u in updates]), np.array([u[1] for u in updates], dtype=int),
-        np.array([u[2] for u in updates], dtype=bool), np.array([u[3] for u in updates]),
-        np.array([u[4] for u in updates]), init_time, reinits, skipped_ranges=skipped_ranges,
-        att_update_t=np.array([u[0] for u in att_updates]),
-        att_accepted=np.array([u[1] for u in att_updates], dtype=bool), att_nis=np.array([u[2] for u in att_updates]))
+                R, bg = (self.held_R, self.held_bg) if self.held_R is not None else (self.R0, self.bg0)
+            self.filter = ESKF(tag0-R @ self.lever, R, bg, self.params)
+            if self.init_time is None:
+                self.init_time = float(t)
+            self.initializations += 1
+            self.rejected_run = 0
+        else:
+            accepted, nis, innovation = self.filter.update(self.anchors[aid], measured, self.lever, self.params)
+            self.updates.append((t, aid, accepted, nis, innovation))
+            self.last_update = (1, t, aid, accepted, nis, innovation)
+            self.accepted_ranges += int(accepted)
+            self.rejected_run = 0 if accepted else self.rejected_run + 1
+            if self.rejected_run > self.params.reinit_after_rejects:
+                self.reset_position()
+                self.reinits += 1
+
+    def on_attitude(self, t, R):
+        self.last_update = None
+        R = np.asarray(R, float)
+        if not math.isfinite(t) or R.shape != (3, 3) or not np.isfinite(R).all() \
+                or not np.allclose(R.T @ R, np.eye(3), atol=1e-6, rtol=0) or np.linalg.det(R) <= 0:
+            return
+        if self.params.attitude_init == "external":
+            self.external_R = R.copy()
+            if not self.attitude_ready and self.raw_previous is not None:
+                self.attitude_ready = True
+                self.attitude_inits += 1
+        if self.filter is not None and t - self.last_attitude >= self.params.att_min_interval_s - 1e-9:
+            self.last_attitude = t
+            accepted, nis = self.filter.update_attitude(R, self.params)
+            self.att_updates.append((t, accepted, nis))
+            self.last_update = (2, t, 0, accepted, nis, float('nan'))
+            self.accepted_attitudes += int(accepted)
+            self.rejected_attitudes += int(not accepted)
+
+    def result(self):
+        rows, updates, att_updates = self.rows, self.updates, self.att_updates
+        return ReplayResult(
+            np.array([r[0] for r in rows]), np.array([r[1] for r in rows]).reshape((-1, 3)),
+            np.array([r[2] for r in rows]).reshape((-1, 3)), np.array([r[3] for r in rows]).reshape((-1, 3, 3)),
+            np.array([r[4] for r in rows]).reshape((-1, 3)), np.array([r[5] for r in rows]).reshape((-1, 3)),
+            np.array([u[0] for u in updates]), np.array([u[1] for u in updates], dtype=int),
+            np.array([u[2] for u in updates], dtype=bool), np.array([u[3] for u in updates]),
+            np.array([u[4] for u in updates]), self.init_time, self.reinits, skipped_ranges=self.skipped_ranges,
+            att_update_t=np.array([u[0] for u in att_updates]),
+            att_accepted=np.array([u[1] for u in att_updates], dtype=bool), att_nis=np.array([u[2] for u in att_updates]),
+            imu_gap_resets=self.imu_gap_resets, attitude_inits=self.attitude_inits)
+
+
+def run_eskf_replay(anchors: Sequence[Any], imu: Sequence[ImuSample], ranges: Sequence[RangeSample],
+                    lever_flu, yaw0_rad: float, params: EskfParams = EskfParams(),
+                    attitude: Sequence[AttitudeSample] = ()) -> ReplayResult:
+    """Replay sorted events through the same chronological core used by parity.
+
+    Defaults retain E2.0/E2.1 trajectories. Opt-in E2.2 parameters enable online
+    bin averaging, the actual static-start rule, external attitude initialization
+    and recovery after raw-IMU gaps. The final open averaging bin is not flushed.
+    """
+    core = EstimatorCore(anchors, lever_flu, yaw0_rad, params)
+    for t, kind, _, _, sample in sorted_events(imu, ranges, attitude, core.anchors):
+        if kind == 0:
+            core.on_imu(t, sample.acc, sample.gyro)
+        elif kind == 1:
+            core.on_range(sample.anchor_id, t, sample.range_m)
+        else:
+            core.on_attitude(t, sample.R)
+    return core.result()
