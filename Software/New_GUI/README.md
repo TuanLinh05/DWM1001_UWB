@@ -201,6 +201,74 @@ See `RADIO_QUALITY_VALIDATION.md` for validation and limitations. Signal-weighti
 improvements should be measured against independently known positions; smoother
 output or smaller solver residual alone does not establish position accuracy.
 
+## E2.0 offline tools
+
+These tools read a recorded flight and generate files under its
+`analysis/e20_*` directories. They do not connect to the drone or apply changes
+to the GUI, firmware, PX4 or onboard estimator. The two core modules use only
+numpy and the standard library. Optional readers/plots lazily load `pyulog`,
+`mcap`, `scipy` and `matplotlib`; if needed, install these separately:
+
+```powershell
+python -m pip install pyulog mcap scipy matplotlib
+```
+
+These research dependencies are intentionally absent from GUI requirements.
+Run from `Software/New_GUI`; paths beginning with `Logs/` resolve against the
+repository root:
+
+```powershell
+python tools/aided_calibration_report.py Logs/10112026/Test_1 --train 75:195 --test 198:218,235:300 --harmonics 0 --out Logs/10112026/Test_1/analysis/e20_aided
+python tools/eskf_a_replay.py Logs/10112026/Test_1 --lever -0.09,0,0.31 --train 75:195 --test 198:218,235:300 --out Logs/10112026/Test_1/analysis/e20_eskf
+```
+
+Training/test intervals are half-open PX4 boot seconds and must be disjoint.
+Defaults are fixed; no parameter selection uses holdout data. Both tools require
+calibrated valid radio ranges (`RADIO_OK + CAL_OK + VALID`) and never subtract
+the firmware bias a second time. Clock alignment uses receive-time caches and
+the original Test_1 low-delay envelope, including its documented queue-burst
+exclusion, rather than fitting trajectories in time.
+
+The aided tool fixes TAG height to a tilt/lever-corrected downward range
+reference, anchored to TAG height 0.51 m during the stationary 40–55 s interval.
+Scoring/learning excludes epochs more than 0.5 s after the previous rangefinder
+sample. It estimates additional per-anchor range errors; K=1/2 may also model
+body-bearing harmonics when training yaw covers at least four 45-degree sectors.
+Insufficient yaw emits `HEADING_COVERAGE` and uses K=0. Heading is
+`yaw_rig = rig_yaw_offset - yaw_ned`; local-NED/GNSS-to-rig alignment is fitted
+on training epochs only. The IRLS convention applies Huber factors to both
+design and residual rows (squared normal weights), reproducing the provided
+numerical examples; it differs from standard square-root-weight Huber
+M-estimation. See the change description for this explicit review point.
+
+Outputs are `aided_calibration.json`, `report.json`, `evaluation.npz` and
+`dz_before_after.png`. The JSON includes settings, frame conventions, sample
+exclusions and per-holdout results. Try `--harmonics 1` with a different
+`analysis/e20_*` output directory to inspect the coverage warning on Test_1.
+
+The ESKF replay converts ULog `sensor_combined` FRD to FLU once and uses
+`timestamp + accelerometer_timestamp_relative` with actual irregular dt.
+It mirrors the 15-state C++ F/Q, asymmetric Huber gate, Joseph covariance and
+error-state injection. Its inertial state is the IMU origin; the TAG position
+is `p + R @ lever`. Initialization therefore uses `p = tag0 - R0 @ lever`.
+The current workspace's C++ node already includes this correction, although
+the request described an older node. Live ROS freshness/configuration and
+wall-clock timeout guards are outside this offline event driver.
+
+Replay outputs `report.json`, `comparison.csv`, `comparison.md` and
+`trajectories.npz`. The five methods are logged GUI filtering, logged raw IRLS,
+free-Z robust epoch solves, default ESKF-A and ESKF-A with train-only K=0 aided
+correction. Scores use near-uniform 10 Hz epochs, with reference-age exclusions;
+raw range/IMU replay itself uses full-rate inputs within IMU coverage. Reports
+include range acceptance, per-anchor NIS, resets, timing and input assumptions.
+
+Exit 0 means report generation completed; exit 2 reports input/dependency errors.
+All JSON is strict. The RF reference assumes a flat floor and is the same source
+used for learning and Z evaluation, so these scores are not independent absolute
+accuracy. XY uses training-aligned GNSS and is also not surveyed truth. Real
+Test_1 Z improves after calibration; its ESKF XY errors are not uniformly better.
+Read `E20_CHANGE_DESCRIPTION.md` before drawing hardware conclusions.
+
 ## Joint multi-spot calibration
 
 The Calibration page defaults to **Joint multi-spot (recommended)**. It jointly
