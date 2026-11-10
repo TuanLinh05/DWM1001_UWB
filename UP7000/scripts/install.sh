@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the UP4000 flight logger on Ubuntu 22.04 + ROS 2 Humble.
-# Run as the normal user (it calls sudo): bash UP4000/scripts/install.sh
+# Run as the normal user (it calls sudo): bash UP7000/scripts/install.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$(dirname "$HERE")/ros2_ws"

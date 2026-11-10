@@ -22,7 +22,7 @@ from test_eskf_config import configuration
 from main_gui import UwbFastGuiWindow
 from up4000_panel import Up4000StatusListener
 
-spec = importlib.util.spec_from_file_location('recording_server', GUI.parents[1] / 'UP4000/estimator/recording_control_server.py')
+spec = importlib.util.spec_from_file_location('recording_server', GUI.parents[1] / 'UP7000/estimator/recording_control_server.py')
 server_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server_module)
 APP = QApplication.instance() or QApplication([])

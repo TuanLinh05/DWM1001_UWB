@@ -15,7 +15,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>python3-serial</exec_depend>
-  <!-- pymavlink is installed with pip by UP4000/scripts/install.sh -->
+  <!-- pymavlink is installed with pip by UP7000/scripts/install.sh -->
 
   <test_depend>python3-pytest</test_depend>
 

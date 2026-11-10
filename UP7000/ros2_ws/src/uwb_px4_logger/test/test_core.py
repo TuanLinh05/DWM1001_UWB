@@ -1,6 +1,6 @@
 """ROS-free tests for the UP4000 logger core (run with pytest or unittest).
 
-python -m pytest UP4000/ros2_ws/src/uwb_px4_logger/test
+python -m pytest UP7000/ros2_ws/src/uwb_px4_logger/test
 """
 from __future__ import annotations
 
@@ -406,7 +406,7 @@ class VendorSyncTests(unittest.TestCase):
         vendor = Path(__file__).resolve().parents[1] / "uwb_px4_logger" / "vendor"
         for name in sync_vendor.FILES:
             self.assertEqual((vendor / name).read_text(encoding="utf-8"), sync_vendor.vendored_text(name),
-                             f"{name} is stale: run UP4000/scripts/sync_vendor.py")
+                             f"{name} is stale: run UP7000/scripts/sync_vendor.py")
 
 
 if __name__ == "__main__":

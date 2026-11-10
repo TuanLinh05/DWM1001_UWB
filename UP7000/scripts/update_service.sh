@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # After copying new code: rebuild, refresh the systemd unit, restart the service.
-# Run as the normal user (it calls sudo): bash UP4000/scripts/update_service.sh
+# Run as the normal user (it calls sudo): bash UP7000/scripts/update_service.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$(dirname "$HERE")/ros2_ws"

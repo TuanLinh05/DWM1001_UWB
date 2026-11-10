@@ -32,19 +32,19 @@ Dữ liệu EKF được lưu trên UP4000; UWB được ghi đầy đủ trên 
 Chép cả thư mục `UP4000` lên UP4000 (git clone hoặc scp), rồi:
 
 ```bash
-bash UP4000/scripts/install.sh
+bash UP7000/scripts/install.sh
 ```
 
 Script cài `pyserial`, `pymavlink`, udev rule (`/dev/uwb_tag`, `/dev/pixhawk`, ModemManager bỏ qua hai thiết bị), build package và tạo service `uwb-px4-logger` (chưa bật). Đăng xuất/đăng nhập lại một lần để nhóm `dialout` có hiệu lực. Kiểm tra thiết bị:
 
 ```bash
-bash UP4000/scripts/list_devices.sh
+bash UP7000/scripts/list_devices.sh
 ```
 
 Chạy thử (Ctrl+C dừng, file được đóng sạch):
 
 ```bash
-bash UP4000/scripts/run.sh
+bash UP7000/scripts/run.sh
 ```
 
 Tự chạy khi bật máy:
@@ -58,7 +58,7 @@ Xem output: `journalctl -u uwb-px4-logger -f`. Mỗi lần service khởi độn
 Mỗi node chỉ chạy **một bản** (khóa `/tmp/uwb_px4_logger.<node>.lock` và cổng UDP riêng). Khi service đang chạy, `run.sh` sẽ báo `already running` / `UDP port ... is busy` rồi thoát. Sau khi cập nhật code, khởi động lại service để nạp bản mới. `update_service.sh` build lại, cập nhật file unit systemd và khởi động lại service:
 
 ```bash
-bash ~/UP4000/scripts/update_service.sh
+bash ~/UP7000/scripts/update_service.sh
 ```
 
 ## 2. Tham số PX4 (QGroundControl → Parameters)
@@ -89,7 +89,7 @@ echo 'LAUNCH_ARGS="ground_host:=192.168.1.20"' | sudo tee /etc/default/uwb-px4-l
 sudo systemctl restart uwb-px4-logger
 ```
 
-Có thể sửa thêm `UP4000/ros2_ws/src/uwb_px4_logger/config/logger.yaml` (cổng, tần số MAVLink, tắt ULog…) rồi chạy lại `install.sh` hoặc `colcon build`.
+Có thể sửa thêm `UP7000/ros2_ws/src/uwb_px4_logger/config/logger.yaml` (cổng, tần số MAVLink, tắt ULog…) rồi chạy lại `install.sh` hoặc `colcon build`.
 
 ### WiFi power save của USB WiFi (rtl8821cu)
 
@@ -112,7 +112,7 @@ SEGGER J-Link đã khôi phục 2.244 frame/8 giây với 0 lỗi CRC/độ dài
 Khi gặp lại tình trạng này, có thể khôi phục adapter:
 
 ```bash
-sudo python3 ~/UP4000/scripts/reset_tag_usb.py
+sudo python3 ~/UP7000/scripts/reset_tag_usb.py
 ```
 
 Script xác minh đúng thiết bị SEGGER J-Link, tạm dừng logger, reset USB và khởi động lại logger
@@ -166,10 +166,10 @@ Topic UWB trên ROS được giới hạn `ros_publish_hz` (mặc định 50 Hz)
 Phần lõi không phụ thuộc ROS và có test chạy được trên Windows:
 
 ```bash
-cd UP4000/ros2_ws/src/uwb_px4_logger
+cd UP7000/ros2_ws/src/uwb_px4_logger
 python -m pytest test
 ```
 
 Các test tự động dùng TAG giả, PX4 giả qua MAVLink (pymavlink) và ULog tổng hợp có mất gói. Test xuyên suốt UP4000 relay → New_GUI nằm ở `Software/New_GUI/tests/test_udp_relay_input.py`. Đã chạy thêm trên UP4000, Pixhawk 6C và TAG thật với ba node ROS 2: xem [báo cáo WiFi 07/11/2026](test_results/20261107_wifi/REPORT.md). Khi chuyển sang phần cứng/mạng khác, chạy `run.sh`, mở thư mục log và kiểm tra lại `uwb_status.json` / `px4_status.json`.
 
-Bộ parser TAG được chép từ `Software/UWB_UART_GUI` vào `uwb_px4_logger/vendor/`. Sau khi sửa parser ở đó, chạy `python UP4000/scripts/sync_vendor.py`.
+Bộ parser TAG được chép từ `Software/UWB_UART_GUI` vào `uwb_px4_logger/vendor/`. Sau khi sửa parser ở đó, chạy `python UP7000/scripts/sync_vendor.py`.
