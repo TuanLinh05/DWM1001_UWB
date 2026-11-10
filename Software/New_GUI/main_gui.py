@@ -1817,8 +1817,10 @@ class UwbFastGuiWindow(QMainWindow):
         if result is not None and result.method == "joint":
             rms = f"{result.residual_rms_mm:.1f}" if result.residual_rms_mm is not None else "--"
             cond = f"{result.condition_number:.1f}" if result.identifiable else "infinite"
+            released = (" · priors released: " + ", ".join(f"#{i}" for i in result.released_spot_indices)
+                        if result.released_spot_indices else "")
             self.lbl_joint_status.setText(f"Joint: {len(result.spots)} spots · rank {result.rank}/{result.unknowns} · "
-                                          f"cond {cond} · RMS {rms} mm · applying {eng.active_calibration_method()}")
+                                          f"cond {cond} · RMS {rms} mm{released} · applying {eng.active_calibration_method()}")
         elif result is not None and result.method == "failed":
             self.lbl_joint_status.setText("Joint solve unavailable — using per-spot median. " +
                                           " ".join(w.message for w in result.warnings))
@@ -1837,12 +1839,15 @@ class UwbFastGuiWindow(QMainWindow):
             s = solved.get(capture.spot_index)
             xyz = lambda p: ", ".join(f"{v:.3f}" for v in p)
             texts = [str(capture.spot_index), xyz(capture.spot_xyz), xyz(s.estimated_xyz) if s else "--",
-                     f"{s.offset_m * 100:.1f}" if s else "--", f"{s.residual_rms_mm:.1f}" if s else "--",
+                     (f"{s.offset_m * 100:.1f}" + (" (released)" if s.prior_released else "")) if s else "--",
+                     f"{s.residual_rms_mm:.1f}" if s and s.residual_rms_mm is not None else "--",
                      ", ".join(f"A{a}" for a in s.outlier_anchor_ids) if s else "--"]
             for col, value in enumerate(texts):
                 item = QTableWidgetItem(value)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, capture.spot_index)
+                if col == 3 and s is not None and s.prior_released:
+                    item.setToolTip("Prior released: position estimated from ranges only")
                 if capture.spot_index in flagged:
                     item.setBackground(QColor("#7F1D1D" if dark else "#FEE2E2"))
                     item.setForeground(QColor("#991B1B"))
