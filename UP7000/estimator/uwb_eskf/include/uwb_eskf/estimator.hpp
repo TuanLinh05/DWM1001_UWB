@@ -111,7 +111,8 @@ class Estimator {
       filter.bg=bg;initialized=true;if(!init_time)init_time=t;++counts.initializations;rejected_run_=0;
     }else{
       const V3 delta=filter.p+filter.R*lever-anchors.at(id);double nis=0;
-      const double innovation=r-delta.norm();
+      const double distance=delta.norm();
+      const double innovation=(!std::isfinite(distance)||distance<1e-6)?std::numeric_limits<double>::quiet_NaN():r-distance;
       const bool accepted=filter.update(anchors.at(id),r,lever,params,nis);
       last_update={true,accepted,1,id,t,nis,innovation};++counts.offered_ranges;
       if(accepted){++counts.accepted_ranges;rejected_run_=0;}else ++rejected_run_;

@@ -110,6 +110,16 @@ TEST(EstimatorAttitude, GateLeavesAllStateAndCovarianceUnchanged){
   EXPECT_FALSE(f.attitude_update(uwb::so3_exp(V3(0,0,M_PI/2)),V3(2,2,5),25,nis));
   EXPECT_GT(nis,25);EXPECT_EQ((f.P-P).norm(),0);EXPECT_EQ((f.R-R).norm(),0);
 }
+TEST(EstimatorDegenerate, CoincidentSeedAndTagAnchorAreHandledLikePython){
+  std::vector<V3> anchors={V3::Zero(),V3(1,0,0),V3(0,1,0),V3(0,0,1)};
+  const auto p=uwb::gauss_newton(anchors,{1,1,1,1},V3::Zero());
+  EXPECT_FALSE(p.allFinite());
+  Core::Params params;Core core(params,{{1,V3::Zero()}},V3::Zero(),0.);
+  core.filter.init(V3::Zero(),M3::Identity());core.initialized=core.attitude_ready=true;
+  const auto P=core.filter.P;core.on_range(1,1.,1.);
+  EXPECT_TRUE(core.last_update.valid);EXPECT_FALSE(core.last_update.accepted);
+  EXPECT_TRUE(std::isnan(core.last_update.innovation));EXPECT_EQ((core.filter.P-P).norm(),0.);
+}
 #else
 int main(int argc,char **argv){
   try{

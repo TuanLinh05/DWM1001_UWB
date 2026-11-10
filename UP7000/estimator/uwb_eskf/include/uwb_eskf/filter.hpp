@@ -7,6 +7,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -170,6 +171,8 @@ inline V3 gauss_newton(const std::vector<V3> &A, const std::vector<double> &r, V
     Eigen::VectorXd e(n);
     for (int i = 0; i < n; ++i) {
       const V3 d = p - A[i];
+      // Match the Python reference's singular-seed handling before Eigen QR.
+      if(d.norm()<1e-12)return V3::Constant(std::numeric_limits<double>::quiet_NaN());
       J.row(i) = d.transpose() / d.norm();
       e(i) = d.norm() - r[i];
     }
