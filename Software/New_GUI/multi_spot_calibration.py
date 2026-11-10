@@ -136,7 +136,7 @@ class JointSpotResult:
     offset_std_m: float                         # sqrt(largest eigenvalue of the spot position covariance)
     anchors_used: tuple[int, ...]
     residuals_mm: dict[int, float]              # measured - model, per anchor
-    residual_rms_mm: float                      # over the non-outlier anchors of this spot
+    residual_rms_mm: float | None               # None when every anchor is an outlier
     outlier_anchor_ids: tuple[int, ...]
     prior_released: bool = False
 
@@ -392,6 +392,7 @@ def solve_joint_calibration(
        bias std_mm = sqrt(C_ii) * 1000; spot offset_std_m = sqrt(max eig of its block)
        outliers: data rows with |r| > residual_warn_sigma (RESIDUAL_OUTLIER per row,
        spot_index and anchor_id set); residual RMS values exclude outliers
+       and are None when no non-outlier residual remains
        identifiable / rank / condition: data-only Jacobian at the solution
        (same recipe as data_identifiability)
     5. Release passes: start with no released spots. After every pass, flag
@@ -592,7 +593,7 @@ def solve_joint_calibration(
             warnings.append(CalibrationWarning("SPOT_OFFSET", message, s.spot_index))
         spot_results.append(JointSpotResult(s.spot_index, s.entered_xyz, tuple(float(v) for v in position),
                             offset, std, tuple(sorted(s.median_raw_mm)),
-                            {a: residuals[j, a] for a in s.median_raw_mm}, _rms(good) or 0.0,
+                            {a: residuals[j, a] for a in s.median_raw_mm}, _rms(good),
                             tuple(sorted(bad)), prior_released=j in released))
     for k, t in enumerate(tapes, n_spot_rows):
         value = float(r[k] * _row_sigma(t.sigma_mm, t.samples, settings.tape_sigma_mm) * 1000)
