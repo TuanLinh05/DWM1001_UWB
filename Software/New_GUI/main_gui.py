@@ -2542,7 +2542,10 @@ class UwbFastGuiWindow(QMainWindow):
             ('sig_r', 'Range σ (m)', .15, .005, 5, 3), ('min_init_anchors', 'Min anchors', 6, 4, 8, 0),
             ('init_static_s', 'Static init (s)', 1., .2, 30, 2), ('init_window_s', 'Init window (s)', .05, .01, .5, 3),
             ('imu_timeout_s', 'IMU timeout (s)', .2, .05, 2, 3), ('range_timeout_s', 'Range timeout (s)', .5, .1, 5, 3),
-            ('max_input_age_s', 'Max age (s)', .25, .02, 2, 3), ('q_cv', 'CV process noise', 1., .0001, 100, 4)]
+            ('max_input_age_s', 'Max age (s)', .25, .02, 2, 3), ('q_cv', 'CV process noise', 1., .0001, 100, 4),
+            ('na', 'Accel noise density', .45, 1e-4, 20, 4), ('ng', 'Gyro noise density', .016, 1e-5, 1, 5),
+            ('min_anchor_interval_s', 'Range interval (s)', .02, 0., .5, 3),
+            ('imu_average_s', 'IMU average (s)', .02, 0., .1, 3)]
         self.eskf_inputs = {}
         for index, (key, label, default, low, high, decimals) in enumerate(specs):
             widget = IntInput(int(low), int(high), int(default), 58) if not decimals else FloatInput(low, high, default, decimals, 64)
@@ -2553,6 +2556,11 @@ class UwbFastGuiWindow(QMainWindow):
             row, col = index // 3, (index % 3)*2
             grid.addWidget(QLabel(label), row, col); grid.addWidget(widget, row, col+1)
         layout.addLayout(grid)
+        self.eskf_inputs['yaw0_deg'].setToolTip('With PX4 attitude enabled: body forward heading from rig +X when the node starts.')
+        self.chk_use_px4_attitude = QCheckBox('Use PX4 attitude for initialization, updates and recovery')
+        self.chk_use_px4_attitude.setChecked(True)
+        self.chk_use_px4_attitude.toggled.connect(self._eskf_settings_changed)
+        layout.addWidget(self.chk_use_px4_attitude)
         self.chk_eskf_confirmed = QCheckBox('Use measured rig, TAG–IMU offset and heading for ESKF')
         self.chk_eskf_confirmed.setToolTip('Leave unchecked while surveying: inputs are still recorded and ESKF waits for configuration.')
         self.chk_eskf_confirmed.toggled.connect(self._on_eskf_confirmation)
@@ -2568,7 +2576,8 @@ class UwbFastGuiWindow(QMainWindow):
                              for a in sorted(self.engine.anchors.values(), key=lambda a: a.anchor_id)],
                  'lever_flu_m': [self.eskf_inputs['lever_' + axis].value() for axis in 'xyz'],
                  'yaw0_deg': self.eskf_inputs['yaw0_deg'].value(),
-                 'parameters': {key: self.eskf_inputs[key].value() for key in ESKF_PARAMETERS}}
+                 'parameters': {**{key: self.eskf_inputs[key].value() for key in ESKF_PARAMETERS if key in self.eskf_inputs},
+                                'use_px4_attitude': int(self.chk_use_px4_attitude.isChecked())}}
         return normalize_config(value)
 
     def _eskf_fingerprint(self):
@@ -2607,7 +2616,9 @@ class UwbFastGuiWindow(QMainWindow):
             saved = json.loads(path.read_text(encoding='utf-8')); value = normalize_config(saved['settings'])
             for axis, item in zip('xyz', value['lever_flu_m']):self.eskf_inputs['lever_' + axis].setValue(item)
             self.eskf_inputs['yaw0_deg'].setValue(value['yaw0_deg'])
-            for key, item in value['parameters'].items():self.eskf_inputs[key].setValue(item)
+            for key, item in value['parameters'].items():
+                if key in self.eskf_inputs:self.eskf_inputs[key].setValue(item)
+            self.chk_use_px4_attitude.setChecked(bool(value['parameters']['use_px4_attitude']))
             self._eskf_reviewed_fingerprint = saved.get('reviewed_fingerprint', '')
             self.chk_eskf_confirmed.setChecked(value['confirmed'] and self._eskf_fingerprint() == self._eskf_reviewed_fingerprint)
         except (OSError, ValueError, KeyError):

@@ -9,6 +9,10 @@ PARAMETERS = {
     'init_static_s': (1., .2, 30.), 'init_window_s': (.05, .01, .5),
     'imu_timeout_s': (.2, .05, 2.), 'range_timeout_s': (.5, .1, 5.),
     'max_input_age_s': (.25, .02, 2.), 'min_init_anchors': (6, 4, 8),
+    'na': (.45, 1e-4, 20.), 'ng': (.016, 1e-5, 1.), 'nba': (3e-3, 0., 1.), 'nbg': (1e-4, 0., .1),
+    'min_anchor_interval_s': (.02, 0., .5), 'imu_average_s': (.02, 0., .1),
+    'use_px4_attitude': (1, 0, 1), 'att_sig_tilt_deg': (2., .1, 30.),
+    'att_sig_yaw_deg': (5., .1, 90.), 'att_gate': (25., 1., 1000.),
 }
 
 
@@ -60,10 +64,11 @@ def normalize_config(value):
         raise ValueError('Unknown ESKF parameter')
     parameters = {key: number(supplied.get(key, default), low, high, key)
                   for key, (default, low, high) in PARAMETERS.items()}
+    for key in ('min_init_anchors', 'use_px4_attitude'):
+        if parameters[key] != int(parameters[key]):
+            raise ValueError(key + ' must be an integer')
+        parameters[key] = int(parameters[key])
     minimum = parameters['min_init_anchors']
-    if minimum != int(minimum):
-        raise ValueError('min_init_anchors must be an integer')
-    parameters['min_init_anchors'] = int(minimum)
     enabled = [a for a in anchors if a[4]]
     if value['confirmed']:
         if len(enabled) < minimum:
@@ -86,7 +91,7 @@ def render_files(value, directory):
     digest = config_hash(value)
     rig = '# GUI configuration ' + digest + '\n# Calibrated /range input; host bias is NOT subtracted again.\n'
     rig += ''.join(f'an{a[0]}_p, {a[1]}, {a[2]}, {a[3]}\n' for a in value['anchors'] if a[4])
-    params = {'imu': 'mavlink', 'imu_topic': '/px4/imu_frd', 'imu_link': 'px4_imu_flu',
+    params = {'imu': 'mavlink', 'imu_topic': '/px4/imu_frd', 'attitude_topic': '/px4/attitude_frd', 'imu_link': 'px4_imu_flu',
               'imu_R': [1., 0., 0., 0., -1., 0., 0., 0., -1.], 'frame_id': 'uwb_rig',
               'rig_file': str(directory) + '/rig_onboard.txt', 'configuration_confirmed': value['confirmed'],
               'ignore_rig_bias': True, 'lever': value['lever_flu_m'], 'yaw0_deg': value['yaw0_deg'],
