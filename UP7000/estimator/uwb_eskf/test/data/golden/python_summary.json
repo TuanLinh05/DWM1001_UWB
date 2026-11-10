@@ -1,0 +1,13 @@
+{
+  "reinits": 0,
+  "skipped_ranges": 800,
+  "imu_gap_resets": 0,
+  "attitude_inits": 1,
+  "initializations": 1,
+  "offered_ranges": 790,
+  "accepted_ranges": 790,
+  "accepted_attitudes": 99,
+  "rejected_attitudes": 0,
+  "output_rows": 98,
+  "init_time": 0.02027
+}

@@ -38,6 +38,20 @@ inline M3 so3_exp(const V3 &phi) {
   return M3::Identity() + std::sin(th) * k + (1 - std::cos(th)) * k * k;
 }
 
+inline V3 log_so3(const M3 &R) {
+  const V3 axis_sine = V3(R(2,1)-R(1,2), R(0,2)-R(2,0), R(1,0)-R(0,1)) * .5;
+  const double sine=axis_sine.norm(), angle=std::atan2(sine,std::clamp((R.trace()-1)*.5,-1.,1.));
+  if(angle<1e-9)return axis_sine;
+  if(M_PI-angle<1e-6){
+    Eigen::SelfAdjointEigenSolver<M3> eig((R+R.transpose())*.5);
+    V3 axis=eig.eigenvectors().col(2);
+    Eigen::Index largest;axis.cwiseAbs().maxCoeff(&largest);
+    if((sine>1e-14 && axis.dot(axis_sine)<0)||(sine<=1e-14 && axis[largest]<0))axis=-axis;
+    return angle*axis;
+  }
+  return axis_sine*(angle/sine);
+}
+
 // Update vo huong robust. false = bi gate. dx tra qua tham so.
 template <int N>
 bool range_update(Eigen::Matrix<double, N, N> &P, const Eigen::Matrix<double, N, 1> &H, double y, double r_var,
@@ -128,6 +142,22 @@ struct ESKF {
     if (!range_update<15>(P, H, r - h, pr.sig_r * pr.sig_r, pr, dx, nis)) return false;
     p += dx.segment<3>(0), v += dx.segment<3>(3), R = R * so3_exp(dx.segment<3>(6));  // inject, reset G ~ I
     ba += dx.segment<3>(9), bg += dx.segment<3>(12);
+    return true;
+  }
+  bool attitude_update(const M3 &measured, const V3 &sig_deg, double gate, double &nis) {
+    const V3 residual=log_so3(R.transpose()*measured);
+    Eigen::Matrix<double,3,15> H=Eigen::Matrix<double,3,15>::Zero();H.block<3,3>(0,6)=M3::Identity();
+    const M3 Rn=(sig_deg*(M_PI/180)).cwiseAbs2().asDiagonal();
+    const Eigen::Matrix<double,15,3> PH=P*H.transpose();
+    const M3 S=H*PH+Rn;
+    nis=residual.dot(S.ldlt().solve(residual));
+    if(nis>gate)return false;
+    const Eigen::Matrix<double,15,3> K=S.ldlt().solve(PH.transpose()).transpose();
+    const Eigen::Matrix<double,15,1> dx=K*residual;
+    const Eigen::Matrix<double,15,15> IKH=Eigen::Matrix<double,15,15>::Identity()-K*H;
+    P=IKH*P*IKH.transpose()+K*Rn*K.transpose();
+    p+=dx.segment<3>(0);v+=dx.segment<3>(3);R=R*so3_exp(dx.segment<3>(6));
+    ba+=dx.segment<3>(9);bg+=dx.segment<3>(12);
     return true;
   }
 };

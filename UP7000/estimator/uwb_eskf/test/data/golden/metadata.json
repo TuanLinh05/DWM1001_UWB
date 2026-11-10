@@ -1,0 +1,49 @@
+{
+  "params": {
+    "sig_r": 0.15,
+    "gate": 25.0,
+    "k_pos": 1.5,
+    "k_neg": 3.0,
+    "na": 0.0017167500000000002,
+    "ng": 0.0002443460952792061,
+    "nba": 0.003,
+    "nbg": 0.0001,
+    "init_static_s": 1.0,
+    "init_window_s": 0.05,
+    "init_min_anchors": 6,
+    "reinit_after_rejects": 200,
+    "sig_p0": 0.3,
+    "sig_v0": 0.5,
+    "sig_th0_deg": [
+      5.0,
+      5.0,
+      30.0
+    ],
+    "sig_ba0": 0.2,
+    "sig_bg0_deg": 1.0,
+    "min_anchor_interval_s": 0.02,
+    "reinit_keep_attitude": false,
+    "att_sig_deg": [
+      2.0,
+      2.0,
+      5.0
+    ],
+    "att_gate": 25.0,
+    "att_min_interval_s": 0.02,
+    "imu_average_s": 0.02,
+    "attitude_init": "external",
+    "static_check": false,
+    "static_acc_tol": 0.8,
+    "static_gyro_tol": 0.15,
+    "imu_gap_reset_s": null
+  },
+  "lever": [
+    -0.09,
+    0.0,
+    0.31
+  ],
+  "yaw0": 0.5235987755982988,
+  "state_columns": "t,p[3],v[3],R[row-major 9],ba[3],bg[3],P[row-major 225]",
+  "update_columns": "kind(1=range,2=attitude),t,id,accepted,NIS,innovation(range only)",
+  "event_order": "time, IMU/range/attitude, anchor ID, payload"
+}
