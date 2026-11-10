@@ -18,7 +18,7 @@ NEW_GUI_DIR = Path(__file__).resolve().parents[1]
 REPO = NEW_GUI_DIR.parents[1]
 sys.path.insert(0, str(NEW_GUI_DIR))
 sys.path.insert(0, str(NEW_GUI_DIR.parent / "UWB_UART_GUI"))
-sys.path.insert(0, str(REPO / "UP4000" / "ros2_ws" / "src" / "uwb_px4_logger"))
+sys.path.insert(0, str(REPO / "UP7000" / "ros2_ws" / "src" / "uwb_px4_logger"))
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 import telemetry_protocol as tp  # noqa: E402

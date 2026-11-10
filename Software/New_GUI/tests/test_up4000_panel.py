@@ -158,7 +158,7 @@ class ListenerAndPanelTests(unittest.TestCase):
             listener.close()
 
     def test_long_atomic_value_reassembles_out_of_order_and_loss_stays_stale(self):
-        sys.path.insert(0, str(NEW_GUI_DIR.parents[1] / "UP4000" / "ros2_ws" / "src" / "uwb_px4_logger"))
+        sys.path.insert(0, str(NEW_GUI_DIR.parents[1] / "UP7000" / "ros2_ws" / "src" / "uwb_px4_logger"))
         from uwb_px4_logger.status_reporter import StatusSender
         listener = Up4000StatusListener(port=0)
         sender = StatusSender(max_part_bytes=400)
@@ -286,7 +286,7 @@ class ListenerAndPanelTests(unittest.TestCase):
             listener.close()
 
     def test_parts_from_the_up4000_sender_merge_into_the_panel(self):
-        sys.path.insert(0, str(NEW_GUI_DIR.parents[1] / "UP4000" / "ros2_ws" / "src" / "uwb_px4_logger"))
+        sys.path.insert(0, str(NEW_GUI_DIR.parents[1] / "UP7000" / "ros2_ws" / "src" / "uwb_px4_logger"))
         from uwb_px4_logger.status_reporter import StatusSender
 
         status = sample_status()

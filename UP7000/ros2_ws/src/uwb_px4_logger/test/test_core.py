@@ -400,7 +400,7 @@ class VendorSyncTests(unittest.TestCase):
     @unittest.skipUnless((REPO / "Software" / "UWB_UART_GUI").is_dir(),
                          "GUI source not present (UP4000 folder copied alone)")
     def test_vendored_protocol_matches_gui_source(self):
-        sys.path.insert(0, str(REPO / "UP4000" / "scripts"))
+        sys.path.insert(0, str(REPO / "UP7000" / "scripts"))
         import sync_vendor
 
         vendor = Path(__file__).resolve().parents[1] / "uwb_px4_logger" / "vendor"
