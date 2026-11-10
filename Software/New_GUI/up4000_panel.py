@@ -1,7 +1,7 @@
-"""New_GUI "UP4000" tab: QGroundControl / Mission Planner-style Flight Display,
+"""New_GUI "UP7000" tab: QGroundControl / Mission Planner-style Flight Display,
 EKF2 Health Monitor, Companion Logger Inspector & PX4 .ulg Flight Log Replay.
 
-The UP4000 node `up4000_status` sends one JSON datagram ~4 times per second
+The UP7000 node `up4000_status` sends JSON status updates ~4 times per second
 (and a 1 Hz broadcast before it knows this PC): host health, logger counters,
 session files and the latest PX4 values. Nothing is ever sent back.
 In addition, users can load any PX4 `.ulg` file directly into this tab to
@@ -19,7 +19,7 @@ from pathlib import Path
 import time
 from typing import Any
 
-from PyQt6.QtCore import QPointF, QRectF, QObject, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QObject, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -185,7 +185,7 @@ def _ratio_html(name: str, value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# PX4 .ulg Flight Log Parser -> UP4000 status snapshots
+# PX4 .ulg Flight Log Parser -> UP7000 status snapshots
 # ---------------------------------------------------------------------------
 def load_ulog_session(path: str | Path, step_s: float = 0.20) -> dict[str, Any]:
     """Parse a PX4 `.ulg` file into time-indexed `up4000_status` snapshots for GUI replay.
@@ -586,6 +586,51 @@ class Up4000StatusListener(QObject):
             if not isinstance(msg.get("data"), dict):
                 self.bad += 1
                 return
+            # Prevent an idle secondary board (e.g. old UP4000 'dronepif' broadcasting
+            # on the same LAN) from overwriting the active UP7000 ('thoa') state.
+            if (
+                self.sender is not None
+                and sender != self.sender
+                and self.latest_rx is not None
+                and (now - self.latest_rx) < STALE_S
+            ):
+                cur_host = (self.state.get("host") or {}).get("hostname")
+                cur_active = (
+                    cur_host == "thoa"
+                    or bool((self.state.get("px4") or {}).get("connected"))
+                    or bool((self.state.get("uwb_relay") or {}).get("tag_port"))
+                )
+                inc_data = msg.get("data") or {}
+                inc_is_thoa = inc_data.get("hostname") == "thoa" or "/thoa/" in str(inc_data.get("folder", ""))
+                if cur_active and not inc_is_thoa:
+                    return
+                # Switching to a higher-priority sender: reset merged state cleanly
+                self.state = {}
+                self._field_rx.clear()
+            elif (
+                (self.state.get("host") or {}).get("hostname") == "thoa"
+                and self.section_age_s("host") < STALE_S * 2.5
+            ):
+                part_name = str(msg.get("part"))
+                part_data = msg.get("data") or {}
+                if part_name == "host" and part_data.get("hostname") == "dronepif":
+                    return
+                if part_name == "session" and "/dronepif/" in str(part_data.get("folder", "")):
+                    return
+                if (
+                    part_name == "uwb_relay"
+                    and part_data.get("tag_port") is None
+                    and (self.state.get("uwb_relay") or {}).get("tag_port") is not None
+                    and self.section_age_s("uwb_relay") < STALE_S
+                ):
+                    return
+                if (
+                    part_name == "px4_logger"
+                    and part_data.get("px4_port") is None
+                    and (self.state.get("px4_logger") or {}).get("px4_port") is not None
+                    and self.section_age_s("px4_logger") < STALE_S
+                ):
+                    return
             for key in msg["data"]:
                 prefix = str(msg["part"]) + "." + key
                 self._field_rx = {
@@ -665,9 +710,10 @@ class _Card(QFrame):
         super().__init__(parent)
         self.setObjectName("stat_card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(88)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(3)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(1)
         t = QLabel(title.upper())
         t.setObjectName("card_title")
         self.value = QLabel("--")
@@ -678,6 +724,7 @@ class _Card(QFrame):
         self.sub.setWordWrap(True)
         for w in (t, self.value, self.sub):
             layout.addWidget(w)
+        layout.addStretch(1)
 
     def set(self, value: str, sub: str = "") -> None:
         if self.value.text() != value:
@@ -693,16 +740,20 @@ class _TelemetryCell(QFrame):
         super().__init__(parent)
         self.setObjectName("sub_card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(54)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(2)
+        lay.setContentsMargins(10, 4, 10, 4)
+        lay.setSpacing(1)
         self.lbl_title = QLabel(label.upper())
         self.lbl_title.setObjectName("card_title")
+        self.lbl_title.setStyleSheet("font-size: 10px; font-weight: 700;")
         self.lbl_val = QLabel("--")
         self.lbl_val.setObjectName("mono_readout")
         self.lbl_val.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self.lbl_sub = QLabel("")
         self.lbl_sub.setObjectName("metric_sub")
+        self.lbl_sub.setStyleSheet("font-size: 10px;")
         lay.addWidget(self.lbl_title)
         lay.addWidget(self.lbl_val)
         lay.addWidget(self.lbl_sub)
@@ -712,7 +763,7 @@ class _TelemetryCell(QFrame):
             self.lbl_val.setText(val)
         if self.lbl_sub.text() != sub:
             self.lbl_sub.setText(sub)
-        style = f"font-weight: 700; font-size: 11px; color: {color};" if color else "font-weight: 700; font-size: 11px;"
+        style = f"font-weight: 700; font-size: 12px; color: {color};" if color else "font-weight: 700; font-size: 12px;"
         if self.lbl_val.styleSheet() != style:
             self.lbl_val.setStyleSheet(style)
 
@@ -725,8 +776,8 @@ class _RatioBar(QWidget):
         self.label = label
         self.value: float | None = None
         self.dark_mode = False
-        self.setMinimumHeight(22)
-        self.setMaximumHeight(24)
+        self.setMinimumHeight(20)
+        self.setMaximumHeight(22)
 
     def set_value(self, val: float | None) -> None:
         clean = float(val) if isinstance(val, (int, float)) and math.isfinite(val) else None
@@ -754,11 +805,11 @@ class _RatioBar(QWidget):
         font.setBold(True)
         p.setFont(font)
         p.setPen(text_col)
-        p.drawText(QRectF(0, 0, 52, h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.label)
+        p.drawText(QRectF(0, 0, 38, h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.label)
 
-        bar_x = 56.0
-        val_w = 48.0
-        bar_w = max(40.0, w - bar_x - val_w - 4.0)
+        bar_x = 40.0
+        val_w = 34.0
+        bar_w = max(24.0, w - bar_x - val_w - 4.0)
         bar_h = 10.0
         bar_y = (h - bar_h) / 2.0
         track_rect = QRectF(bar_x, bar_y, bar_w, bar_h)
@@ -783,14 +834,14 @@ class _RatioBar(QWidget):
 
             p.setPen(fill_col)
             p.drawText(
-                QRectF(bar_x + bar_w + 4.0, 0, val_w, h),
+                QRectF(bar_x + bar_w + 2.0, 0, val_w, h),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                 f"{self.value:.2f}",
             )
         else:
             p.setPen(muted_col)
             p.drawText(
-                QRectF(bar_x + bar_w + 4.0, 0, val_w, h),
+                QRectF(bar_x + bar_w + 2.0, 0, val_w, h),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                 "--",
             )
@@ -809,7 +860,7 @@ class FlightHudWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(460, 275)
+        self.setMinimumSize(180, 140)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.dark_mode = False
 
@@ -835,6 +886,9 @@ class FlightHudWidget(QWidget):
 
         # Trail of (x_north, y_east) in meters
         self.ned_trail: list[tuple[float, float]] = []
+
+    def sizeHint(self) -> QSize:
+        return QSize(560, 265)
 
     def set_dark_mode(self, dark: bool) -> None:
         if self.dark_mode != dark:
@@ -900,9 +954,10 @@ class FlightHudWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = float(self.width())
         h = float(self.height())
-        gap = 10.0
-        left_w = max(220.0, (w - gap) * 0.54)
-        right_w = max(180.0, w - left_w - gap)
+        gap = 8.0
+        avail_w = max(100.0, w - gap)
+        left_w = avail_w * 0.54
+        right_w = avail_w - left_w
 
         pfd_rect = QRectF(0.0, 0.0, left_w, h)
         nav_rect = QRectF(left_w + gap, 0.0, right_w, h)
@@ -946,12 +1001,13 @@ class FlightHudWidget(QWidget):
         # Pitch ladder (-30 to +30 deg)
         font = QFont("Consolas", 8, QFont.Weight.Bold)
         p.setFont(font)
+        max_ladder_half = max(14.0, min(24.0, rect.width() * 0.11))
         for deg in (-30, -20, -15, -10, -5, 5, 10, 15, 20, 30):
             y = pitch_offset - deg * px_per_deg
-            if abs(y) > rect.height() * 0.36:
+            if abs(y) > rect.height() * 0.34:
                 continue
-            half_len = 26.0 if deg % 10 == 0 else 14.0
-            gap_w = 10.0
+            half_len = max_ladder_half if deg % 10 == 0 else max_ladder_half * 0.55
+            gap_w = 8.0
             pen_style = Qt.PenStyle.SolidLine if deg > 0 else Qt.PenStyle.DashLine
             p.setPen(QPen(QColor(248, 250, 252, 220), 1.4, pen_style))
             p.drawLine(QPointF(-half_len, y), QPointF(-gap_w, y))
@@ -962,8 +1018,8 @@ class FlightHudWidget(QWidget):
             p.drawLine(QPointF(half_len, y), QPointF(half_len, y + tick_dy))
             if deg % 10 == 0:
                 lbl = f"{abs(deg)}"
-                p.drawText(QRectF(-half_len - 24, y - 7, 20, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lbl)
-                p.drawText(QRectF(half_len + 4, y - 7, 20, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, lbl)
+                p.drawText(QRectF(-half_len - 20, y - 7, 18, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lbl)
+                p.drawText(QRectF(half_len + 2, y - 7, 18, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, lbl)
         p.restore()
 
         # 2. Roll Bank Angle Scale Arc at top
@@ -1005,10 +1061,10 @@ class FlightHudWidget(QWidget):
         p.restore()
 
         # 4. Left Speed Tape (Groundspeed Vxy & Climb Rate -Vz)
-        tape_w = 46.0
-        tape_top = rect.top() + 34.0
-        tape_bot = rect.bottom() - 30.0
-        tape_h = max(60.0, tape_bot - tape_top)
+        tape_w = max(32.0, min(42.0, rect.width() * 0.19))
+        tape_top = rect.top() + 28.0
+        tape_bot = rect.bottom() - 24.0
+        tape_h = max(46.0, tape_bot - tape_top)
         spd_rect = QRectF(rect.left() + 6.0, tape_top, tape_w, tape_h)
         p.setPen(QPen(QColor(255, 255, 255, 60), 1.0))
         p.setBrush(QBrush(QColor(15, 23, 42, 165)))
@@ -1018,7 +1074,7 @@ class FlightHudWidget(QWidget):
         v_up = -self.vz if self.has_position else 0.0
         p.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
         p.setPen(QColor("#94A3B8"))
-        p.drawText(QRectF(spd_rect.left() + 4, spd_rect.top() + 3, tape_w - 8, 12), Qt.AlignmentFlag.AlignLeft, "SPD")
+        p.drawText(QRectF(spd_rect.left(), spd_rect.top() + 3, tape_w, 12), Qt.AlignmentFlag.AlignCenter, "SPD")
         # Speed ticks
         p.setPen(QColor("#E2E8F0"))
         for d_spd in range(-4, 5):
@@ -1044,7 +1100,7 @@ class FlightHudWidget(QWidget):
         vz_col = QColor("#4ADE80" if abs(v_up) < 1.5 else "#FACC15")
         p.setPen(vz_col)
         p.drawText(
-            QRectF(spd_rect.left() + 2, spd_rect.bottom() - 15, tape_w - 4, 13),
+            QRectF(spd_rect.left() + 1, spd_rect.bottom() - 15, tape_w - 2, 13),
             Qt.AlignmentFlag.AlignCenter,
             f"Vz{v_up:+.1f}",
         )
@@ -1057,7 +1113,7 @@ class FlightHudWidget(QWidget):
 
         alt_m = -self.z_d if self.has_position else 0.0
         p.setPen(QColor("#94A3B8"))
-        p.drawText(QRectF(alt_rect.left() + 4, alt_rect.top() + 3, tape_w - 8, 12), Qt.AlignmentFlag.AlignRight, "ALT m")
+        p.drawText(QRectF(alt_rect.left(), alt_rect.top() + 3, tape_w, 12), Qt.AlignmentFlag.AlignCenter, "ALT m")
         p.setPen(QColor("#E2E8F0"))
         for d_alt in range(-4, 5):
             tick_a = round(alt_m) + d_alt
@@ -1077,43 +1133,59 @@ class FlightHudWidget(QWidget):
         p.drawText(alt_box, Qt.AlignmentFlag.AlignCenter, f"{alt_m:+.1f}")
 
         # 6. Top Status Banner (ARMED / Flight Mode / Landed)
-        top_bar = QRectF(rect.left(), rect.top(), rect.width(), 28.0)
+        top_bar = QRectF(rect.left(), rect.top(), rect.width(), 24.0)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor(15, 23, 42, 205)))
+        p.setBrush(QBrush(QColor(15, 23, 42, 220)))
         p.drawRect(top_bar)
 
-        arm_badge = QRectF(rect.left() + 8.0, rect.top() + 4.0, 74.0, 20.0)
+        f_top = QFont("Segoe UI", 8, QFont.Weight.Bold)
+        f_top.setPixelSize(9 if rect.width() < 225 else 10)
+        p.setFont(f_top)
+        fm_top = p.fontMetrics()
+
+        arm_str = "ARMED" if self.armed else "DISARMED"
+        arm_w = max(48.0, float(fm_top.horizontalAdvance(arm_str)) + 12.0)
+        arm_badge = QRectF(rect.left() + 5.0, rect.top() + 3.0, arm_w, 18.0)
         arm_bg = QColor("#DC2626") if self.armed else QColor("#334155")
         p.setBrush(QBrush(arm_bg))
         p.drawRoundedRect(arm_badge, 4.0, 4.0)
-        p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         p.setPen(QColor("#FFFFFF"))
-        p.drawText(arm_badge, Qt.AlignmentFlag.AlignCenter, "ARMED" if self.armed else "DISARMED")
+        p.drawText(arm_badge, Qt.AlignmentFlag.AlignCenter, arm_str)
 
-        p.setPen(QColor("#38BDF8"))
-        p.drawText(
-            QRectF(arm_badge.right() + 8.0, rect.top() + 4.0, 110.0, 20.0),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            self.mode_str,
-        )
+        land_str = self.landed_str.upper()
+        land_w = float(fm_top.horizontalAdvance(land_str)) + 6.0
+        land_rect = QRectF(rect.right() - land_w - 5.0, rect.top() + 3.0, land_w, 18.0)
         p.setPen(QColor("#CBD5E1"))
         p.drawText(
-            QRectF(rect.right() - 120.0, rect.top() + 4.0, 112.0, 20.0),
+            land_rect,
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-            self.landed_str.upper(),
+            land_str,
+        )
+
+        mode_left = arm_badge.right() + 4.0
+        mode_right = land_rect.left() - 4.0
+        mode_w = max(24.0, mode_right - mode_left)
+        elided_mode = fm_top.elidedText(self.mode_str, Qt.TextElideMode.ElideRight, int(mode_w))
+        p.setPen(QColor("#38BDF8"))
+        p.drawText(
+            QRectF(mode_left, rect.top() + 3.0, mode_w, 18.0),
+            Qt.AlignmentFlag.AlignCenter,
+            elided_mode,
         )
 
         # 7. Bottom Digital Attitude Bar
-        bot_bar = QRectF(rect.left(), rect.bottom() - 24.0, rect.width(), 24.0)
+        bot_bar = QRectF(rect.left(), rect.bottom() - 20.0, rect.width(), 20.0)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor(15, 23, 42, 210)))
+        p.setBrush(QBrush(QColor(15, 23, 42, 225)))
         p.drawRect(bot_bar)
-        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        f_bot = QFont("Consolas", 8, QFont.Weight.Bold)
+        f_bot.setPixelSize(9 if rect.width() < 220 else 10)
+        p.setFont(f_bot)
         p.setPen(QColor("#F8FAFC"))
         if self.has_attitude:
-            att_str = f"R {self.roll_deg:+5.1f}°   P {self.pitch_deg:+5.1f}°   Y {self.yaw_deg:+6.1f}°"
+            att_str = f"R{self.roll_deg:+5.1f}° P{self.pitch_deg:+5.1f}° Y{self.yaw_deg:+6.1f}°"
         else:
-            att_str = "ATTITUDE: WAITING FOR ODOMETRY"
+            att_str = "WAITING FOR ODOMETRY"
         p.drawText(bot_bar, Qt.AlignmentFlag.AlignCenter, att_str)
 
         # Outer border
@@ -1132,28 +1204,30 @@ class FlightHudWidget(QWidget):
         p.fillRect(rect, bg_col)
 
         # Top bar: Heading readout
-        top_bar = QRectF(rect.left(), rect.top(), rect.width(), 28.0)
+        top_bar = QRectF(rect.left(), rect.top(), rect.width(), 24.0)
         p.fillRect(top_bar, QColor(15, 23, 42, 220))
         hdg = (self.yaw_deg % 360.0) if self.has_attitude else 0.0
-        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        f_nav = QFont("Consolas", 8, QFont.Weight.Bold)
+        f_nav.setPixelSize(9 if rect.width() < 185 else 10)
+        p.setFont(f_nav)
         p.setPen(QColor("#38BDF8"))
         p.drawText(
-            top_bar.adjusted(10, 0, -10, 0),
+            top_bar.adjusted(8, 0, -8, 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             f"HDG {hdg:05.1f}°" if self.has_attitude else "HDG --°",
         )
         p.setPen(QColor("#94A3B8"))
         p.drawText(
-            top_bar.adjusted(10, 0, -10, 0),
+            top_bar.adjusted(8, 0, -8, 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-            "NED RADAR",
+            "RADAR" if rect.width() < 175 else "NED RADAR",
         )
 
         # Center & radius of compass rose
-        avail_h = rect.height() - 52.0
+        avail_h = rect.height() - 44.0
         cx = rect.center().x()
-        cy = rect.top() + 28.0 + avail_h * 0.5
-        r_outer = max(45.0, min(rect.width() * 0.41, avail_h * 0.43))
+        cy = rect.top() + 24.0 + avail_h * 0.5
+        r_outer = max(32.0, min(rect.width() * 0.38, avail_h * 0.40))
         r_inner = r_outer * 0.68
 
         # Radar range rings & crosshairs
@@ -1186,8 +1260,8 @@ class FlightHudWidget(QWidget):
                 lbl = cardinals[deg]
                 p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
                 p.setPen(QColor("#F87171" if lbl == "N" else "#E2E8F0"))
-                tx = cx + c_ang * (r_outer + 10.0)
-                ty = cy + s_ang * (r_outer + 10.0)
+                tx = cx + c_ang * (r_outer + 9.0)
+                ty = cy + s_ang * (r_outer + 9.0)
                 p.drawText(QRectF(tx - 8, ty - 8, 16, 16), Qt.AlignmentFlag.AlignCenter, lbl)
 
         # Auto-scale 2D Local NED Trajectory (North = -screen_y, East = +screen_x)
@@ -1235,16 +1309,19 @@ class FlightHudWidget(QWidget):
         p.restore()
 
         # Bottom bar: NED Position & Scale
-        bot_bar = QRectF(rect.left(), rect.bottom() - 24.0, rect.width(), 24.0)
+        bot_bar = QRectF(rect.left(), rect.bottom() - 20.0, rect.width(), 20.0)
         p.fillRect(bot_bar, QColor(15, 23, 42, 210))
-        p.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        p.setFont(f_nav)
         p.setPen(QColor("#E2E8F0"))
         dist_home = math.hypot(self.x_n, self.y_e) if self.has_position else 0.0
-        nav_txt = (
-            f"N {self.x_n:+.1f}m  E {self.y_e:+.1f}m  |H| {dist_home:.1f}m"
-            if self.has_position
-            else f"Scale ±{max_extent:.0f}m · Trail {len(self.ned_trail)} pts"
-        )
+        if self.has_position:
+            nav_txt = (
+                f"N{self.x_n:+.1f} E{self.y_e:+.1f} |H|{dist_home:.1f}m"
+                if rect.width() < 190
+                else f"N {self.x_n:+.1f}m  E {self.y_e:+.1f}m  |H| {dist_home:.1f}m"
+            )
+        else:
+            nav_txt = f"Scale ±{max_extent:.0f}m · Trail {len(self.ned_trail)} pts"
         p.drawText(bot_bar, Qt.AlignmentFlag.AlignCenter, nav_txt)
 
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1269,23 +1346,38 @@ def _panel(title: str, parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
     return frame, box
 
 
-def _text_label(parent: QWidget, mono: bool = True, wrap: bool = False) -> QLabel:
-    label = QLabel("--", parent)
+class _WrapLabel(QLabel):
+    """Word-wrapped QLabel that keeps a small vertical buffer for HTML <b> tags."""
+
+    def heightForWidth(self, w: int) -> int:
+        h = super().heightForWidth(w)
+        return h + 4 if h > 0 else h
+
+    def sizeHint(self) -> QSize:
+        s = super().sizeHint()
+        return QSize(min(320, s.width()), s.height() + 4)
+
+    def minimumSizeHint(self) -> QSize:
+        s = super().minimumSizeHint()
+        return QSize(min(100, s.width()), s.height() + 4)
+
+
+def _text_label(parent: QWidget, mono: bool = True, wrap: bool = True) -> QLabel:
+    label = _WrapLabel("--", parent)
     label.setObjectName("metric_sub")
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setWordWrap(wrap)
+    label.setContentsMargins(0, 1, 0, 2)
     label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
     label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     if mono:
-        f = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        f.setPointSize(9)
-        label.setFont(f)
+        label.setStyleSheet("font-family: 'Cascadia Mono', 'Consolas', monospace; font-size: 11px;")
     return label
 
 
 # ---------------------------------------------------------------------------
-# Main UP4000 Tab Panel
+# Main UP7000 Tab Panel
 # ---------------------------------------------------------------------------
 class Up4000Panel(QWidget):
     """The tab. Call refresh() from the GUI timer; it throttles itself."""
@@ -1378,7 +1470,7 @@ class Up4000Panel(QWidget):
         # 2. Top 5 Summary KPI Cards
         cards = QHBoxLayout()
         cards.setSpacing(8)
-        self.card_link = _Card("UP4000 link")
+        self.card_link = _Card("UP7000 link")
         self.card_cpu = _Card("CPU / temperature")
         self.card_mem = _Card("Memory / disk")
         self.card_wifi = _Card("WiFi")
@@ -1395,9 +1487,9 @@ class Up4000Panel(QWidget):
         self.hud = FlightHudWidget(ekf_frame)
         ekf_box.addWidget(self.hud, 1)
 
-        # 6-Cell Quick Instrument Readout Grid (2 columns x 3 rows for generous width)
+        # 6-Cell Quick Instrument Readout Grid (2 columns x 3 rows with compact height)
         grid_wrap = QGridLayout()
-        grid_wrap.setSpacing(6)
+        grid_wrap.setSpacing(5)
         self.cell_mode = _TelemetryCell("Flight Mode", ekf_frame)
         self.cell_att = _TelemetryCell("Roll / Pitch / Yaw", ekf_frame)
         self.cell_pos = _TelemetryCell("Local NED (X, Y, Z)", ekf_frame)
@@ -1412,33 +1504,48 @@ class Up4000Panel(QWidget):
         grid_wrap.addWidget(self.cell_vib, 2, 1)
         ekf_box.addLayout(grid_wrap)
 
-        # Detailed PX4 state text (preserved for full details & test compatibility)
+        # Detailed PX4 state text (kept in memory for test compatibility; hidden on UI
+        # so dynamic STALE/ODOMETRY lines never resize the HUD aspect ratio)
         state_card = QFrame(ekf_frame)
         state_card.setObjectName("sub_card")
         state_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        state_card.setVisible(False)
         state_lay = QVBoxLayout(state_card)
-        state_lay.setContentsMargins(10, 6, 10, 6)
+        state_lay.setContentsMargins(8, 4, 8, 4)
+        state_lay.setSpacing(2)
         self.lbl_state = _text_label(state_card)
         state_lay.addWidget(self.lbl_state)
         ekf_box.addWidget(state_card)
 
         # --- Column 2: EKF2 Estimator Innovation Gauges, Companion Logger & PX4 Messages ---
-        log_frame, log_box = _panel("EKF2 ESTIMATOR HEALTH & UP4000 LOGGER", split)
+        log_frame, log_box = _panel("EKF2 ESTIMATOR HEALTH & UP7000 LOGGER", split)
+        log_scroll = QScrollArea(log_frame)
+        log_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        log_scroll.setWidgetResizable(True)
+        log_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        log_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        log_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        log_inner = QWidget(log_scroll)
+        log_inner.setStyleSheet("background: transparent;")
+        log_inner_box = QVBoxLayout(log_inner)
+        log_inner_box.setContentsMargins(0, 0, 0, 0)
+        log_inner_box.setSpacing(6)
 
         # 6 Visual Innovation Test Ratio Gauge Bars
-        ratios_card = QFrame(log_frame)
+        ratios_card = QFrame(log_inner)
         ratios_card.setObjectName("sub_card")
         ratios_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         ratios_lay = QVBoxLayout(ratios_card)
-        ratios_lay.setContentsMargins(10, 8, 10, 8)
-        ratios_lay.setSpacing(4)
-        ratios_hdr = QLabel("EKF2 INNOVATION RATIOS (<0.5 OK · <1.0 WARN · ≥1.0 REJECT)")
+        ratios_lay.setContentsMargins(10, 6, 10, 6)
+        ratios_lay.setSpacing(3)
+        ratios_hdr = QLabel("EKF2 INNOVATION RATIOS (<0.5 OK · <1.0 WARN · ≥1.0 REJ)")
         ratios_hdr.setObjectName("card_title")
+        ratios_hdr.setWordWrap(True)
         ratios_lay.addWidget(ratios_hdr)
 
         self.ratio_bars: dict[str, _RatioBar] = {}
         ratio_grid = QGridLayout()
-        ratio_grid.setSpacing(6)
+        ratio_grid.setSpacing(4)
         for idx, (label_txt, field_key) in enumerate((
             ("Vel", "vel_ratio"),
             ("Pos H", "pos_horiz_ratio"),
@@ -1456,31 +1563,33 @@ class Up4000Panel(QWidget):
         self.lbl_flags = _text_label(ratios_card)
         ratios_lay.addWidget(self.lbl_ekf)
         ratios_lay.addWidget(self.lbl_flags)
-        log_box.addWidget(ratios_card)
+        log_inner_box.addWidget(ratios_card)
 
         # Companion Logger & Session Files Card
-        logger_card = QFrame(log_frame)
+        logger_card = QFrame(log_inner)
         logger_card.setObjectName("sub_card")
         logger_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         logger_lay = QVBoxLayout(logger_card)
-        logger_lay.setContentsMargins(10, 8, 10, 8)
+        logger_lay.setContentsMargins(10, 6, 10, 6)
         logger_lay.setSpacing(4)
         self.lbl_logger = _text_label(logger_card)
         self.lbl_files = _text_label(logger_card)
         logger_lay.addWidget(self.lbl_logger)
         logger_lay.addWidget(self.lbl_files)
-        log_box.addWidget(logger_card)
+        log_inner_box.addWidget(logger_card)
 
         # PX4 STATUSTEXT Console Card
-        msg_card = QFrame(log_frame)
+        msg_card = QFrame(log_inner)
         msg_card.setObjectName("sub_card")
         msg_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         msg_lay = QVBoxLayout(msg_card)
-        msg_lay.setContentsMargins(10, 8, 10, 8)
+        msg_lay.setContentsMargins(10, 6, 10, 6)
         self.lbl_text = _text_label(msg_card, mono=False, wrap=True)
         msg_lay.addWidget(self.lbl_text)
-        log_box.addWidget(msg_card)
-        log_box.addStretch(1)
+        log_inner_box.addWidget(msg_card)
+        log_inner_box.addStretch(1)
+        log_scroll.setWidget(log_inner)
+        log_box.addWidget(log_scroll, 1)
 
         # --- Column 3: Live All-Values Tree Inspector with Filter ---
         tree_frame, tree_box = _panel("ALL TELEMETRY INSPECTOR", split)
@@ -1489,7 +1598,7 @@ class Up4000Panel(QWidget):
         self.tree_filter = QLineEdit(tree_frame)
         self.tree_filter.setPlaceholderText("Filter telemetry fields (e.g. ODOMETRY, ratio)...")
         self.tree_filter.setClearButtonEnabled(True)
-        self.tree_filter.setMinimumWidth(160)
+        self.tree_filter.setMinimumWidth(80)
         self.tree_filter.textChanged.connect(self._apply_tree_filter)
 
         btn_expand = QPushButton("Expand")
@@ -1505,15 +1614,21 @@ class Up4000Panel(QWidget):
 
         self.tree = QTreeWidget(tree_frame)
         self.tree.setHeaderLabels(["Field", "Value"])
-        self.tree.setColumnWidth(0, 215)
+        self.tree.setColumnWidth(0, 195)
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         tree_box.addWidget(self.tree, 1)
 
+        ekf_frame.setMinimumWidth(400)
+        log_frame.setMinimumWidth(330)
+        tree_frame.setMinimumWidth(240)
         split.addWidget(ekf_frame)
         split.addWidget(log_frame)
         split.addWidget(tree_frame)
-        split.setSizes([540, 430, 390])
+        split.setStretchFactor(0, 5)
+        split.setStretchFactor(1, 4)
+        split.setStretchFactor(2, 3)
+        split.setSizes([540, 430, 340])
         root.addWidget(split, 1)
         self.refresh(force=True)
 
@@ -1685,7 +1800,7 @@ class Up4000Panel(QWidget):
         if msg is None:
             self.card_link.set(
                 "WAITING",
-                f"Listening UDP {lst.port}. Start the logger on the UP4000; "
+                f"Listening UDP {lst.port}. Start the logger on the UP7000; "
                 "it broadcasts once per second until it knows this PC.",
             )
             return
@@ -1770,9 +1885,7 @@ class Up4000Panel(QWidget):
             self.card_vehicle.value.setText("STALE HEARTBEAT")
 
         arm_state = ("armed" if armed else "disarmed") if hb else "--"
-        lines = [
-            f"<b>Mode</b> {mode} · {arm_state} · {landed_txt} · battery {batt}"
-        ]
+        lines: list[str] = []
         euler = None
         pos_ned = None
         vel_ned = None
@@ -1783,14 +1896,17 @@ class Up4000Panel(QWidget):
             pos_ned = (odom.get("x"), odom.get("y"), odom.get("z"))
             vel_ned = (odom.get("vx"), odom.get("vy"), odom.get("vz"))
             lines += [
-                f"<b>Position</b> x {_fmt(odom.get('x'), 3)} y {_fmt(odom.get('y'), 3)} "
-                f"z {_fmt(odom.get('z'), 3)} m (frame {odom.get('frame_id')})",
-                f"<b>Velocity</b> {_fmt(odom.get('vx'))} {_fmt(odom.get('vy'))} {_fmt(odom.get('vz'))} m/s",
-                f"<b>Attitude</b> {att}",
-                f"<b>ODOMETRY</b> age {_fmt(age, 2, ' s')} · {(px4.get('rates_hz') or {}).get('ODOMETRY', '--')} Hz",
+                f"<b>Pos</b> x {_fmt(odom.get('x'), 3)} y {_fmt(odom.get('y'), 3)} "
+                f"z {_fmt(odom.get('z'), 3)} m · <b>Vel</b> {_fmt(odom.get('vx'))} "
+                f"{_fmt(odom.get('vy'))} {_fmt(odom.get('vz'))} m/s",
+                f"<b>Att</b> {att} · <b>ODOM</b> {_fmt(age, 2, 's')} "
+                f"({(px4.get('rates_hz') or {}).get('ODOMETRY', '--')} Hz)",
             ]
         else:
-            lines.append("No fresh ODOMETRY" if "ODOMETRY" in stale else "No ODOMETRY yet")
+            lines.append(
+                f"<b>Mode</b> {mode} ({arm_state}) · "
+                + ("No fresh ODOMETRY" if "ODOMETRY" in stale else "No ODOMETRY yet")
+            )
         if stale:
             names = ", ".join(f"{name} ({age:.1f}s)" for name, age in sorted(stale.items()))
             lines.append(f'<span style="color:#d98200"><b>STALE PX4</b>: {names}</span>')
@@ -1809,13 +1925,13 @@ class Up4000Panel(QWidget):
             append_trail=not is_replay,
         )
 
-        # Update 6-Cell Quick Readout Grid
+        # Update 6-Cell Quick Readout Grid (compact strings so 3x2 grid never truncates)
         mode_col = "#DC2626" if armed else None
-        self.cell_mode.set_data(f"{mode} ({arm_state.upper()})", f"State: {landed_txt}", color=mode_col)
+        self.cell_mode.set_data(f"{mode}", f"{arm_state.upper()} · {landed_txt}", color=mode_col)
         if euler:
             self.cell_att.set_data(
-                f"{euler[0]:+.1f}° / {euler[1]:+.1f}° / {euler[2]:+.1f}°",
-                "Roll / Pitch / Yaw (NED)",
+                f"{euler[0]:+.1f}° {euler[1]:+.1f}° {euler[2]:+.1f}°",
+                "Roll · Pitch · Yaw",
             )
         else:
             self.cell_att.set_data("-- / -- / --", "Waiting for attitude")
@@ -1823,8 +1939,8 @@ class Up4000Panel(QWidget):
         if odom and pos_ned and all(isinstance(v, (int, float)) for v in pos_ned):
             alt_rel = -float(pos_ned[2])
             self.cell_pos.set_data(
-                f"{pos_ned[0]:+.2f}, {pos_ned[1]:+.2f}, {pos_ned[2]:+.2f} m",
-                f"Alt (-Z): {alt_rel:+.2f} m · Rate: {(px4.get('rates_hz') or {}).get('ODOMETRY', '--')} Hz",
+                f"{pos_ned[0]:+.2f} {pos_ned[1]:+.2f} {pos_ned[2]:+.2f}m",
+                f"Alt: {alt_rel:+.2f}m · {(px4.get('rates_hz') or {}).get('ODOMETRY', '--')}Hz",
             )
         else:
             self.cell_pos.set_data("--, --, -- m", "No fresh ODOMETRY")
@@ -1832,14 +1948,14 @@ class Up4000Panel(QWidget):
         if odom and vel_ned and all(isinstance(v, (int, float)) for v in vel_ned):
             v_xy = math.hypot(float(vel_ned[0]), float(vel_ned[1]))
             self.cell_vel.set_data(
-                f"{vel_ned[0]:+.2f}, {vel_ned[1]:+.2f}, {vel_ned[2]:+.2f} m/s",
-                f"Groundspeed Vxy: {v_xy:.2f} m/s",
+                f"{vel_ned[0]:+.2f} {vel_ned[1]:+.2f} {vel_ned[2]:+.2f}",
+                f"Vxy: {v_xy:.2f} m/s",
             )
         else:
             self.cell_vel.set_data("--, --, -- m/s", "Groundspeed: --")
 
         curr_raw = sys_status.get("current_battery")
-        curr_str = f"Current: {curr_raw / 100:.1f} A" if isinstance(curr_raw, (int, float)) and curr_raw > 0 else "MAVLink SYS_STATUS"
+        curr_str = f"Curr: {curr_raw / 100:.1f} A" if isinstance(curr_raw, (int, float)) and curr_raw > 0 else "SYS_STATUS"
         self.cell_batt.set_data(batt, curr_str)
 
         if vib:
@@ -1847,8 +1963,8 @@ class Up4000Panel(QWidget):
             c0, c1, c2 = vib.get("clipping_0", 0), vib.get("clipping_1", 0), vib.get("clipping_2", 0)
             vib_warn = "#DC2626" if any(isinstance(c, (int, float)) and c > 0 for c in (c0, c1, c2)) else None
             self.cell_vib.set_data(
-                f"{_fmt(vx_v, 2)} / {_fmt(vy_v, 2)} / {_fmt(vz_v, 2)}",
-                f"m/s² · Clip: {c0}/{c1}/{c2}",
+                f"{_fmt(vx_v, 1)} / {_fmt(vy_v, 1)} / {_fmt(vz_v, 1)}",
+                f"m/s² · Clip {c0}/{c1}/{c2}",
                 color=vib_warn,
             )
         else:
@@ -1884,10 +2000,7 @@ class Up4000Panel(QWidget):
             for name, on, bad in ekf_flags(est.get("flags") or 0):
                 color = ("#d93025" if bad else "#2e9e44") if on else "#8a8f98"
                 items.append(f'<span style="color:{color}">{"■" if on else "□"} {name}</span>')
-            self.lbl_flags.setText(
-                "<b>EKF flags</b><br>"
-                + "<br>".join(" &nbsp; ".join(items[i : i + 3]) for i in range(0, len(items), 3))
-            )
+            self.lbl_flags.setText("<b>EKF flags</b> " + " &nbsp; ".join(items))
         else:
             self.lbl_flags.setText("<b>EKF flags</b> -- (no ESTIMATOR_STATUS)")
 
@@ -1908,23 +2021,21 @@ class Up4000Panel(QWidget):
         procs = (msg.get("host") or {}).get("processes") or {}
         cpu = " · ".join(f"{n} {_fmt(p.get('cpu_percent'), 0, '%')}" for n, p in procs.items()) or "--"
         rows = [
-            "<b>UWB relay</b>",
-            f"TAG {uwb.get('tag_port', '--')} · ground {uwb.get('ground') or 'not found yet'}",
+            f"<b>UWB relay</b> · TAG {uwb.get('tag_port', '--')} · ground {uwb.get('ground') or 'not found yet'}",
             f"bytes {uc.get('tag_bytes', 0):,} · Burst parsed {parsed.get('frame_0x18', 0):,} · "
             f"CRC {parser.get('crc_errors', 0)}",
             f"UDP sent {uc.get('udp_datagrams', 0):,} · parse drops {uc.get('parse_queue_dropped_chunks', 0)} · "
             f"reopen {uc.get('tag_silent_reopens', 0)} · callback err {parsed.get('callback_errors', 0)}",
-            "<b>PX4 logger</b>",
-            f"port {px4l.get('px4_port', '--')} · messages {pc.get('messages', 0):,} · bad {pc.get('bad_data', 0)}",
+            f"<b>PX4 logger</b> · port {px4l.get('px4_port', '--')} · messages {pc.get('messages', 0):,} · "
+            f"bad {pc.get('bad_data', 0)}",
             f"ULog part {px4l.get('ulog_part', 0)} · chunks {ulog.get('chunks', 0):,} · "
             f"lost {ulog.get('dropped_chunks', 0)} · {ulog.get('bytes', 0) / 1e6:.1f} MB",
-            f"timesync {pc.get('timesync_samples', 0)} · QGC {px4l.get('ground') or '--'}",
-            f"<b>CPU</b> {cpu}",
+            f"timesync {pc.get('timesync_samples', 0)} · QGC {px4l.get('ground') or '--'} · <b>CPU</b> {cpu}",
         ]
         self.lbl_logger.setText("<br>".join(rows))
         session = msg.get("session") or {}
         files = session.get("files") or {}
-        listing = "<br>".join(f"{name}: {size / 1e6:.2f} MB" for name, size in files.items())
+        listing = " · ".join(f"{name}: {size / 1e6:.2f} MB" for name, size in files.items())
         self.lbl_files.setText(f"<b>Session</b> {session.get('folder', '--')}<br>{listing or 'no files'}")
 
     # ---------------------------------------------------------------- Tree & Filter

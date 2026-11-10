@@ -1,0 +1,26 @@
+[Unit]
+Description=UWB TAG WiFi relay + PX4 MAVLink/ULog logger (ROS 2 Humble)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/@USER@/drone_tools/python
+Environment=LANG=C.UTF-8
+# Optional launch arguments, e.g. LAUNCH_ARGS="ground_host:=192.168.1.20"
+EnvironmentFile=-/etc/default/uwb-px4-logger
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source @WS@/install/setup.bash && exec ros2 launch uwb_px4_logger logger.launch.py $LAUNCH_ARGS'
+Restart=always
+RestartSec=3
+# SIGINT lets both nodes close their files and stop the PX4 log stream.
+KillSignal=SIGINT
+# Signal only ros2 launch; it forwards SIGINT to both nodes once.
+KillMode=mixed
+# Read the USB streams promptly even when the computer is busy.
+Nice=-5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

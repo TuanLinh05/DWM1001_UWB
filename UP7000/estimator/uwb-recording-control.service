@@ -1,0 +1,22 @@
+[Unit]
+Description=UP7000 GUI recording control
+After=network-online.target tailscaled.service mnt-droneup.mount
+RequiresMountsFor=/mnt/droneup
+BindsTo=mnt-droneup.mount
+ConditionPathIsMountPoint=/mnt/droneup
+
+[Service]
+User=thoa
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONPYCACHEPREFIX=/mnt/droneup/onboard_20261107/thoa/cache/python
+ExecStartPre=/usr/local/libexec/up7000-onboard-storage-check
+ExecStart=/usr/bin/python3 /home/thoa/drone_tools/eskf/recording_control_server.py --allow-source 100.77.150.59 --allow-source 127.0.0.1
+StandardOutput=append:/mnt/droneup/onboard_20261107/thoa/service_logs/uwb-recording-control.log
+StandardError=inherit
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=110
+
+[Install]
+WantedBy=multi-user.target

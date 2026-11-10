@@ -1,0 +1,26 @@
+# Rig 2026-10-25: 4 masts on a 3.0 m square (5 floor tiles x 0.6 m), anchors 1-4 at 0.4 m, 5-8 at 1.1 m.
+# Origin = floor under mast 1 (anchors 1, 5), z up. x -> mast 4 (anchors 4, 8), y -> mast 2 (anchors 2, 6).
+#
+# Fitted, not surveyed: run_20261025_145352/145452/145551, tag still on the floor at (0.6|1.2|1.8, 2.4, 0).
+#   tile size free in the fit -> 0.614 m (tape: 0.6). Mast order and layer heights picked by residual:
+#   with A2 left out, 1-4 low = 2.8 cm rms (worst 6.1), 1-4 high = 5.4 cm (worst 14.9).
+#   The three spots are collinear (y = 2.4): add one off that line before trusting y-dependent errors.
+an1_p, 0.0, 0.0, 0.4
+an2_p, 0.0, 3.0, 0.4
+an3_p, 3.0, 3.0, 0.4
+an4_p, 3.0, 0.0, 0.4
+an5_p, 0.0, 0.0, 1.1
+an6_p, 0.0, 3.0, 1.1
+an7_p, 3.0, 3.0, 1.1
+an8_p, 3.0, 0.0, 1.1
+# Per-anchor range bias (meas = true + bias, m), status 0x20 = CAL_MISSING so the tag applies none.
+# uwb_eskf (load_bias) subtracts these from every range.
+# A2 is the odd one: residual -27..+16 cm across spots (others <= 6 cm) -> multipath/NLOS at its mast, check it.
+an1_bias, 0.103
+an2_bias, 0.038
+an3_bias, 0.129
+an4_bias, 0.169
+an5_bias, 0.186
+an6_bias, 0.248
+an7_bias, 0.544
+an8_bias, 0.292

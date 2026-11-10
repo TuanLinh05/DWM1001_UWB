@@ -1,0 +1,11 @@
+# UP4000 flight logger: stable device names, dialout access, ModemManager off.
+# Check vendor IDs with `lsusb` if a link does not appear.
+
+# TAG DevKit (DWM1001-DEV) — SEGGER J-Link OB virtual COM port
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1366", SYMLINK+="uwb_tag", GROUP="dialout", MODE="0660", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+# Pixhawk 6C running PX4 — USB CDC (3185 = Auterion PX4 FMU v6C.x, seen on this
+# drone; 26ac = PX4/3DR, 3162 = Holybro on other builds)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="3185", SYMLINK+="pixhawk", GROUP="dialout", MODE="0660", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="26ac", SYMLINK+="pixhawk", GROUP="dialout", MODE="0660", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="3162", SYMLINK+="pixhawk", GROUP="dialout", MODE="0660", ENV{ID_MM_DEVICE_IGNORE}="1"

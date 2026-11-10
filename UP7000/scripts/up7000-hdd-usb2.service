@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep drone HDD connector on USB2 to reduce GNSS interference
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=mnt-droneup.mount local-fs.target
+Before=systemd-fsck@dev-disk-by\x2duuid-896b17fa\x2d8fe0\x2d4111\x2d853b\x2d57b93ec87c60.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /usr/local/libexec/up7000-hdd-usb2
+RemainAfterExit=yes
+TimeoutStartSec=45
+
+[Install]
+WantedBy=sysinit.target

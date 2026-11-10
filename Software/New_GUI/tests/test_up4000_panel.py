@@ -335,9 +335,55 @@ class ListenerAndPanelTests(unittest.TestCase):
             _APP.processEvents()
             self.assertEqual(win.up4000_panel.card_vehicle.value.text(), "ARMED")
             labels = [b.text() for b in win.nav_group.buttons()]
-            self.assertIn("5. UP4000 Onboard", labels)
+            self.assertIn("5. UP7000 Onboard", labels)
         finally:
             win.close()
+
+    def test_hud_geometry_locked_and_secondary_sender_ignored(self):
+        listener = Up4000StatusListener(port=0)
+        panel = Up4000Panel(listener)
+        panel.resize(1280, 720)
+        panel.show()
+        _APP.processEvents()
+        try:
+            initial_hud_size = panel.hud.size()
+            # 1. Primary UP7000 ('thoa') sends active telemetry with 2-line WiFi info
+            st_thoa = sample_status(seq=100)
+            st_thoa["host"]["hostname"] = "thoa"
+            st_thoa["host"]["wifi"] = [{
+                "interface": "wlx30169df9a262", "ssid": "PIF_CLUB_5G",
+                "freq_mhz": 5500.0, "tx_mbit": 351.0, "link_quality": 70.0, "signal_dbm": -30.0,
+            }]
+            listener.handle_datagram(
+                json.dumps({"kind": "up4000_status", "version": 2, "seq": 100,
+                            "time_unix": time.time(), "part": "host", "data": st_thoa["host"]}).encode(),
+                "100.123.216.14",
+            )
+            listener.handle_datagram(
+                json.dumps({"kind": "up4000_status", "version": 2, "seq": 100,
+                            "time_unix": time.time(), "part": "px4", "data": st_thoa["px4"]}).encode(),
+                "100.123.216.14",
+            )
+            panel.refresh(force=True)
+            _APP.processEvents()
+            self.assertEqual(panel.hud.size(), initial_hud_size)
+            self.assertIn("thoa", panel.card_cpu.sub.text())
+
+            # 2. Idle UP4000 ('dronepif') broadcasts empty host/uwb_relay on the same network
+            listener.handle_datagram(
+                json.dumps({"kind": "up4000_status", "version": 2, "seq": 50,
+                            "time_unix": time.time(), "part": "host",
+                            "data": {"hostname": "dronepif", "cpu_percent": 5.0, "wifi": [{}]}}).encode(),
+                "192.168.10.23",
+            )
+            panel.refresh(force=True)
+            _APP.processEvents()
+            # Must still show 'thoa' and HUD size must remain 100% locked
+            self.assertIn("thoa", panel.card_cpu.sub.text())
+            self.assertEqual(panel.hud.size(), initial_hud_size)
+        finally:
+            panel.close()
+            listener.close()
 
 
 class Px4UlogReplayTests(unittest.TestCase):

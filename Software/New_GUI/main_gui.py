@@ -17,10 +17,12 @@ import json
 from pathlib import Path
 import sys
 import time
+import uuid
+import hashlib
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDoubleValidator, QFont, QFontDatabase, QIntValidator
+from PyQt6.QtCore import Qt, QTimer, QProcess, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QDoubleValidator, QFont, QFontDatabase, QIntValidator
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -28,6 +30,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -56,6 +59,9 @@ if str(OLD_GUI_DIR) not in sys.path:
 import telemetry_protocol as tp  # noqa: E402
 
 from diag_rates import format_rates  # noqa: E402
+from rosbag_logger import Ros2BagRecorder, plotjuggler_command  # noqa: E402
+from onboard_recording import OnboardRecordingWorker, DEFAULT_HOST  # noqa: E402
+from eskf_config import normalize_config, config_hash, PARAMETERS as ESKF_PARAMETERS  # noqa: E402
 from up4000_panel import Up4000Panel, Up4000StatusListener  # noqa: E402
 from core_state import (  # noqa: E402
     AnchorConfig,
@@ -231,6 +237,7 @@ class UwbFastGuiWindow(QMainWindow):
         start_demo: bool = False,
         initial_port: Optional[str] = None,
         initial_baud: int = 460800,
+        enable_onboard_control: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("UWB Fast Studio — 2D/3D Positioning & High-Speed Calibration")
@@ -261,12 +268,34 @@ class UwbFastGuiWindow(QMainWindow):
         self.serial_worker: Optional[SerialTelemetryWorker] = None
         self.demo_worker: Optional[DemoBurstWorker] = None
         self.csv_logger: Optional[FastCsvLogger] = None
+        self.rosbag_logger: Optional[Ros2BagRecorder] = None
+        self.last_log_dir: Optional[Path] = None
+        self._recording_warning = ""
+        self._recording_demo = False
+        self._enable_onboard_control = enable_onboard_control
+        self._remote_worker = None
+        self._remote_recording_id = ""
+        self._remote_log_host = DEFAULT_HOST
+        self._remote_log_dir = None
+        self._remote_state = ""
+        self._remote_error = ""
+        self._remote_details = {}
+        self._remote_last_poll = 0.0
+        self._remote_finish_requested = False
+        self._close_after_recording = False
+        self._remote_config_snapshot = None
+        self._eskf_loading = False
+        self._eskf_reviewed_fingerprint = ''
+        self._deferred_close_timer = QTimer(self)
+        self._deferred_close_timer.setSingleShot(True)
+        self._deferred_close_timer.timeout.connect(self.close)
         self._replay_loader: Optional[LogReplayWorker] = None
         self._event_log: List[str] = []
 
         self._editing_anchor_table = False
         self._build_ui()
         self._populate_anchor_config_table()
+        self._load_eskf_settings()
         self.map_canvas.reset_camera()
         self._refresh_ports(select_port=initial_port)
 
@@ -319,8 +348,9 @@ class UwbFastGuiWindow(QMainWindow):
         self.pages.addWidget(self._build_calibration_page())
         self.pages.addWidget(self._build_layout_and_diag_page())
         self.pages.addWidget(self._build_replay_and_analysis_page())
-        # Read-only view of the drone computer (UP4000 up4000_status node, UDP 15557)
+        # Read-only view of the UP7000 (up4000_status wire format, UDP 15557).
         self.up4000_listener = Up4000StatusListener(parent=self)
+        self.up4000_listener.status_received.connect(self._on_onboard_status_for_log)
         self.up4000_panel = Up4000Panel(self.up4000_listener, self.pages)
         self.pages.addWidget(self.up4000_panel)
         body_hbox.addWidget(self.pages, 1)
@@ -384,7 +414,13 @@ class UwbFastGuiWindow(QMainWindow):
 
         hbox.addStretch(1)
 
-        self.btn_csv_log = QPushButton("Log CSV: OFF")
+        self.log_format_combo = QComboBox()
+        self.log_format_combo.addItem("CSV + MCAP", True)
+        self.log_format_combo.addItem("CSV only", False)
+        self.log_format_combo.setToolTip("Laptop log format. Live WiFi UDP also starts the full MCAP recorder on UP7000 HDD.")
+        hbox.addWidget(self.log_format_combo)
+
+        self.btn_csv_log = QPushButton("Log: OFF")
         self.btn_csv_log.setCheckable(True)
         self.btn_csv_log.clicked.connect(self._toggle_csv_logging)
         hbox.addWidget(self.btn_csv_log)
@@ -417,7 +453,7 @@ class UwbFastGuiWindow(QMainWindow):
             ("2. Fast Calibration", 1),
             ("3. Rig Layout && Diag", 2),
             ("4. Log Replay && Analysis", 3),
-            ("5. UP4000 Onboard", 4),
+            ("5. UP7000 Onboard", 4),
         ]
         for label, page_idx in nav_items:
             btn = QPushButton(label)
@@ -1176,6 +1212,10 @@ class UwbFastGuiWindow(QMainWindow):
         l_bot.addWidget(btn_push_mask)
 
         l_vbox.addLayout(l_bot)
+        self._rig_edit_controls = [btn_preset_room, btn_preset_box, btn_preset_rig40, btn_preset_2d,
+                                   btn_import_rig, btn_push_mask]
+        self.eskf_config_panel = self._build_eskf_config_panel()
+        l_vbox.addWidget(self.eskf_config_panel)
 
         diag_card = QFrame(split)
         diag_card.setObjectName("panel_card")
@@ -1205,17 +1245,84 @@ class UwbFastGuiWindow(QMainWindow):
 
         d_vbox.addLayout(d_top)
 
-        self.lbl_diag_summary = QLabel("System Diag: waiting for frames...")
-        self.lbl_diag_summary.setObjectName("metric_sub")
-        self.lbl_diag_summary.setWordWrap(True)
-        d_vbox.addWidget(self.lbl_diag_summary)
+        # Framed 2x4 KPI Grid for System Diag & Cycle Rates
+        self.diag_kpi_cells: Dict[str, QLabel] = {}
+        kpi_grid = QGridLayout()
+        kpi_grid.setContentsMargins(0, 0, 0, 0)
+        kpi_grid.setHorizontalSpacing(6)
+        kpi_grid.setVerticalSpacing(6)
+        kpi_specs = [
+            ("uptime", "UPTIME"),
+            ("mask", "ACTIVE MASK"),
+            ("temp", "TEMP"),
+            ("vbat", "VBAT"),
+            ("cycles", "CYCLES / S"),
+            ("final_late", "FINAL LATE"),
+            ("rb_missing", "RB MISSING"),
+            ("rx_err", "RX ERRORS / S"),
+        ]
+        for idx, (key, title) in enumerate(kpi_specs):
+            cell = QFrame(diag_card)
+            cell.setObjectName("sub_card")
+            cell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            cell.setFixedHeight(44)
+            c_lay = QVBoxLayout(cell)
+            c_lay.setContentsMargins(8, 3, 8, 3)
+            c_lay.setSpacing(1)
+            lbl_t = QLabel(title, cell)
+            lbl_t.setStyleSheet("font-size: 9px; font-weight: 700; letter-spacing: 0.3px; color: #64748B;")
+            lbl_v = QLabel("--", cell)
+            lbl_v.setStyleSheet('font-family: "Consolas", "Cascadia Mono", monospace; font-size: 12px; font-weight: 700;')
+            c_lay.addWidget(lbl_t)
+            c_lay.addWidget(lbl_v)
+            self.diag_kpi_cells[key] = lbl_v
+            kpi_grid.addWidget(cell, idx // 4, idx % 4)
+        d_vbox.addLayout(kpi_grid)
 
-        # Per-second rates of the TAG's DIAG counters (last ~1 s) and likely cause
-        self.lbl_diag_rates = QLabel("Radio counters: waiting for DIAG frames...")
+        # Framed 8-Anchor Radio Counters Table
+        self.diag_rates_table = QTableWidget(8, 7, diag_card)
+        self.diag_rates_table.setHorizontalHeaderLabels(
+            ["Anchor", "DS ok/s", "RESP lost", "no Rb", "skipped", "late", "txn"]
+        )
+        self.diag_rates_table.verticalHeader().setVisible(False)
+        self.diag_rates_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.diag_rates_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.diag_rates_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.diag_rates_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.diag_rates_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.diag_rates_table.setAlternatingRowColors(True)
+        self.diag_rates_table.setShowGrid(True)
+        self.diag_rates_table.setFixedHeight(222)
+        dr_hdr = self.diag_rates_table.horizontalHeader()
+        dr_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        dr_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        dr_hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        dr_hdr.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        mono_bold = QFont(FONT_MONO, 9, QFont.Weight.Bold)
+        mono_reg = QFont(FONT_MONO, 9)
+        for row in range(8):
+            aid = row + 1
+            for col in range(7):
+                it = QTableWidgetItem(f"A{aid}" if col == 0 else "--")
+                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    it.setFont(mono_bold)
+                    it.setForeground(QColor(ANCHOR_PALETTE[row]))
+                else:
+                    it.setFont(mono_reg)
+                    it.setForeground(QColor("#64748B"))
+                self.diag_rates_table.setItem(row, col, it)
+            self.diag_rates_table.setRowHeight(row, 24)
+        d_vbox.addWidget(self.diag_rates_table)
+
+        # Hidden text mirrors kept for unit test / clipboard compatibility
+        self.lbl_diag_summary = QLabel("System Diag: waiting for frames...", diag_card)
+        self.lbl_diag_summary.setObjectName("metric_sub")
+        self.lbl_diag_summary.setVisible(False)
+
+        self.lbl_diag_rates = QLabel("Radio counters: waiting for DIAG frames...", diag_card)
         self.lbl_diag_rates.setObjectName("metric_sub")
-        self.lbl_diag_rates.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.lbl_diag_rates.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        d_vbox.addWidget(self.lbl_diag_rates)
+        self.lbl_diag_rates.setVisible(False)
 
         self.lbl_diag_hints = QLabel("")
         self.lbl_diag_hints.setObjectName("badge_err")
@@ -1228,7 +1335,7 @@ class UwbFastGuiWindow(QMainWindow):
         self.event_console.setMaximumBlockCount(400)
         d_vbox.addWidget(self.event_console, 1)
 
-        split.setSizes([820, 480])
+        split.setSizes([740, 560])
         vbox.addWidget(split, 1)
         return page
 
@@ -1256,6 +1363,23 @@ class UwbFastGuiWindow(QMainWindow):
         btn_open_log = QPushButton("Open Log CSV...")
         btn_open_log.clicked.connect(self._open_log_session_dialog)
         ctrl_bar.addWidget(btn_open_log)
+
+        btn_log_folder = QPushButton("Log Folder")
+        btn_log_folder.clicked.connect(self._open_log_folder)
+        ctrl_bar.addWidget(btn_log_folder)
+
+        self.btn_plot_mcap = QPushButton("Plot MCAP...")
+        self.btn_plot_mcap.setToolTip("Open a finalized ROS 2 MCAP in PlotJuggler (ROS 2 Humble / WSL on Windows)")
+        self.btn_plot_mcap.clicked.connect(self._open_mcap_plot)
+        ctrl_bar.addWidget(self.btn_plot_mcap)
+
+        self.btn_export_mp4 = QPushButton("Export MP4 Video...")
+        self.btn_export_mp4.setObjectName("success_btn")
+        self.btn_export_mp4.setToolTip(
+            "Launch the dedicated MP4 Video Export Studio in a separate process to render this log session to .mp4"
+        )
+        self.btn_export_mp4.clicked.connect(self._open_video_exporter_studio)
+        ctrl_bar.addWidget(self.btn_export_mp4)
 
         self.chk_replay_resolve = QCheckBox("Re-Solve 3D with Current Rig && Filter")
         self.chk_replay_resolve.setChecked(False)
@@ -1308,6 +1432,7 @@ class UwbFastGuiWindow(QMainWindow):
         self.replay_canvas = PositionMapCanvas(self.replay_engine, left_card)
         self.replay_canvas.view_mode = "SPLIT"
         self.replay_canvas.color_by_stability = True
+        self.replay_canvas.lock_map_path_bounds = True
         l_vbox.addWidget(self.replay_canvas, 1)
 
         # Timeline Scrubber Bar
@@ -1441,9 +1566,9 @@ class UwbFastGuiWindow(QMainWindow):
                     break
         else:
             self.port_combo.addItem("COM3", "COM3")
-        # UP4000 on the drone relays the TAG over WiFi (UP4000/ros2_ws uwb_relay).
+        # UP7000 on the drone relays the TAG over WiFi through uwb_relay.
         udp_key = f"{UDP_RELAY_PREFIX}{DEFAULT_UDP_RELAY_PORT}"
-        self.port_combo.addItem(f"WiFi UDP :{DEFAULT_UDP_RELAY_PORT} (UP4000 relay)", udp_key)
+        self.port_combo.addItem(f"WiFi UDP :{DEFAULT_UDP_RELAY_PORT} (UP7000 relay)", udp_key)
         if current == udp_key:
             self.port_combo.setCurrentIndex(self.port_combo.count() - 1)
 
@@ -1563,11 +1688,15 @@ class UwbFastGuiWindow(QMainWindow):
                     )
                     if msg.command_id in (tp.CMD_GET_DS_CAL, tp.CMD_SET_DS_CAL):
                         self._refresh_anchor_cfg_fw_column()
+                if self.rosbag_logger is not None:
+                    self.rosbag_logger.log_telemetry(
+                        msg, rx_ts, self.engine.latest_solution if isinstance(msg, tp.RangeBurstMessage) else None)
             except Exception as exc:
                 self._log_event(f"Telemetry ingest warning ({type(msg).__name__}): {exc}")
 
     def _on_ui_refresh_tick(self) -> None:
         try:
+            self._refresh_recording_status()
             eng = self.engine
             sol = eng.latest_solution
 
@@ -1858,6 +1987,13 @@ class UwbFastGuiWindow(QMainWindow):
 
     def _update_diagnostics_page(self) -> None:
         eng = self.engine
+        dark = self.theme_manager.is_dark
+        col_fg = QColor("#F8FAFC" if dark else "#0F172A")
+        col_muted = QColor("#64748B")
+        col_good = QColor("#34D399" if dark else "#059669")
+        col_warn = QColor("#FBBF24" if dark else "#D97706")
+        col_bad = QColor("#F87171" if dark else "#DC2626")
+
         ds = eng.diag_system
         if ds is not None:
             uptime_s = ds.uptime_ms / 1000.0
@@ -1867,10 +2003,78 @@ class UwbFastGuiWindow(QMainWindow):
                 f"System Diag — Uptime: {uptime_s:.1f}s | ActiveMask: 0x{ds.active_mask:02X} | "
                 f"Temp: {temp_txt} °C | Vbat: {vbat_txt} V"
             )
+            self.diag_kpi_cells["uptime"].setText(f"{uptime_s:.1f} s")
+            self.diag_kpi_cells["mask"].setText(f"0x{ds.active_mask:02X}")
+            self.diag_kpi_cells["temp"].setText(f"{temp_txt} °C" if temp_txt != "--" else "--")
+            self.diag_kpi_cells["vbat"].setText(f"{vbat_txt} V" if vbat_txt != "--" else "--")
+
         tracker = eng.diag_tracker
-        rates_text = format_rates(tracker.system_rates(), tracker.anchor_rates())
+        sys_r = tracker.system_rates()
+        anc_r = tracker.anchor_rates()
+        rates_text = format_rates(sys_r, anc_r)
         if self.lbl_diag_rates.text() != rates_text:
             self.lbl_diag_rates.setText(rates_text)
+
+        if sys_r:
+            cycles = sys_r.get("cycle_count", 0.0)
+            final_late = sys_r.get("burst_final_late", 0.0)
+            rb_miss = sys_r.get("ds_report_timeout", 0.0)
+            rx_str = ", ".join(
+                f"{k[3:]} {v:.0f}" for k, v in sorted(sys_r.items())
+                if k.startswith("rx_") and v >= 0.5
+            ) or "none"
+            self.diag_kpi_cells["cycles"].setText(f"{cycles:.0f} /s")
+            self.diag_kpi_cells["final_late"].setText(f"{final_late:.0f} /s")
+            self.diag_kpi_cells["rb_missing"].setText(f"{rb_miss:.0f} /s")
+            self.diag_kpi_cells["rx_err"].setText(rx_str)
+        else:
+            cycles = 0.0
+            for k in ("cycles", "final_late", "rb_missing", "rx_err"):
+                self.diag_kpi_cells[k].setText("--")
+
+        for row in range(8):
+            aid = row + 1
+            r = anc_r.get(aid)
+            if not sys_r or r is None:
+                for col in range(1, 7):
+                    it = self.diag_rates_table.item(row, col)
+                    if it is not None:
+                        it.setText("--")
+                        it.setForeground(col_muted)
+                continue
+
+            ds_ok = r.get("ds_ok", 0.0)
+            polled = max(
+                cycles - r.get("poll_skipped", 0.0),
+                r.get("success", 0.0) + r.get("resp_timeouts", 0.0),
+                1e-9,
+            )
+            resp_lost_pct = min(100.0, 100.0 * r.get("resp_timeouts", 0.0) / polled)
+            no_rb = r.get("report_timeouts", 0.0)
+            skip_pct = min(100.0, 100.0 * r.get("poll_skipped", 0.0) / max(cycles, 1e-9))
+            late = r.get("burst_late", 0.0)
+            txn = r.get("txn_mismatch", 0.0)
+
+            vals = [
+                (f"{ds_ok:.0f}", col_good if ds_ok >= 1.0 else (col_bad if resp_lost_pct >= 50.0 else col_muted)),
+                (
+                    f"{resp_lost_pct:.0f}%",
+                    col_bad if resp_lost_pct >= 50.0 else (col_warn if resp_lost_pct >= 10.0 else col_good),
+                ),
+                (f"{no_rb:.0f}", col_warn if no_rb >= 1.0 else col_fg),
+                (
+                    f"{skip_pct:.0f}%",
+                    col_bad if skip_pct >= 50.0 else (col_warn if skip_pct >= 5.0 else col_fg),
+                ),
+                (f"{late:.0f}", col_warn if late >= 1.0 else col_fg),
+                (f"{txn:.0f}", col_warn if txn >= 1.0 else col_fg),
+            ]
+            for idx, (txt, color) in enumerate(vals, start=1):
+                it = self.diag_rates_table.item(row, idx)
+                if it is not None:
+                    it.setText(txt)
+                    it.setForeground(color)
+
         hints = tracker.interpret(session=True)
         hints_text = "⚠ " + "\n⚠ ".join(hints) if hints else ""
         if self.lbl_diag_hints.text() != hints_text:
@@ -2016,6 +2220,8 @@ class UwbFastGuiWindow(QMainWindow):
             return
         try:
             save_anchor_layout_json(LAST_RIG_PATH, list(self.engine.anchors.values()))
+            if hasattr(self, 'eskf_inputs'):
+                self._eskf_settings_changed()
         except Exception:
             pass
 
@@ -2314,30 +2520,371 @@ class UwbFastGuiWindow(QMainWindow):
             worker.send_command(cmd_id, payload)
 
     # ------------------------------------------------------------------
-    # CSV Logging & Theme Toggle
+    # CSV + ROS 2 MCAP Logging & Theme Toggle
     # ------------------------------------------------------------------
+
+    def _build_eskf_config_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName('sub_card')
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(5)
+        title = QLabel('UP7000 ESKF CONFIGURATION (3D) · SENT WHEN LOG STARTS')
+        title.setObjectName('section_header')
+        layout.addWidget(title)
+        note = QLabel('TAG − IMU offset: X forward, Y left, Z up (m). Yaw: body forward from rig +X.\n'
+                      'Calibrated TAG ranges are used; the host Bias column is not subtracted again.')
+        note.setWordWrap(True); note.setObjectName('metric_sub'); layout.addWidget(note)
+        grid = QGridLayout(); grid.setSpacing(5)
+        specs = [
+            ('lever_x', 'Offset X (m)', 0., -5, 5, 4), ('lever_y', 'Offset Y (m)', 0., -5, 5, 4),
+            ('lever_z', 'Offset Z (m)', 0., -5, 5, 4), ('yaw0_deg', 'Initial yaw (°)', 0., -360, 360, 2),
+            ('sig_r', 'Range σ (m)', .15, .005, 5, 3), ('min_init_anchors', 'Min anchors', 6, 4, 8, 0),
+            ('init_static_s', 'Static init (s)', 1., .2, 30, 2), ('init_window_s', 'Init window (s)', .05, .01, .5, 3),
+            ('imu_timeout_s', 'IMU timeout (s)', .2, .05, 2, 3), ('range_timeout_s', 'Range timeout (s)', .5, .1, 5, 3),
+            ('max_input_age_s', 'Max age (s)', .25, .02, 2, 3), ('q_cv', 'CV process noise', 1., .0001, 100, 4)]
+        self.eskf_inputs = {}
+        for index, (key, label, default, low, high, decimals) in enumerate(specs):
+            widget = IntInput(int(low), int(high), int(default), 58) if not decimals else FloatInput(low, high, default, decimals, 64)
+            widget.setObjectName('eskf_' + key)
+            widget.setAccessibleName(label)
+            widget.valueChanged.connect(self._eskf_settings_changed)
+            self.eskf_inputs[key] = widget
+            row, col = index // 3, (index % 3)*2
+            grid.addWidget(QLabel(label), row, col); grid.addWidget(widget, row, col+1)
+        layout.addLayout(grid)
+        self.chk_eskf_confirmed = QCheckBox('Use measured rig, TAG–IMU offset and heading for ESKF')
+        self.chk_eskf_confirmed.setToolTip('Leave unchecked while surveying: inputs are still recorded and ESKF waits for configuration.')
+        self.chk_eskf_confirmed.toggled.connect(self._on_eskf_confirmation)
+        layout.addWidget(self.chk_eskf_confirmed)
+        return panel
+
+    def _eskf_payload(self, *, confirmed=None) -> dict:
+        for key, widget in self.eskf_inputs.items():
+            if not widget.hasAcceptableInput():
+                raise ValueError('Complete the ESKF field: ' + key)
+        value = {'schema': 1, 'confirmed': self.chk_eskf_confirmed.isChecked() if confirmed is None else confirmed,
+                 'anchors': [[a.anchor_id, a.x, a.y, a.z, bool(a.enabled), a.bias_mm, a.sigma_mm]
+                             for a in sorted(self.engine.anchors.values(), key=lambda a: a.anchor_id)],
+                 'lever_flu_m': [self.eskf_inputs['lever_' + axis].value() for axis in 'xyz'],
+                 'yaw0_deg': self.eskf_inputs['yaw0_deg'].value(),
+                 'parameters': {key: self.eskf_inputs[key].value() for key in ESKF_PARAMETERS}}
+        return normalize_config(value)
+
+    def _eskf_fingerprint(self):
+        value = self._eskf_payload(confirmed=False)
+        physical = {'anchors': [a[:5] for a in value['anchors']], 'lever': value['lever_flu_m'], 'yaw': value['yaw0_deg']}
+        return hashlib.sha256(json.dumps(physical, sort_keys=True).encode()).hexdigest()
+
+    def _on_eskf_confirmation(self, checked):
+        if self._eskf_loading:
+            return
+        try:
+            self._eskf_reviewed_fingerprint = self._eskf_fingerprint() if checked else ''
+        except ValueError:
+            self._eskf_reviewed_fingerprint = ''
+        self._eskf_settings_changed()
+
+    def _eskf_settings_changed(self, *_):
+        if self._eskf_loading or self.demo_worker is not None:
+            return
+        try:
+            if self.chk_eskf_confirmed.isChecked() and self._eskf_fingerprint() != self._eskf_reviewed_fingerprint:
+                self.chk_eskf_confirmed.setChecked(False)
+            value = self._eskf_payload(confirmed=False)
+            value['confirmed'] = self.chk_eskf_confirmed.isChecked()
+            path = NEW_GUI_DIR / 'onboard_eskf_settings.json'
+            path.write_text(json.dumps({'settings': value, 'reviewed_fingerprint': self._eskf_reviewed_fingerprint}, indent=2), encoding='utf-8')
+        except (ValueError, OSError):
+            pass
+
+    def _load_eskf_settings(self):
+        path = NEW_GUI_DIR / 'onboard_eskf_settings.json'
+        if not path.exists():
+            return
+        self._eskf_loading = True
+        try:
+            saved = json.loads(path.read_text(encoding='utf-8')); value = normalize_config(saved['settings'])
+            for axis, item in zip('xyz', value['lever_flu_m']):self.eskf_inputs['lever_' + axis].setValue(item)
+            self.eskf_inputs['yaw0_deg'].setValue(value['yaw0_deg'])
+            for key, item in value['parameters'].items():self.eskf_inputs[key].setValue(item)
+            self._eskf_reviewed_fingerprint = saved.get('reviewed_fingerprint', '')
+            self.chk_eskf_confirmed.setChecked(value['confirmed'] and self._eskf_fingerprint() == self._eskf_reviewed_fingerprint)
+        except (OSError, ValueError, KeyError):
+            self.chk_eskf_confirmed.setChecked(False)
+        finally:
+            self._eskf_loading = False
+
+    def _set_eskf_editable(self, enabled):
+        self.anchor_cfg_table.setEnabled(enabled)
+        self.eskf_config_panel.setEnabled(enabled)
+        for control in self._rig_edit_controls:control.setEnabled(enabled)
 
     def _toggle_csv_logging(self, checked: bool) -> None:
         if checked:
+            udp_selected = str(self.port_combo.currentData() or "").startswith(UDP_RELAY_PREFIX)
+            sync_onboard = self._enable_onboard_control and self.demo_worker is None and udp_selected
+            if sync_onboard:
+                try:
+                    self._remote_config_snapshot = self._eskf_payload()
+                except ValueError as exc:
+                    self.btn_csv_log.setChecked(False)
+                    QMessageBox.warning(self, 'ESKF configuration', str(exc))
+                    return
+            if sync_onboard and self.serial_worker is None:
+                self._toggle_serial_connection()
             log_root = NEW_GUI_DIR / "logs"
             port_label = "DEMO" if self.demo_worker is not None else str(self.port_combo.currentData() or "UART")
-            self.csv_logger = FastCsvLogger(log_root, port_label, engine=self.engine)
-            self.btn_csv_log.setText("Log CSV: ON")
-            self._log_event(f"Full 3D & Anchor CSV logging started -> {self.csv_logger.session_dir}")
+            self._recording_demo = self.demo_worker is not None
+            try:
+                self.csv_logger = FastCsvLogger(log_root, port_label, engine=self.engine)
+                self.last_log_dir = self.csv_logger.session_dir
+                if self.log_format_combo.currentData():
+                    self.rosbag_logger = Ros2BagRecorder(self.last_log_dir)
+                    metadata = json.loads(self.csv_logger.meta_path.read_text(encoding="utf-8"))
+                    self.rosbag_logger.log_metadata({"source": port_label, "simulated": self.demo_worker is not None,
+                                                     "session": metadata})
+            except Exception as exc:
+                if self.csv_logger is not None:
+                    self.csv_logger.stop()
+                    self.csv_logger = None
+                if self.rosbag_logger is not None:
+                    try:
+                        self.rosbag_logger.stop()
+                    except Exception:
+                        pass
+                    self.rosbag_logger = None
+                self.btn_csv_log.setChecked(False)
+                QMessageBox.warning(self, "Recording could not start", str(exc))
+                return
+            self._recording_warning = ""
+            self._set_eskf_editable(False)
+            self.log_format_combo.setEnabled(False)
+            self.btn_demo.setEnabled(False)
+            self.demo_profile_combo.setEnabled(False)
+            if self._recording_demo:
+                self.btn_connect.setEnabled(False)
+            self.btn_plot_mcap.setEnabled(False)
+            self.btn_csv_log.setText("Log: ON")
+            self._log_event(f"{self.log_format_combo.currentText()} logging started -> {self.last_log_dir}")
+            if sync_onboard:
+                peer = getattr(self.serial_worker, 'relay_addr', None)
+                self._remote_log_host = peer[0] if peer else DEFAULT_HOST
+                self._remote_recording_id = uuid.uuid4().hex
+                self._remote_log_dir = self.last_log_dir
+                self._remote_error = ""
+                self._remote_details = {}
+                self._remote_finish_requested = False
+                self._remote_state = "starting"
+                self._save_onboard_recording_manifest()
+                self._start_onboard_action('start')
+            else:
+                self._remote_state = ''
+                self._remote_error = ''
+                self.statusBar().showMessage('Recording on laptop · Demo' if self._recording_demo else 'Recording on laptop · UART/local input')
         else:
             saved_csv: Optional[Path] = None
             if self.csv_logger is not None:
                 saved_csv = self.csv_logger.csv_path
-                rows = self.csv_logger.rows_written
                 self.csv_logger.stop()
+                rows = self.csv_logger.rows_written
                 self.csv_logger = None
                 self._log_event(f"CSV logging stopped ({rows} rows) -> {saved_csv}")
-            self.btn_csv_log.setText("Log CSV: OFF")
+            if self.rosbag_logger is not None:
+                bag, self.rosbag_logger = self.rosbag_logger, None
+                try:
+                    bag.stop()
+                    self._log_event(f"ROS 2 MCAP saved ({bag.messages_written} messages, "
+                                    f"{bag.dropped_events} dropped events) -> {bag.bag_dir}")
+                    if bag.dropped_events:
+                        QMessageBox.warning(self, "Recording queue overflow",
+                                            f"MCAP dropped {bag.dropped_events} events. See {bag.bag_dir}")
+                except Exception as exc:
+                    self._log_event(f"MCAP finalization failed: {exc}")
+                    QMessageBox.warning(self, "MCAP finalization failed", str(exc))
+            self.btn_csv_log.setText("Log: OFF")
+            self.log_format_combo.setEnabled(True)
+            self.btn_demo.setEnabled(True)
+            self.demo_profile_combo.setEnabled(True)
+            self.btn_connect.setEnabled(True)
+            self.btn_plot_mcap.setEnabled(True)
+            if not self._remote_recording_id:
+                self._set_eskf_editable(True)
+            if self._remote_recording_id:
+                self._remote_finish_requested = True
+                self._remote_state = "finishing"
+                self.btn_csv_log.setEnabled(False)
+                self.btn_csv_log.setText('Log: SAVING')
+                self.statusBar().showMessage('Saving laptop log and finalizing UP7000 HDD session…')
+                if self._remote_worker is None:
+                    self._start_onboard_action('finish')
             if saved_csv is not None and saved_csv.is_file():
                 try:
                     self._load_log_from_path(saved_csv)
                 except Exception as exc:
                     self._log_event(f"Auto-load replay warning: {exc}")
+
+    def _on_onboard_status_for_log(self, part: dict) -> None:
+        if self.rosbag_logger is not None and not self._recording_demo:
+            self.rosbag_logger.log_status(part, self.up4000_listener.sender)
+
+    def _refresh_recording_status(self) -> None:
+        bag = self.rosbag_logger
+        warning = (bag.error or (f"MCAP dropped {bag.dropped_events} events" if bag.dropped_events else "")) if bag else ""
+        if bag:
+            self.btn_csv_log.setToolTip(
+                f"{bag.messages_written:,} ROS 2 messages; {bag.dropped_events} dropped events\n{bag.bag_dir}\n{warning}\nUP7000: {self._remote_details.get('session', self._remote_error)}")
+        if self._remote_state == 'starting':
+            self.btn_csv_log.setText('Log: STARTING')
+        elif self._remote_state == 'finishing':
+            self.btn_csv_log.setText('Log: SAVING')
+        elif self.csv_logger is not None:
+            self.btn_csv_log.setText('Log: PARTIAL' if self._remote_error else 'Log: ERROR' if bag and bag.error else 'Log: WARN' if warning else 'Log: ON')
+        if (self.csv_logger is not None and self._remote_recording_id and self._remote_state in ('recording', 'error')
+                and self._remote_worker is None and time.monotonic() - self._remote_last_poll > 5):
+            self._start_onboard_action('status')
+        if warning and warning != self._recording_warning:
+            self._log_event(warning)
+            self._recording_warning = warning
+
+    def _save_onboard_recording_manifest(self) -> None:
+        if self._remote_log_dir is None:
+            return
+        value = {'host': self._remote_log_host, 'recording_id': self._remote_recording_id,
+                 'eskf_config': self._remote_config_snapshot,
+                 'config_sha256': config_hash(self._remote_config_snapshot) if self._remote_config_snapshot else '',
+                 'state': self._remote_state, 'error': self._remote_error,
+                 'updated_unix_s': time.time(), 'onboard': self._remote_details,
+                 'stop_behavior': 'finalize_gui_session_then_continue_autonomous_recording'}
+        path = self._remote_log_dir / 'onboard_recording.json'
+        temporary = path.with_suffix('.tmp')
+        try:
+            temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
+            temporary.replace(path)
+        except OSError as exc:
+            self._log_event(f'Cannot save onboard recording manifest: {exc}')
+
+    def _start_onboard_action(self, action: str) -> None:
+        if self._remote_worker is not None:
+            return
+        worker = OnboardRecordingWorker(self._remote_log_host, action, self._remote_recording_id,
+                                        self._remote_log_dir.name if self._remote_log_dir else '', parent=self,
+                                        config=self._remote_config_snapshot if action == 'start' else None)
+        self._remote_worker = worker
+        self._remote_last_poll = time.monotonic()
+        if action != 'status':
+            self.btn_csv_log.setEnabled(False)
+        if action == 'start':
+            self.statusBar().showMessage('Starting full recording on laptop and UP7000 HDD…')
+        worker.result_ready.connect(self._on_onboard_recording_result)
+        worker.finished.connect(lambda w=worker: self._on_onboard_worker_finished(w))
+        worker.start()
+
+    def _on_onboard_worker_finished(self, worker) -> None:
+        if self._remote_worker is worker:
+            self._remote_worker = None
+        worker.deleteLater()
+        if self._remote_finish_requested and worker.action != 'finish':
+            self._start_onboard_action('finish')
+        elif self._close_after_recording and not self._remote_recording_id:
+            self._deferred_close_timer.start(0)
+
+    def _on_onboard_recording_result(self, result: dict) -> None:
+        action = result.get('action')
+        valid = bool(result.get('ok'))
+        if action == 'status':
+            valid = valid and result.get('active') and result.get('recording_id') == self._remote_recording_id
+            if self._remote_finish_requested:
+                return
+        elif action == 'finish':
+            valid = valid and result.get('closed') and result.get('background_recording')
+        elif action == 'start':
+            valid = valid and result.get('recording_id') == self._remote_recording_id and result.get('state') == 'recording'
+        if action in ('start', 'status') and self._remote_config_snapshot is not None:
+            if result.get('ok') and result.get('config_sha256') != config_hash(self._remote_config_snapshot):
+                result = {**result, 'error': 'ESKF did not confirm the configuration sent by this GUI'}
+                valid = False
+        if not valid:
+            self._remote_details = {**self._remote_details, **result}
+            self._remote_error = str(result.get('error') or 'UP7000 recording is not confirmed active')
+            self._remote_state = 'error'
+            self._log_event('UP7000 recording: ' + self._remote_error)
+            local_state = 'Laptop recording active' if self.csv_logger is not None else 'Laptop log saved'
+            self.statusBar().showMessage(local_state + ' · UP7000 confirmation failed: ' + self._remote_error)
+        else:
+            self._remote_error = ''
+            self._remote_details = result
+            self._remote_state = 'saved' if action == 'finish' else 'recording'
+            if action == 'finish':
+                self.statusBar().showMessage('Saved laptop + UP7000 HDD session · UP7000 continues recording in background')
+                self._log_event('UP7000 MCAP finalized -> ' + result.get('bag', ''))
+            else:
+                self.statusBar().showMessage('Recording: laptop + UP7000 HDD · ESKF ' + result.get('estimator_state', 'WAIT_INPUTS') + ' · GUI config verified')
+                if action == 'start':
+                    if self.rosbag_logger is not None:
+                        self.rosbag_logger.log_metadata({'onboard_eskf_config': self._remote_config_snapshot,
+                                                        'config_sha256': result.get('config_sha256')})
+                    self._log_event('UP7000 recording confirmed -> ' + result.get('session', ''))
+                    if self.serial_worker is not None:
+                        if isinstance(self.serial_worker, UdpTelemetryWorker) and self.serial_worker.relay_addr is None:
+                            self.serial_worker.relay_addr = (self._remote_log_host, 15556)
+                        self._send_raw_cmd(tp.CMD_RESUME)
+                        self._enable_rx_quality_telemetry()
+        if self.rosbag_logger is not None:
+            self.rosbag_logger.log_metadata({'onboard_recording': result})
+        if self._remote_finish_requested and action != 'finish':
+            self._remote_state = 'finishing'
+            self.statusBar().showMessage('Finalizing UP7000 HDD session…')
+        self._save_onboard_recording_manifest()
+        if action == 'finish':
+            self._set_eskf_editable(True)
+            self._remote_finish_requested = False
+            self._remote_recording_id = ''
+            self.btn_csv_log.setText('Log: OFF' if valid else 'Log: PARTIAL')
+        if not self._remote_finish_requested:
+            self.btn_csv_log.setEnabled(True)
+
+    def _open_log_folder(self) -> None:
+        folder = self.last_log_dir or NEW_GUI_DIR / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _open_mcap_plot(self) -> None:
+        initial = str(self.last_log_dir or NEW_GUI_DIR / "logs")
+        filename, _ = QFileDialog.getOpenFileName(self, "Open ROS 2 MCAP in PlotJuggler", initial, "ROS 2 MCAP (*.mcap)")
+        if not filename:
+            return
+        try:
+            program, arguments = plotjuggler_command(Path(filename))
+            started, _pid = QProcess.startDetached(program, arguments)
+            if not started:
+                raise RuntimeError("Could not start PlotJuggler. Check ROS 2 Humble and PlotJuggler in Ubuntu-22.04 / WSL.")
+            self._log_event(f"Opening PlotJuggler -> {filename}")
+        except Exception as exc:
+            QMessageBox.warning(self, "PlotJuggler could not start", str(exc))
+
+    def _open_video_exporter_studio(self) -> None:
+        script_path = NEW_GUI_DIR / "video_exporter_gui.py"
+        args: List[str] = [
+            str(script_path),
+            "--speed",
+            f"{self.replay_speed:g}",
+            "--az",
+            f"{self.replay_canvas.azimuth_deg:.1f}",
+            "--el",
+            f"{self.replay_canvas.elevation_deg:.1f}",
+        ]
+        if self.loaded_session is not None and self.loaded_session.csv_path.is_file():
+            args.extend(["--csv", str(self.loaded_session.csv_path)])
+        if self.theme_manager is not None and self.theme_manager.is_dark:
+            args.append("--dark")
+        if self.chk_replay_resolve.isChecked():
+            args.append("--re-solve")
+        started, _pid = QProcess.startDetached(sys.executable, args, str(NEW_GUI_DIR))
+        if not started:
+            QMessageBox.warning(self, "MP4 Video Studio", f"Could not launch {script_path}")
+        else:
+            self._log_event(f"Launched MP4 Video Export Studio -> {' '.join(args[1:])}")
 
     # ------------------------------------------------------------------
     # Log Replay & Instability Inspector Actions
@@ -2579,6 +3126,7 @@ class UwbFastGuiWindow(QMainWindow):
             self.replay_anchor_table.item(row, 6).setText(f"{sn.nlos_db:.1f}" if sn.nlos_db is not None else "--")
             self.replay_anchor_table.item(row, 7).setText(f"{sn.sigma_mm:.1f}" if sn.sigma_mm is not None else "--")
 
+        self.replay_canvas.cursor_time_s = fr.rel_time_s
         self.replay_canvas.update()
 
     def _toggle_theme(self) -> None:
@@ -2595,6 +3143,24 @@ class UwbFastGuiWindow(QMainWindow):
         self.rolling_chart.update()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._remote_recording_id or self._remote_worker is not None:
+            self._close_after_recording = True
+            if self._remote_recording_id and not self._remote_finish_requested:
+                self.btn_csv_log.setChecked(False)
+                self._toggle_csv_logging(False)
+            event.ignore()
+            return
+        self._eskf_loading = True  # ignore editor focus-loss signals during teardown
+        if self.rosbag_logger is not None:
+            try:
+                self.rosbag_logger.stop()
+            except TimeoutError as exc:
+                QMessageBox.warning(self, "MCAP is still finalizing", str(exc))
+                event.ignore()
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "MCAP recording failed", str(exc))
+            self.rosbag_logger = None
         self.up4000_listener.close()
         if self._replay_loader is not None:
             self._replay_loader.requestInterruption()

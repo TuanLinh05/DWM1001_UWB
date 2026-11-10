@@ -1,0 +1,38 @@
+# Edit, then rebuild (colcon build) or pass config:=/path/to/file.yaml to the launch.
+# Session folder and log root come from the launch file (both nodes share them).
+uwb_relay:
+  ros__parameters:
+    tag_port: "auto"              # or /dev/serial/by-id/usb-SEGGER_J-Link_...-if00
+    baud: 460800
+    ground_host: ""               # "" = auto-discover the ground New_GUI (broadcast beacon)
+    ground_port: 15555            # New_GUI "UDP 15555 (WiFi relay)" listens here
+    local_port: 15556             # UP4000 port; New_GUI sends commands back to it
+    batch_ms: 10.0                # pack frames into one datagram for up to 10 ms
+    beacon_host: "255.255.255.255"
+    publish_ros: true
+    publish_burst_metadata: false  # /uwb/burst_metadata JSON per Burst (CPU heavy)
+    ros_publish_hz: 50.0          # /uwb/* Burst topics; 0 = every Burst (too heavy for the UP4000)
+
+px4_logger:
+  ros__parameters:
+    px4_port: "auto"              # or /dev/serial/by-id/usb-...PX4...-if00
+    px4_baud: 921600              # ignored by USB CDC, kept for a TELEM UART
+    ulog_stream: true             # needs PX4 SDLOG_BACKEND with bit 1 (MAVLink)
+    message_rates: ["ODOMETRY:50", "ATTITUDE_QUATERNION:50", "LOCAL_POSITION_NED:50",
+                    "HIGHRES_IMU:50", "ESTIMATOR_STATUS:10", "VIBRATION:5", "EXTENDED_SYS_STATE:2"]
+    timesync_hz: 2.0
+    forward_mavlink: true         # QGroundControl on the ground PC, UDP 14550
+    ground_host: ""               # "" = follow the address found by uwb_relay
+    ground_mavlink_port: 14550
+    local_mavlink_port: 14555
+    publish_ros: true
+    snapshot_hz: 4.0              # /px4/snapshot (latest PX4 values) for the ground UP4000 tab
+
+up4000_status:
+  ros__parameters:
+    status_port: 15557            # New_GUI "UP4000" tab listens here (read only)
+    status_hz: 4.0                # status datagrams per second
+    health_hz: 1.0                # CPU / temperature / memory / WiFi sampling
+    ground_host: ""               # "" = the address found by uwb_relay
+    broadcast_host: "255.255.255.255"  # 1 Hz status broadcast while no ground is known; "" = off
+    part_gap_ms: 2.0              # gap between the ~10 parts of one cycle (WiFi burst loss)

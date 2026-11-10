@@ -1,0 +1,33 @@
+[Unit]
+Description=UP7000 local UWB IMU estimator and HDD MCAP recorder
+Requires=uwb-px4-logger.service
+PartOf=uwb-px4-logger.service
+After=uwb-px4-logger.service mnt-droneup.mount
+RequiresMountsFor=/mnt/droneup
+BindsTo=mnt-droneup.mount
+ConditionPathIsMountPoint=/mnt/droneup
+
+[Service]
+Type=simple
+User=thoa
+Environment=PYTHONUNBUFFERED=1
+Environment=LANG=C.UTF-8
+Environment=PYTHONNOUSERSITE=1
+Environment=TMPDIR=/run/up7000-eskf
+Environment=ROS_HOME=/mnt/droneup/onboard_20261107/thoa/.ros
+Environment=ROS_LOG_DIR=/mnt/droneup/onboard_20261107/thoa/.ros/log
+Environment=PYTHONPYCACHEPREFIX=/mnt/droneup/onboard_20261107/thoa/cache/python
+RuntimeDirectory=up7000-eskf
+ExecStartPre=/usr/local/libexec/up7000-onboard-storage-check
+ExecStart=/bin/bash -c 'source /home/thoa/onboard_env.sh && source /home/thoa/ros2_px4_v2/install/setup.bash && exec python3 /home/thoa/drone_tools/eskf/run_onboard.py'
+StandardOutput=append:/mnt/droneup/onboard_20261107/thoa/service_logs/uwb-eskf-recorder.log
+StandardError=inherit
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=35
+Restart=on-failure
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
