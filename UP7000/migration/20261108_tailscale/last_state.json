@@ -1,0 +1,529 @@
+{
+  "px4": {
+    "connected": true,
+    "port": "/dev/pixhawk",
+    "vehicle": {
+      "system": 1,
+      "component": 1,
+      "autopilot": 12,
+      "type": 2
+    },
+    "rates_hz": {
+      "ALTITUDE": 8.0,
+      "ATTITUDE": 100.0,
+      "ATTITUDE_QUATERNION": 48.0,
+      "ATTITUDE_TARGET": 8.0,
+      "BATTERY_STATUS": 4.0,
+      "COMMAND_ACK": 8.0,
+      "ESTIMATOR_STATUS": 8.0,
+      "EXTENDED_SYS_STATE": 4.0,
+      "GPS_RAW_INT": 8.0,
+      "HEARTBEAT": 0.0,
+      "HIGHRES_IMU": 52.0,
+      "LOCAL_POSITION_NED": 52.0,
+      "LOGGING_DATA": 0.0,
+      "LOGGING_DATA_ACKED": 0.0,
+      "MISSION_CURRENT": 0.0,
+      "ODOMETRY": 52.0,
+      "OPEN_DRONE_ID_LOCATION": 0.0,
+      "PING": 0.0,
+      "POSITION_TARGET_LOCAL_NED": 8.0,
+      "SCALED_PRESSURE": 0.0,
+      "SERVO_OUTPUT_RAW": 8.0,
+      "SYSTEM_TIME": 0.0,
+      "SYS_STATUS": 4.0,
+      "TIMESYNC": 12.0,
+      "UNKNOWN_380": 0.0,
+      "UNKNOWN_410": 0.0,
+      "UNKNOWN_411": 0.0,
+      "UNKNOWN_436": 4.0,
+      "UNKNOWN_8": 0.0,
+      "VFR_HUD": 8.0,
+      "VIBRATION": 8.0
+    },
+    "statustext": [],
+    "message_types": [
+      "ALTITUDE",
+      "ATTITUDE",
+      "ATTITUDE_QUATERNION",
+      "BATTERY_STATUS",
+      "ESTIMATOR_STATUS",
+      "EXTENDED_SYS_STATE",
+      "GPS_RAW_INT",
+      "HEARTBEAT",
+      "HIGHRES_IMU",
+      "LOCAL_POSITION_NED",
+      "ODOMETRY",
+      "SYS_STATUS",
+      "TIMESYNC",
+      "VIBRATION"
+    ],
+    "messages": {
+      "ALTITUDE": {
+        "age_s": 0.059,
+        "fields": {
+          "time_usec": 433900910,
+          "altitude_monotonic": -3.715101480484009,
+          "altitude_amsl": -3.715101480484009,
+          "altitude_local": 0.16565914452075958,
+          "altitude_relative": 0.16565914452075958,
+          "altitude_terrain": null,
+          "bottom_clearance": null
+        }
+      },
+      "ATTITUDE": {
+        "age_s": 0.008,
+        "fields": {
+          "time_boot_ms": 433948,
+          "roll": -0.002068781293928623,
+          "pitch": -0.03182064741849899,
+          "yaw": -2.2092909812927246,
+          "rollspeed": 0.001262627774849534,
+          "pitchspeed": -0.001828181790187955,
+          "yawspeed": 0.0013655778020620346
+        }
+      },
+      "ATTITUDE_QUATERNION": {
+        "age_s": 0.018,
+        "fields": {
+          "time_boot_ms": 433933,
+          "q1": -0.44936123490333557,
+          "q2": 0.01467317994683981,
+          "q3": 0.006211582105606794,
+          "q4": 0.8932080268859863,
+          "rollspeed": 0.0006611638236790895,
+          "pitchspeed": 0.005354991648346186,
+          "yawspeed": 0.0006631417199969292,
+          "repr_offset_q": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "BATTERY_STATUS": {
+        "age_s": 0.23,
+        "fields": {
+          "id": 0,
+          "battery_function": 1,
+          "type": 1,
+          "temperature": 32767,
+          "voltages": [
+            65535,
+            65535,
+            65535,
+            65535,
+            65535,
+            65535,
+            65535,
+            65535,
+            65535,
+            65535
+          ],
+          "current_battery": -1,
+          "current_consumed": -1,
+          "energy_consumed": -1,
+          "battery_remaining": -1,
+          "time_remaining": 0,
+          "charge_state": 1,
+          "voltages_ext": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "mode": 0,
+          "fault_bitmask": 0
+        }
+      },
+      "ESTIMATOR_STATUS": {
+        "age_s": 0.059,
+        "fields": {
+          "time_usec": 433900638,
+          "flags": 165,
+          "vel_ratio": null,
+          "pos_horiz_ratio": null,
+          "pos_vert_ratio": 0.0044593182392418385,
+          "mag_ratio": 0.041767433285713196,
+          "hagl_ratio": null,
+          "tas_ratio": null,
+          "pos_horiz_accuracy": 0.012119296938180923,
+          "pos_vert_accuracy": 0.27486684918403625
+        }
+      },
+      "EXTENDED_SYS_STATE": {
+        "age_s": 0.211,
+        "fields": {
+          "vtol_state": 0,
+          "landed_state": 1
+        }
+      },
+      "GPS_RAW_INT": {
+        "age_s": 0.06,
+        "fields": {
+          "time_usec": 433894715,
+          "fix_type": 0,
+          "lat": 0,
+          "lon": 0,
+          "alt": -17000,
+          "eph": 9999,
+          "epv": 9999,
+          "vel": 0,
+          "cog": 0,
+          "satellites_visible": 0,
+          "alt_ellipsoid": 0,
+          "h_acc": 4294967295,
+          "v_acc": 3750014720,
+          "vel_acc": 68301,
+          "hdg_acc": 0,
+          "yaw": 0
+        }
+      },
+      "HEARTBEAT": {
+        "age_s": 0.621,
+        "fields": {
+          "type": 2,
+          "autopilot": 12,
+          "base_mode": 29,
+          "custom_mode": 50593792,
+          "system_status": 0,
+          "mavlink_version": 3
+        }
+      },
+      "HIGHRES_IMU": {
+        "age_s": 0.009,
+        "fields": {
+          "time_usec": 433948241,
+          "xacc": -0.28464049100875854,
+          "yacc": 0.03191481530666351,
+          "zacc": -9.822986602783203,
+          "xgyro": 0.0010810812236741185,
+          "ygyro": -0.0027361144311726093,
+          "zgyro": 0.0030178269371390343,
+          "xmag": -0.15067335963249207,
+          "ymag": 0.22356294095516205,
+          "zmag": 0.10115788877010345,
+          "abs_pressure": 1013.6864013671875,
+          "diff_pressure": 0.0,
+          "pressure_alt": -3.630547046661377,
+          "temperature": 15.0,
+          "fields_updated": 63,
+          "id": 0
+        }
+      },
+      "LOCAL_POSITION_NED": {
+        "age_s": 0.009,
+        "fields": {
+          "time_boot_ms": 433948,
+          "x": 0.09425313770771027,
+          "y": 0.1758470982313156,
+          "z": -0.1659473478794098,
+          "vx": -0.00017637593555264175,
+          "vy": -7.989991718204692e-05,
+          "vz": -0.0017182854935526848
+        }
+      },
+      "ODOMETRY": {
+        "age_s": 0.008,
+        "fields": {
+          "time_usec": 433948241,
+          "frame_id": 1,
+          "child_frame_id": 1,
+          "x": 0.09425313770771027,
+          "y": 0.1758470982313156,
+          "z": -0.1659473478794098,
+          "q": [
+            -0.44937941431999207,
+            0.014677011407911777,
+            0.00622669979929924,
+            0.8931987881660461
+          ],
+          "vx": -0.00017637593555264175,
+          "vy": -7.989991718204692e-05,
+          "vz": -0.0017182854935526848,
+          "rollspeed": 0.0010847672820091248,
+          "pitchspeed": -0.0027348098810762167,
+          "yawspeed": 0.0030261853244155645,
+          "pose_covariance": [
+            9.130225225817412e-05,
+            null,
+            null,
+            null,
+            null,
+            null,
+            9.130123362410814e-05,
+            null,
+            null,
+            null,
+            null,
+            0.07617802917957306,
+            null,
+            null,
+            null,
+            1.870847336249426e-05,
+            null,
+            null,
+            1.3417016816674732e-05,
+            null,
+            0.005509938113391399
+          ],
+          "velocity_covariance": [
+            0.0008246587822213769,
+            null,
+            null,
+            null,
+            null,
+            null,
+            0.0008245069766417146,
+            null,
+            null,
+            null,
+            null,
+            0.003186238231137395,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "reset_counter": 21,
+          "estimator_type": 8,
+          "quality": 0
+        }
+      },
+      "SYS_STATUS": {
+        "age_s": 0.054,
+        "fields": {
+          "onboard_control_sensors_present": 16399,
+          "onboard_control_sensors_enabled": 81935,
+          "onboard_control_sensors_health": 52463679,
+          "load": 361,
+          "voltage_battery": 65535,
+          "current_battery": -1,
+          "battery_remaining": -1,
+          "drop_rate_comm": 0,
+          "errors_comm": 0,
+          "errors_count1": 0,
+          "errors_count2": 0,
+          "errors_count3": 0,
+          "errors_count4": 0,
+          "onboard_control_sensors_present_extended": 0,
+          "onboard_control_sensors_enabled_extended": 0,
+          "onboard_control_sensors_health_extended": 1
+        }
+      },
+      "TIMESYNC": {
+        "age_s": 0.06,
+        "fields": {
+          "tc1": 0,
+          "ts1": 433900783000
+        }
+      },
+      "VIBRATION": {
+        "age_s": 0.048,
+        "fields": {
+          "time_usec": 433906863,
+          "vibration_x": 3.2139005345932503e-10,
+          "vibration_y": 0.008478528819978237,
+          "vibration_z": 0.048536233603954315,
+          "clipping_0": 0,
+          "clipping_1": 0,
+          "clipping_2": 0
+        }
+      }
+    }
+  },
+  "kind": "up4000_status",
+  "version": 2,
+  "seq": 923,
+  "time_unix": 1794108044.67652,
+  "host": {
+    "hostname": "thoa",
+    "ip": [
+      "tailscale0 100.123.216.14/32",
+      "wlx30169df9a262 192.168.10.12/24",
+      "docker0 172.17.0.1/16"
+    ],
+    "uptime_s": 392.1,
+    "cpu_percent": 15.1,
+    "cpu_count": 4,
+    "load": [
+      1.14,
+      0.82,
+      0.37
+    ],
+    "cpu_temp_c": 48.0,
+    "temperatures_c": {
+      "x86_pkg_temp": 48.0
+    },
+    "memory": {
+      "total_mb": 3663,
+      "available_mb": 2782,
+      "used_percent": 24.0
+    },
+    "disk": {
+      "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261108_031647",
+      "free_gb": 281.67,
+      "total_gb": 313.89,
+      "used_percent": 5.2
+    },
+    "wifi": [
+      {
+        "interface": "wlx30169df9a262",
+        "link_quality": 28.0,
+        "signal_dbm": -82.0,
+        "noise_dbm": null,
+        "ssid": "PIF_CLUB_5G",
+        "freq_mhz": 5500.0,
+        "rx_mbit": 6.0,
+        "tx_mbit": 6.5,
+        "power_save": false
+      }
+    ],
+    "processes": {
+      "uwb_relay": {
+        "pid": 1670,
+        "cpu_percent": 19.0,
+        "rss_mb": 57.2
+      },
+      "px4_logger": {
+        "pid": 1672,
+        "cpu_percent": 17.0,
+        "rss_mb": 74.3
+      },
+      "up4000_status": {
+        "pid": 1674,
+        "cpu_percent": 5.0,
+        "rss_mb": 54.8
+      }
+    }
+  },
+  "session": {
+    "folder": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261108_031647",
+    "files": {
+      "px4.tlog": 10786170,
+      "px4_config.json": 555,
+      "px4_status.json": 691,
+      "px4_stream_1.ulg": 217,
+      "px4_stream_2.ulg": 3243749,
+      "timesync.csv": 44923,
+      "uwb_commands.jsonl": 50529,
+      "uwb_config.json": 359,
+      "uwb_frames.bin": 5548503,
+      "uwb_status.json": 1818
+    }
+  },
+  "uwb_relay": {
+    "started_unix_s": 1794107813.1550174,
+    "updated_unix_s": 1794108043.307673,
+    "tag_port": "/dev/uwb_tag",
+    "tag_baud": 460800,
+    "ground": "100.77.150.59:15555",
+    "ground_fixed": true,
+    "records_logged": 218843,
+    "log_bytes": 5527057,
+    "parse_queue": 0,
+    "parser": {
+      "bytes_received": 976623,
+      "valid_frames": 17687,
+      "discarded_bytes": 352,
+      "crc_errors": 5,
+      "length_errors": 0,
+      "version_errors": 0,
+      "decode_errors": 0
+    },
+    "counts": {
+      "tag_bytes": 1587872,
+      "udp_datagrams": 9138,
+      "udp_bytes": 1587872,
+      "tag_io_errors": 1,
+      "tag_port_missing": 2,
+      "ground_commands": 29
+    },
+    "parsed": {
+      "frame_0x18": 23502,
+      "frame_0x13": 258,
+      "frame_0x16": 24,
+      "frame_0x01": 978,
+      "frame_0x19": 1477,
+      "frame_0x02": 228,
+      "frame_0x00": 228,
+      "frame_0x15": 228,
+      "frame_0x11": 1824
+    },
+    "device_info": {
+      "sequence": 3914,
+      "time_ms": 430535,
+      "role": 1,
+      "node_address": 0,
+      "git_hash": 756657269,
+      "git_dirty": true,
+      "frame_version": 3,
+      "telemetry_features": 7,
+      "wait4resp": true,
+      "device_id": 2963110252,
+      "boot_id": 40028,
+      "boot_count": 1,
+      "reset_cause": 0,
+      "tx_power_mode": 0,
+      "reference_tuning": false,
+      "tx_antenna_delay": 16436,
+      "rx_antenna_delay": 16436,
+      "tx_power_register": 505290270,
+      "spi_clock_mhz": 8,
+      "otp_valid": true,
+      "otp_part_id": 1347471910,
+      "otp_lot_id": 230375745,
+      "otp_ldotune": 2290649128,
+      "otp_xtal_trim": 19,
+      "otp_revision": 1,
+      "otp_vbat_cal": 160,
+      "otp_vtemp_cal": 125,
+      "applied_xtal_trim": 255,
+      "ldo_kicked": false,
+      "settings_status": 7,
+      "uart_baud": 460800,
+      "active_mask": 255,
+      "calibrated_mask": 255,
+      "build_config_hash": 3052962717,
+      "calibration_profile_id": 1744608919
+    }
+  },
+  "px4_logger": {
+    "started_unix_s": 1794107813.7668796,
+    "updated_unix_s": 1794108043.8338513,
+    "px4_port": "/dev/pixhawk",
+    "vehicle": {
+      "system": 1,
+      "component": 1,
+      "autopilot": 12,
+      "type": 2
+    },
+    "ground": "100.77.150.59:14550",
+    "ulog_part": 2,
+    "ulog": {
+      "chunks": 13028,
+      "bytes": 3243749,
+      "dropped_chunks": 4,
+      "dropout_messages": 1,
+      "duplicates": 0
+    },
+    "counts": {
+      "px4_bytes": 9943291,
+      "messages": 104278,
+      "forward_bytes": 6353949,
+      "ulog_start_requests": 48,
+      "timesync_samples": 452,
+      "ulog_start_ack_0": 47,
+      "px4_io_errors": 1,
+      "px4_port_missing": 2,
+      "ulog_chunks_before_header": 521,
+      "ulog_start_ack_1": 1
+    }
+  }
+}

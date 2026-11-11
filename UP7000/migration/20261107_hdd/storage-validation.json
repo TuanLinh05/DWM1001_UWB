@@ -1,0 +1,166 @@
+{
+  "paths_verified": [
+    {
+      "source": "/home/thoa/UP4000",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/UP4000",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/ros2_px4_v2",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/ros2_px4_v2",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/Micro-XRCE-DDS-Agent",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/Micro-XRCE-DDS-Agent",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/src/8821cu-20210916",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/src/8821cu-20210916",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/drone_tools",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/drone_tools",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/lib/onnxruntime-linux-x64-1.20.1",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/lib/onnxruntime-linux-x64-1.20.1",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/up4000_migration_20261107",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/up4000_migration_20261107",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/flight_logs",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/flight_logs",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/.ros",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/.ros",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/onboard_env.sh",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/onboard_env.sh",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/drone_env.sh",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/drone_env.sh",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/UP7000_MIGRATION.md",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/UP7000_MIGRATION.md",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/home/thoa/.local/bin/MicroXRCEAgent",
+      "physical_path": "/mnt/droneup/onboard_20261107/thoa/.local/bin/MicroXRCEAgent",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/opt/ros/humble",
+      "physical_path": "/mnt/droneup/onboard_20261107/system/ros/humble",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/var/cache/apt/archives",
+      "physical_path": "/mnt/droneup/onboard_20261107/system/apt/archives",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/var/lib/apt/lists",
+      "physical_path": "/mnt/droneup/onboard_20261107/system/apt/lists",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/var/cache/apt/pkgcache.bin",
+      "physical_path": "/mnt/droneup/onboard_20261107/system/apt/pkgcache.bin",
+      "filesystem_device": 2050
+    },
+    {
+      "source": "/var/cache/apt/srcpkgcache.bin",
+      "physical_path": "/mnt/droneup/onboard_20261107/system/apt/srcpkgcache.bin",
+      "filesystem_device": 2050
+    }
+  ],
+  "guard_rejected": [
+    "missing_mount",
+    "wrong_uuid"
+  ],
+  "hdd_device": 2050,
+  "emmc_device": 64512,
+  "open_onboard_files": [
+    {
+      "pid": 35973,
+      "process": "ros2",
+      "path": "/mnt/droneup/onboard_20261107/thoa/service_logs/uwb-px4-logger.log",
+      "device": 2050
+    },
+    {
+      "pid": 35973,
+      "process": "ros2",
+      "path": "/mnt/droneup/onboard_20261107/thoa/service_logs/uwb-px4-logger.log",
+      "device": 2050
+    },
+    {
+      "pid": 35973,
+      "process": "ros2",
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros/log/2026-11-07-16-11-35-989629-thoa-35973/launch.log",
+      "device": 2050
+    },
+    {
+      "pid": 35989,
+      "process": "uwb_relay",
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros/log/python3_35989_1794067896225.log",
+      "device": 2050
+    },
+    {
+      "pid": 35989,
+      "process": "uwb_relay",
+      "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136/uwb_frames.bin",
+      "device": 2050
+    },
+    {
+      "pid": 35989,
+      "process": "uwb_relay",
+      "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136/uwb_commands.jsonl",
+      "device": 2050
+    },
+    {
+      "pid": 35991,
+      "process": "px4_logger",
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros/log/python3_35991_1794067896194.log",
+      "device": 2050
+    },
+    {
+      "pid": 35991,
+      "process": "px4_logger",
+      "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136/px4.tlog",
+      "device": 2050
+    },
+    {
+      "pid": 35991,
+      "process": "px4_logger",
+      "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136/timesync.csv",
+      "device": 2050
+    },
+    {
+      "pid": 35993,
+      "process": "up4000_status",
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros/log/python3_35993_1794067896194.log",
+      "device": 2050
+    }
+  ],
+  "service_properties": "ExecStartPre={ path=/usr/local/libexec/up7000-onboard-storage-check ; argv[]=/usr/local/libexec/up7000-onboard-storage-check ; ignore_errors=no ; start_time=[Sat 2026-11-07 16:11:35 UTC] ; stop_time=[Sat 2026-11-07 16:11:35 UTC] ; pid=35971 ; code=exited ; status=0 }\nEnvironment=PYTHONUNBUFFERED=1 PYTHONPATH=/home/thoa/drone_tools/python LANG=C.UTF-8 FASTRTPS_DEFAULT_PROFILES_FILE=/home/thoa/drone_tools/fastdds-udp.xml TMPDIR=/run/up7000-onboard PYTHONNOUSERSITE=1 ROS_HOME=/mnt/droneup/onboard_20261107/thoa/.ros ROS_LOG_DIR=/mnt/droneup/onboard_20261107/thoa/.ros/log PYTHONPYCACHEPREFIX=/mnt/droneup/onboard_20261107/thoa/cache/python\nStandardOutput=append\nBindsTo=mnt-droneup.mount\nRequiresMountsFor=/run/up7000-onboard /mnt/droneup",
+  "apt_check": "Reading package lists...\nBuilding dependency tree...\nReading state information...",
+  "held_backup_processes": [],
+  "disk_before_retirement": "Filesystem                         Size  Used Avail Use% Mounted on\n/dev/mapper/ubuntu--vg-ubuntu--lv   26G   12G   14G  46% /\n/dev/sda2                          293G   15G  263G   6% /mnt/droneup"
+}

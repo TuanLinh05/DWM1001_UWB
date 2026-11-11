@@ -1,0 +1,54 @@
+{
+  "simulated": true,
+  "ros_domain_id": 77,
+  "launch_exit": 0,
+  "tag_bursts_written": 17618,
+  "uwb_valid_frames": 17356,
+  "uwb_crc_errors": 0,
+  "uwb_parsed_bursts": 17302,
+  "ulog": {
+    "chunks": 191,
+    "bytes": 47393,
+    "dropped_chunks": 0,
+    "dropout_messages": 0,
+    "duplicates": 0
+  },
+  "px4_messages": 1335,
+  "timesync_samples": 108,
+  "files": {
+    "uwb_config.json": 381,
+    "timesync.csv": 11046,
+    "px4_stream_1.ulg": 47393,
+    "uwb_commands.jsonl": 0,
+    "px4_status.json": 546,
+    "px4_config.json": 576,
+    "uwb_status.json": 1506,
+    "px4.tlog": 200345,
+    "uwb_frames.bin": 1561691
+  },
+  "folder": "/home/thoa/up4000_migration_20261107/integration/migration_sim_20261107_154554",
+  "pc": {
+    "received_bursts": 17302,
+    "anchor_ids": [
+      1,
+      2
+    ],
+    "status_datagrams": 696,
+    "status_max_bytes": 1181,
+    "px4_connected": true,
+    "px4_types": [
+      "HEARTBEAT",
+      "ODOMETRY",
+      "TIMESYNC"
+    ],
+    "parser": {
+      "bytes_received": 938898,
+      "valid_frames": 17356,
+      "discarded_bytes": 0,
+      "crc_errors": 0,
+      "length_errors": 0,
+      "version_errors": 0,
+      "decode_errors": 0
+    }
+  }
+}

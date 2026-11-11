@@ -1,0 +1,124 @@
+{
+  "runtime": {
+    "/opt/ros/humble": {
+      "resolved": "/opt/ros/humble",
+      "on_emmc": true
+    },
+    "/home/thoa/UP4000": {
+      "resolved": "/home/thoa/UP4000",
+      "on_emmc": true
+    },
+    "/home/thoa/ros2_px4_v2": {
+      "resolved": "/home/thoa/ros2_px4_v2",
+      "on_emmc": true
+    },
+    "/home/thoa/drone_tools": {
+      "resolved": "/home/thoa/drone_tools",
+      "on_emmc": true
+    },
+    "/home/thoa/onboard_env.sh": {
+      "resolved": "/home/thoa/onboard_env.sh",
+      "on_emmc": true
+    },
+    "/home/thoa/drone_env.sh": {
+      "resolved": "/home/thoa/drone_env.sh",
+      "on_emmc": true
+    }
+  },
+  "modules": {
+    "rclpy": {
+      "path": "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py",
+      "on_emmc": true
+    },
+    "rosbag2_py": {
+      "path": "/opt/ros/humble/local/lib/python3.10/dist-packages/rosbag2_py/__init__.py",
+      "on_emmc": true
+    },
+    "pymavlink": {
+      "path": "/home/thoa/drone_tools/python/pymavlink/__init__.py",
+      "on_emmc": true
+    },
+    "uwb_px4_logger": {
+      "path": "/home/thoa/UP4000/ros2_ws/src/uwb_px4_logger/uwb_px4_logger/__init__.py",
+      "on_emmc": true
+    }
+  },
+  "estimator_executable": "/home/thoa/ros2_px4_v2/build/uwb_eskf/uwb_eskf_node",
+  "running_estimator_executable": "/home/thoa/ros2_px4_v2/build/uwb_eskf/uwb_eskf_node",
+  "external_write_paths": {
+    "ROS_HOME": {
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros",
+      "on_external": true
+    },
+    "ROS_LOG_DIR": {
+      "path": "/mnt/droneup/onboard_20261107/thoa/.ros/log",
+      "on_external": true
+    },
+    "PYTHONPYCACHEPREFIX": {
+      "path": "/mnt/droneup/onboard_20261107/thoa/cache/python",
+      "on_external": true
+    },
+    "TMPDIR": {
+      "path": "/mnt/droneup/onboard_20261107/thoa/tmp",
+      "on_external": true
+    }
+  },
+  "services": {
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "current_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684",
+  "current_mcap_created": true,
+  "previous_session_closed_cleanly": true,
+  "previous_bag_info": "\nFiles:             bag_0.mcap\n                   bag_1.mcap\n                   bag_2.mcap\n                   bag_3.mcap\n                   bag_4.mcap\nBag size:          13.1 MiB\nStorage id:        mcap\nDuration:          2797.591567268s\nStart:             Nov  8 2026 14:15:06.936565407 (1794147306.936565407)\nEnd:               Nov  8 2026 15:01:44.528132675 (1794150104.528132675)\nMessages:          21902\nTopic information: Topic: /uwb/device_info | Type: std_msgs/msg/String | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/imu_frd | Type: sensor_msgs/msg/Imu | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb/burst_metadata | Type: std_msgs/msg/String | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/status | Type: std_msgs/msg/String | Count: 2795 | Serialization Format: cdr\n                   Topic: /px4/snapshot | Type: std_msgs/msg/String | Count: 11182 | Serialization Format: cdr\n                   Topic: /px4/imu_device_time_us | Type: std_msgs/msg/UInt64 | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/odometry | Type: nav_msgs/msg/Odometry | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/session | Type: std_msgs/msg/String | Count: 2332 | Serialization Format: cdr\n                   Topic: /uwb_relay/status | Type: std_msgs/msg/String | Count: 2795 | Serialization Format: cdr\n                   Topic: /uwb/cycle_seq | Type: std_msgs/msg/UInt32 | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/odom | Type: nav_msgs/msg/Odometry | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb/tag_time_us | Type: std_msgs/msg/UInt64 | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/status | Type: std_msgs/msg/String | Count: 2798 | Serialization Format: cdr\n\n",
+  "estimator_status": {
+    "state": "WAIT_CONFIGURATION",
+    "reason": "STARTING",
+    "configuration_confirmed": false,
+    "imu": "mavlink",
+    "rig_file": "/mnt/droneup/onboard_20261107/thoa/drone_tools/eskf/config_versions/979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b/rig_onboard.txt",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "configured_anchors": 8,
+    "frame_id": "uwb_rig",
+    "body_frame": "px4_imu_flu",
+    "ignore_rig_bias": true,
+    "lever_flu_m": [
+      0,
+      0,
+      0
+    ],
+    "imu_samples": 0,
+    "range_samples": 0,
+    "accepted_ranges": 0,
+    "odom_messages": 0,
+    "initializations": 0,
+    "required_anchors": 6,
+    "recent_anchors": 0,
+    "invalid_imu": 0,
+    "invalid_ranges": 0,
+    "invalid_initializations": 0,
+    "imu_age_s": -1,
+    "range_age_s": -1
+  },
+  "emmc_free_bytes": 15210635264,
+  "checked_unix_s": 1794150399.5121028,
+  "gui_status": {
+    "ok": true,
+    "state": "recording",
+    "recording_id": "",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684/bag",
+    "closed": false,
+    "active": true,
+    "error": "",
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 0,
+    "range_samples": 0,
+    "kind": "up7000_recording_control",
+    "version": 1,
+    "request_id": "eca5bf43a5b340faacc1d21bbe805aaf",
+    "action": "status"
+  }
+}

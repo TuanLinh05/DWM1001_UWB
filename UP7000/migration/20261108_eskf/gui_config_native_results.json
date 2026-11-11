@@ -1,0 +1,14 @@
+[
+  {
+    "config_sha256": "bc99b304710d5a3d58a1be78473b7b1d0adff7e503e84ce3397572461f0b2e70",
+    "yaw_deg": 29.999999821522792,
+    "body_position_error_m": 1.2728074284124555e-07,
+    "odom_messages": 244
+  },
+  {
+    "config_sha256": "1dd88b6cef0e760ae62688624bd8395f08e3d15e47c6b731f3519418e514643b",
+    "yaw_deg": -24.999999549465617,
+    "body_position_error_m": 7.534276951528889e-08,
+    "odom_messages": 244
+  }
+]

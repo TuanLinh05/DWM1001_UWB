@@ -1,0 +1,25 @@
+{
+  "host": "100.123.216.14",
+  "recording_id": "3560ba6c40584e9fb6c57dcca55d6a3d",
+  "state": "saved",
+  "error": "",
+  "updated_unix_s": 1794116478.6460276,
+  "onboard": {
+    "ok": true,
+    "action": "finish",
+    "request_id": "a5c91e0dca144cb8b56355c4009fd0c4",
+    "recording_id": "3560ba6c40584e9fb6c57dcca55d6a3d",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_054100_17414",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_054100_17414/bag",
+    "closed": true,
+    "estimator_state": "WAIT_CONFIGURATION",
+    "imu_samples": 837,
+    "range_samples": 2925,
+    "state": "saved",
+    "background_recording": true,
+    "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_054118_17540",
+    "kind": "up7000_recording_control",
+    "version": 1
+  },
+  "stop_behavior": "finalize_gui_session_then_continue_autonomous_recording"
+}

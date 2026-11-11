@@ -1,0 +1,60 @@
+{
+  "duration_s": 30,
+  "addresses": [
+    "100.123.216.14"
+  ],
+  "status_datagrams": 870,
+  "status_max_bytes": 1104,
+  "status_bad": 0,
+  "host": "thoa",
+  "px4_connected": true,
+  "px4_message_types": [
+    "ALTITUDE",
+    "ATTITUDE",
+    "ATTITUDE_QUATERNION",
+    "BATTERY_STATUS",
+    "ESTIMATOR_STATUS",
+    "EXTENDED_SYS_STATE",
+    "GPS_RAW_INT",
+    "HEARTBEAT",
+    "HIGHRES_IMU",
+    "LOCAL_POSITION_NED",
+    "ODOMETRY",
+    "SYS_STATUS",
+    "TIMESYNC",
+    "VIBRATION"
+  ],
+  "uwb_bursts": 3091,
+  "uwb_burst_hz": 103.03333333333333,
+  "uwb_decoded_types": {
+    "RangeBurstMessage": 3091,
+    "CmdAckMessage": 60,
+    "RangeMessage": 129,
+    "RxQualityMessage": 194,
+    "StatsMessage": 30,
+    "InfoMessage": 30,
+    "DiagSystemMessage": 30,
+    "DiagAnchorMessage": 240,
+    "DeviceInfoMessage": 3
+  },
+  "uwb_parser": {
+    "bytes_received": 209491,
+    "valid_frames": 3807,
+    "discarded_bytes": 89,
+    "crc_errors": 1,
+    "length_errors": 0,
+    "version_errors": 0,
+    "decode_errors": 0
+  },
+  "ground": "100.77.150.59:15555",
+  "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261108_031647",
+  "uwb_source_parser": {
+    "bytes_received": 976623,
+    "valid_frames": 17687,
+    "discarded_bytes": 352,
+    "crc_errors": 5,
+    "length_errors": 0,
+    "version_errors": 0,
+    "decode_errors": 0
+  }
+}

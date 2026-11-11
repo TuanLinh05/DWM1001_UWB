@@ -1,0 +1,21 @@
+{
+  "eskf": {
+    "stayed_running": true,
+    "exit": 0,
+    "log": "[INFO] [1794065441.082895605] [uwb_eskf]: body = uwb_tag_1, lever uwb_tag_1 -> body: (0.0000, 0.0000, 0.0000) m\n[INFO] [1794065441.083123258] [uwb_eskf]: 8 anchor (8 bias) tu /home/thoa/ros2_px4_v2/install/uwb_eskf/share/uwb_eskf/config/rig.txt, imu=none\n[INFO] [1794065443.214477845] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+  },
+  "planner": {
+    "stayed_running": true,
+    "exit": 0,
+    "log": "[INFO] [1794065444.192100872] [learned_planner]: model K=27 80x48 state=8 pool=low d_max=10.0, a_max=7.8 j_max=30.1, speed=4.0 m/s  [DRY RUN]\n[INFO] [1794065446.433326256] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+  },
+  "controller": {
+    "stayed_running": true,
+    "exit": 0,
+    "log": "[WARN] [1794065447.304398252] [px4ctrl]: PX4 1.14 khong xuat RC qua DDS -> ep no_RC = true\n[INFO] [1794065447.307914208] [px4ctrl]: px4ctrl (DDS) 100 Hz, odom=px4, hover_percentage 0.45, takeoff 1.00 m\n[INFO] [1794065447.318201417] [px4ctrl]: dang cho PX4 (/fmu/out/vehicle_status) - MicroXRCEAgent chay chua?\n[INFO] [1794065449.318260770] [px4ctrl]: dang cho PX4 (/fmu/out/vehicle_status) - MicroXRCEAgent chay chua?\n[INFO] [1794065449.653334327] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+  },
+  "reference_eskf": {
+    "exit": 0,
+    "log": "cv: RMSE xyz [0.053 0.041 0.053] m, NEES pos mean 5.72 (ky vong 3)\nes: RMSE xyz [0.01  0.009 0.011] m, NEES pos mean 2.17 (ky vong 3)\nes: yaw error cuoi -0.6 deg, b_a [ 0.15 -0.1   0.2 ] (that [ 0.15 -0.1   0.2 ]), b_g deg [ 0.5  -0.29  0.38]\nselftest OK\n"
+  }
+}

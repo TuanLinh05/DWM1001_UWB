@@ -1,0 +1,29 @@
+{
+  "phase": "existing_ssd_files_unchanged",
+  "verified_bytes": 26759449818,
+  "total_bytes": 26759449818,
+  "files": [
+    {
+      "path": "Cadence_Tool_ALL_PDK_50GB_05.10.2021.zip",
+      "sha256": "378c360809fed61afdbba989ccee84a0904ee321b61620a0f2430a3865961e96",
+      "match": true,
+      "size": 26759449730
+    },
+    {
+      "path": "System Volume Information/WPSettings.dat",
+      "sha256": "12421d13a631de4d08abc856f19dfb37f4f49f57ebc157b31bd3fbb0e141145a",
+      "match": true,
+      "size": 12
+    },
+    {
+      "path": "System Volume Information/IndexerVolumeGuid",
+      "sha256": "89953d87e933e8334938f7aa453dcb164bcc04b4e6cf52685fe5d8d360aca8e5",
+      "match": true,
+      "size": 76
+    }
+  ],
+  "started_unix_s": 1794147283.5345733,
+  "current_file": "System Volume Information/IndexerVolumeGuid",
+  "updated_unix_s": 1794149213.8933423,
+  "completed_unix_s": 1794149213.8933396
+}

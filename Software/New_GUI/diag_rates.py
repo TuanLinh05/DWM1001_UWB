@@ -133,7 +133,14 @@ def interpret_rates(sys_r: Mapping[str, float] | None, anc_r: Mapping[int, Mappi
         return notes
     cycles = max(sys_r.get("cycle_count", 0.0), 1e-9)
     corrupt = sum(sys_r.get(f"rx_{k}", 0.0) for k in CORRUPT_CLASSES)
-    polled = {aid: max(cycles - r.get("poll_skipped", 0.0), 1e-9) for aid, r in anc_r.items()}
+    polled = {
+        aid: max(
+            cycles - r.get("poll_skipped", 0.0),
+            r.get("success", 0.0) + r.get("resp_timeouts", 0.0),
+            1e-9,
+        )
+        for aid, r in anc_r.items()
+    }
     resp_to = {aid: r.get("resp_timeouts", 0.0) / polled[aid] for aid, r in anc_r.items()}
     if resp_to:
         worst = max(resp_to.values())
@@ -188,10 +195,15 @@ def format_rates(sys_r: Mapping[str, float] | None, anc_r: Mapping[int, Mapping[
     ]
     for aid in sorted(anc_r):
         r = anc_r[aid]
-        polled = max(cycles - r.get("poll_skipped", 0.0), 1e-9)
+        polled = max(
+            cycles - r.get("poll_skipped", 0.0),
+            r.get("success", 0.0) + r.get("resp_timeouts", 0.0),
+            1e-9,
+        )
+        skip_pct = min(100.0, 100.0 * r.get("poll_skipped", 0.0) / max(cycles, 1e-9))
         lines.append(
             f"A{aid}      {r.get('ds_ok', 0):6.0f}   {100 * r.get('resp_timeouts', 0) / polled:6.0f}%  "
-            f"{r.get('report_timeouts', 0):5.0f}  {100 * r.get('poll_skipped', 0) / max(cycles, 1e-9):6.0f}%  "
+            f"{r.get('report_timeouts', 0):5.0f}  {skip_pct:6.0f}%  "
             f"{r.get('burst_late', 0):4.0f}  {r.get('txn_mismatch', 0):4.0f}"
         )
     return "\n".join(lines)

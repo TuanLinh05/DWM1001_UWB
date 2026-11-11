@@ -1,0 +1,13 @@
+{
+  "phase": "existing_ssd_backup_verified",
+  "started_unix_s": 1794136992.7383597,
+  "copied_bytes": 26759449818,
+  "updated_unix_s": 1794139671.0908399,
+  "backup_directory": "/run/up7000-hdd-work/_SSD_existing_backup_20261108_112314_6322386e",
+  "total_bytes": 26759449818,
+  "file_count": 3,
+  "current_file": "System Volume Information/IndexerVolumeGuid",
+  "verified_bytes": 26759449818,
+  "manifest": "/run/up7000-hdd-work/_SSD_existing_backup_20261108_112314_6322386e/manifest.json",
+  "completed_unix_s": 1794139671.0908313
+}

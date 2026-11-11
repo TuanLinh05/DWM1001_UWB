@@ -1,0 +1,16 @@
+{
+  "received_datagrams": 160,
+  "max_bytes": 719,
+  "bad": 0,
+  "host": "thoa",
+  "px4_connected": false,
+  "uwb_status_present": true,
+  "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136",
+  "disk": {
+    "path": "/mnt/droneup/onboard_20261107/thoa/flight_logs/20261107_161136",
+    "free_gb": 281.77,
+    "total_gb": 313.89,
+    "used_percent": 5.1
+  },
+  "learned_ground": "192.168.1.205:15555"
+}

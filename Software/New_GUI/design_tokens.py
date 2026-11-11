@@ -393,7 +393,11 @@ QTableWidget, QTreeWidget, QTreeView {{
     font-size: 12px;
 }}
 
-QTableWidget::item, QTreeWidget::item, QTreeView::item {{
+QTableWidget::item {{
+    padding: 2px 6px;
+}}
+
+QTreeWidget::item, QTreeView::item {{
     padding: 2px 6px;
     color: {on_surface};
 }}

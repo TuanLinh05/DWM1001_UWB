@@ -1,0 +1,456 @@
+{
+  "duration_s": 600,
+  "seq_range": [
+    138,
+    2539
+  ],
+  "cycles_sent": 2402,
+  "cycles_received": 2402,
+  "complete_cycles": 2401,
+  "sent_datagrams": 16059,
+  "matched_received_datagrams": 16054,
+  "lost_datagrams": 5,
+  "loss_percent": 0.03113518899059717,
+  "datagram_bytes_min": 373,
+  "datagram_bytes_max": 1118,
+  "over_1200": 0,
+  "by_part": {
+    "host": {
+      "sent": 550,
+      "received": 550,
+      "lost": 0
+    },
+    "px4": {
+      "sent": 1566,
+      "received": 1566,
+      "lost": 0
+    },
+    "px4.messages": {
+      "sent": 11700,
+      "received": 11695,
+      "lost": 5
+    },
+    "px4_logger": {
+      "sent": 549,
+      "received": 549,
+      "lost": 0
+    },
+    "session": {
+      "sent": 568,
+      "received": 568,
+      "lost": 0
+    },
+    "uwb_relay": {
+      "sent": 1126,
+      "received": 1126,
+      "lost": 0
+    }
+  },
+  "px4_message_types": [
+    "ALTITUDE",
+    "ATTITUDE",
+    "ATTITUDE_QUATERNION",
+    "BATTERY_STATUS",
+    "ESTIMATOR_STATUS",
+    "EXTENDED_SYS_STATE",
+    "GPS_RAW_INT",
+    "HEARTBEAT",
+    "HIGHRES_IMU",
+    "LOCAL_POSITION_NED",
+    "ODOMETRY",
+    "SYS_STATUS",
+    "TIMESYNC",
+    "VIBRATION"
+  ],
+  "px4_refresh": {
+    "ODOMETRY": {
+      "updates": 2296,
+      "max_gap_s": 0.844
+    },
+    "SYS_STATUS": {
+      "updates": 2310,
+      "max_gap_s": 0.796
+    },
+    "TIMESYNC": {
+      "updates": 2310,
+      "max_gap_s": 0.796
+    },
+    "VIBRATION": {
+      "updates": 2310,
+      "max_gap_s": 0.796
+    },
+    "ALTITUDE": {
+      "updates": 2375,
+      "max_gap_s": 0.782
+    },
+    "ATTITUDE": {
+      "updates": 2375,
+      "max_gap_s": 0.782
+    },
+    "ATTITUDE_QUATERNION": {
+      "updates": 2375,
+      "max_gap_s": 0.782
+    },
+    "BATTERY_STATUS": {
+      "updates": 2376,
+      "max_gap_s": 0.781
+    },
+    "ESTIMATOR_STATUS": {
+      "updates": 2376,
+      "max_gap_s": 0.781
+    },
+    "EXTENDED_SYS_STATE": {
+      "updates": 2376,
+      "max_gap_s": 0.781
+    },
+    "GPS_RAW_INT": {
+      "updates": 2376,
+      "max_gap_s": 0.781
+    },
+    "HEARTBEAT": {
+      "updates": 2340,
+      "max_gap_s": 0.969
+    },
+    "HIGHRES_IMU": {
+      "updates": 2340,
+      "max_gap_s": 0.969
+    },
+    "LOCAL_POSITION_NED": {
+      "updates": 2340,
+      "max_gap_s": 0.969
+    }
+  },
+  "listener": {
+    "packets": 16180,
+    "bad": 0,
+    "bound": true
+  },
+  "uwb": {
+    "bytes": 16037668,
+    "datagrams": 38688,
+    "decoded_types": {
+      "RangeBurstMessage": 175784,
+      "CmdAckMessage": 548,
+      "RxQualityMessage": 5322,
+      "RangeMessage": 2671,
+      "StatsMessage": 549,
+      "InfoMessage": 548,
+      "DiagSystemMessage": 542,
+      "DiagAnchorMessage": 4370,
+      "AnchorInfoMessage": 543,
+      "DeviceInfoMessage": 53
+    },
+    "burst_count": 175784,
+    "parser": {
+      "bytes_received": 16037668,
+      "valid_frames": 190930,
+      "discarded_bytes": 111015,
+      "crc_errors": 1170,
+      "length_errors": 26,
+      "version_errors": 0,
+      "decode_errors": 0
+    },
+    "sent_datagrams_aligned": 38693,
+    "received_datagrams_aligned": 38688,
+    "lost_datagrams": 5,
+    "loss_percent": 0.012922233995813196,
+    "burst_hz": 292.97333333333336,
+    "missing_cycles": 18092,
+    "duplicate_cycles": 0
+  },
+  "host": {
+    "hostname": "dronepif",
+    "ip": [
+      "tailscale0 100.105.212.3/32",
+      "wlx30169df9a262 192.168.10.23/24"
+    ],
+    "uptime_s": 18315.79,
+    "cpu_percent": 74.5,
+    "cpu_count": 2,
+    "load": [
+      2.3,
+      2.26,
+      2.18
+    ],
+    "cpu_temp_c": 49.0,
+    "temperatures_c": {
+      "x86_pkg_temp": 49.0
+    },
+    "memory": {
+      "total_mb": 1811,
+      "available_mb": 1084,
+      "used_percent": 40.1
+    },
+    "disk": {
+      "path": "/home/dronepif/flight_logs/20261107_130235",
+      "free_gb": 15.62,
+      "total_gb": 27.46,
+      "used_percent": 38.5
+    },
+    "wifi": [
+      {
+        "interface": "wlx30169df9a262",
+        "link_quality": 84.0,
+        "signal_dbm": -45.0,
+        "noise_dbm": null,
+        "signal_level": 55.0,
+        "ssid": "PIF_CLUB_5G",
+        "freq_mhz": 5500.0,
+        "tx_mbit": 434.0,
+        "power_save": false
+      }
+    ],
+    "processes": {
+      "uwb_relay": {
+        "pid": 78970,
+        "cpu_percent": 59.1,
+        "rss_mb": 61.0
+      },
+      "px4_logger": {
+        "pid": 78972,
+        "cpu_percent": 28.0,
+        "rss_mb": 75.6
+      },
+      "up4000_status": {
+        "pid": 78974,
+        "cpu_percent": 6.0,
+        "rss_mb": 57.0
+      }
+    }
+  },
+  "px4_logger_first": {
+    "started_unix_s": 1794056556.9327898,
+    "updated_unix_s": 1794056703.03435,
+    "px4_port": "/dev/pixhawk",
+    "vehicle": {
+      "system": 1,
+      "component": 1,
+      "autopilot": 12,
+      "type": 2
+    },
+    "ground": "192.168.10.7:14550",
+    "ulog_part": 1,
+    "ulog": {
+      "chunks": 25664,
+      "bytes": 6390114,
+      "dropped_chunks": 2,
+      "dropout_messages": 1,
+      "duplicates": 1
+    },
+    "counts": {
+      "px4_bytes": 10940670,
+      "bad_data": 1,
+      "messages": 85522,
+      "ulog_start_requests": 1,
+      "timesync_samples": 291,
+      "ulog_start_ack_0": 1,
+      "forward_bytes": 15656
+    }
+  },
+  "px4_logger_last": {
+    "started_unix_s": 1794056556.9327898,
+    "updated_unix_s": 1794057304.0342526,
+    "px4_port": "/dev/pixhawk",
+    "vehicle": {
+      "system": 1,
+      "component": 1,
+      "autopilot": 12,
+      "type": 2
+    },
+    "ground": "192.168.10.7:14550",
+    "ulog_part": 1,
+    "ulog": {
+      "chunks": 131730,
+      "bytes": 32800585,
+      "dropped_chunks": 2,
+      "dropout_messages": 1,
+      "duplicates": 1
+    },
+    "counts": {
+      "px4_bytes": 56262471,
+      "bad_data": 1,
+      "messages": 440422,
+      "ulog_start_requests": 1,
+      "timesync_samples": 1489,
+      "ulog_start_ack_0": 1,
+      "forward_bytes": 17280714,
+      "forward_errors": 86
+    }
+  },
+  "uwb_relay_first": {
+    "started_unix_s": 1794056556.8623753,
+    "updated_unix_s": 1794056702.961084,
+    "tag_port": "/dev/uwb_tag",
+    "tag_baud": 460800,
+    "ground": "192.168.10.7:15555",
+    "ground_fixed": false,
+    "records_logged": 199138,
+    "log_bytes": 7866994,
+    "parse_queue": 1,
+    "parser": {
+      "bytes_received": 4282498,
+      "valid_frames": 39535,
+      "discarded_bytes": 12818,
+      "crc_errors": 116,
+      "length_errors": 2,
+      "version_errors": 0,
+      "decode_errors": 0
+    },
+    "counts": {
+      "tag_bytes": 4282499,
+      "udp_no_ground_bytes": 4271119,
+      "beacon_datagrams": 143,
+      "beacon_bytes": 12155,
+      "udp_datagrams": 18,
+      "udp_bytes": 11316
+    },
+    "parsed": {
+      "frame_0x18": 35652,
+      "frame_0x13": 139,
+      "frame_0x16": 14,
+      "frame_0x19": 1372,
+      "frame_0x01": 703,
+      "frame_0x02": 139,
+      "frame_0x00": 139,
+      "frame_0x15": 138,
+      "frame_0x11": 1103,
+      "frame_0x12": 136
+    },
+    "device_info": {
+      "sequence": 167666,
+      "time_ms": 17756172,
+      "role": 1,
+      "node_address": 0,
+      "git_hash": 756657269,
+      "git_dirty": true,
+      "frame_version": 3,
+      "telemetry_features": 7,
+      "wait4resp": true,
+      "device_id": 2963110252,
+      "boot_id": 10192,
+      "boot_count": 1,
+      "reset_cause": 0,
+      "tx_power_mode": 0,
+      "reference_tuning": false,
+      "tx_antenna_delay": 16436,
+      "rx_antenna_delay": 16436,
+      "tx_power_register": 505290270,
+      "spi_clock_mhz": 8,
+      "otp_valid": true,
+      "otp_part_id": 1347471910,
+      "otp_lot_id": 230375745,
+      "otp_ldotune": 2290649128,
+      "otp_xtal_trim": 19,
+      "otp_revision": 1,
+      "otp_vbat_cal": 160,
+      "otp_vtemp_cal": 125,
+      "applied_xtal_trim": 255,
+      "ldo_kicked": false,
+      "settings_status": 7,
+      "uart_baud": 460800,
+      "active_mask": 255,
+      "calibrated_mask": 255,
+      "build_config_hash": 3052962717,
+      "calibration_profile_id": 1744608919
+    }
+  },
+  "uwb_relay_last": {
+    "started_unix_s": 1794056556.8623753,
+    "updated_unix_s": 1794057303.9562902,
+    "tag_port": "/dev/uwb_tag",
+    "tag_baud": 460800,
+    "ground": "192.168.10.7:15555",
+    "ground_fixed": false,
+    "records_logged": 1026423,
+    "log_bytes": 39593672,
+    "parse_queue": 1,
+    "parser": {
+      "bytes_received": 21118046,
+      "valid_frames": 240919,
+      "discarded_bytes": 33006,
+      "crc_errors": 351,
+      "length_errors": 14,
+      "version_errors": 0,
+      "decode_errors": 0
+    },
+    "counts": {
+      "tag_bytes": 21118047,
+      "udp_no_ground_bytes": 4271119,
+      "beacon_datagrams": 143,
+      "beacon_bytes": 12155,
+      "udp_datagrams": 40374,
+      "udp_bytes": 16846901
+    },
+    "parsed": {
+      "frame_0x18": 220958,
+      "frame_0x13": 718,
+      "frame_0x16": 73,
+      "frame_0x19": 7003,
+      "frame_0x01": 3558,
+      "frame_0x02": 718,
+      "frame_0x00": 720,
+      "frame_0x15": 718,
+      "frame_0x11": 5749,
+      "frame_0x12": 704
+    },
+    "device_info": {
+      "sequence": 173814,
+      "time_ms": 18366296,
+      "role": 1,
+      "node_address": 0,
+      "git_hash": 756657269,
+      "git_dirty": true,
+      "frame_version": 3,
+      "telemetry_features": 7,
+      "wait4resp": true,
+      "device_id": 2963110252,
+      "boot_id": 10192,
+      "boot_count": 1,
+      "reset_cause": 0,
+      "tx_power_mode": 0,
+      "reference_tuning": false,
+      "tx_antenna_delay": 16436,
+      "rx_antenna_delay": 16436,
+      "tx_power_register": 505290270,
+      "spi_clock_mhz": 8,
+      "otp_valid": true,
+      "otp_part_id": 1347471910,
+      "otp_lot_id": 230375745,
+      "otp_ldotune": 2290649128,
+      "otp_xtal_trim": 19,
+      "otp_revision": 1,
+      "otp_vbat_cal": 160,
+      "otp_vtemp_cal": 125,
+      "applied_xtal_trim": 255,
+      "ldo_kicked": false,
+      "settings_status": 7,
+      "uart_baud": 460800,
+      "active_mask": 255,
+      "calibrated_mask": 255,
+      "build_config_hash": 3052962717,
+      "calibration_profile_id": 1744608919
+    }
+  },
+  "capture_exit": 0,
+  "capture_stderr": "",
+  "errors": [],
+  "process_cpu_mean_percent_one_core": {
+    "uwb_relay": 57.52,
+    "px4_logger": 25.95,
+    "up4000_status": 5.77
+  },
+  "ulog_delta": {
+    "chunks": 106066,
+    "dropped_chunks": 0,
+    "dropout_messages": 0
+  },
+  "upstream_parser_delta": {
+    "bytes_received": 16835548,
+    "valid_frames": 201384,
+    "discarded_bytes": 20188,
+    "crc_errors": 235,
+    "length_errors": 12,
+    "version_errors": 0,
+    "decode_errors": 0
+  }
+}

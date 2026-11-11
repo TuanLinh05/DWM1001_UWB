@@ -138,6 +138,9 @@ class DiagnosticsPageTests(unittest.TestCase):
             app.processEvents()
             self.assertIn("A3", win.lbl_diag_rates.text())
             self.assertIn("67%", win.lbl_diag_rates.text())
+            self.assertEqual(win.diag_kpi_cells["cycles"].text(), "300 /s")
+            self.assertEqual(win.diag_rates_table.item(2, 0).text(), "A3")
+            self.assertEqual(win.diag_rates_table.item(2, 2).text(), "67%")
             self.assertFalse(win.lbl_diag_hints.isHidden())
             self.assertIn("never detected", win.lbl_diag_hints.text())
         finally:

@@ -1,0 +1,41 @@
+{
+  "services": {
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060136_22309",
+  "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+  "configuration_confirmed": false,
+  "recorder_topics_verified": true,
+  "estimator_status": {
+    "state": "WAIT_CONFIGURATION",
+    "reason": "STARTING",
+    "configuration_confirmed": false,
+    "imu": "mavlink",
+    "rig_file": "/mnt/droneup/onboard_20261107/thoa/drone_tools/eskf/config_versions/979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b/rig_onboard.txt",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "configured_anchors": 8,
+    "frame_id": "uwb_rig",
+    "body_frame": "px4_imu_flu",
+    "ignore_rig_bias": true,
+    "lever_flu_m": [
+      0,
+      0,
+      0
+    ],
+    "imu_samples": 23231,
+    "range_samples": 83814,
+    "accepted_ranges": 0,
+    "odom_messages": 0,
+    "initializations": 0,
+    "required_anchors": 6,
+    "recent_anchors": 4,
+    "invalid_imu": 0,
+    "invalid_ranges": 0,
+    "invalid_initializations": 0,
+    "imu_age_s": 0.00256991386414,
+    "range_age_s": 0.017427444458
+  },
+  "checked_unix_s": 1794118163.021115
+}

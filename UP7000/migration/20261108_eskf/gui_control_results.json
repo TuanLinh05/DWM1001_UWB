@@ -1,0 +1,168 @@
+{
+  "gui_start_ack": {
+    "ok": true,
+    "action": "start",
+    "request_id": "bfb941fdfa8941bfb0bb222ba44f346b",
+    "recording_id": "f507fca5ae4b40539ef5500fad17b996",
+    "requested_config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060127_22114",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060127_22114/bag",
+    "closed": false,
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 50,
+    "range_samples": 0,
+    "state": "recording",
+    "background_recording": false,
+    "kind": "up7000_recording_control",
+    "version": 1
+  },
+  "duplicate_start_same_session": true,
+  "duplicate_finish_same_background": true,
+  "gui_config": {
+    "schema": 1,
+    "confirmed": false,
+    "anchors": [
+      [
+        1,
+        0.0,
+        0.0,
+        0.48,
+        true,
+        575.72,
+        28.93
+      ],
+      [
+        2,
+        5.4,
+        0.0,
+        0.48,
+        true,
+        -536.91,
+        33.15
+      ],
+      [
+        3,
+        5.4,
+        3.6,
+        0.48,
+        true,
+        -387.43,
+        58.6
+      ],
+      [
+        4,
+        0.0,
+        3.6,
+        0.48,
+        true,
+        786.16,
+        18.45
+      ],
+      [
+        5,
+        0.0,
+        0.0,
+        2.208,
+        true,
+        531.92,
+        50.39
+      ],
+      [
+        6,
+        5.4,
+        0.0,
+        2.208,
+        true,
+        -346.35,
+        16.13
+      ],
+      [
+        7,
+        5.4,
+        3.6,
+        2.208,
+        true,
+        -325.34,
+        14.85
+      ],
+      [
+        8,
+        0.0,
+        3.6,
+        2.208,
+        true,
+        580.23,
+        16.3
+      ]
+    ],
+    "lever_flu_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "yaw0_deg": 0.0,
+    "parameters": {
+      "sig_r": 0.15,
+      "q_cv": 1.0,
+      "init_static_s": 1.0,
+      "init_window_s": 0.05,
+      "imu_timeout_s": 0.2,
+      "range_timeout_s": 0.5,
+      "max_input_age_s": 0.25,
+      "min_init_anchors": 6
+    }
+  },
+  "gui_finish_ack": {
+    "ok": true,
+    "action": "finish",
+    "request_id": "3d8dfae3af6d4eb69b992022f5dc70c1",
+    "recording_id": "f507fca5ae4b40539ef5500fad17b996",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060127_22114",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060127_22114/bag",
+    "closed": true,
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 350,
+    "range_samples": 1102,
+    "state": "saved",
+    "background_recording": true,
+    "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060136_22309",
+    "kind": "up7000_recording_control",
+    "version": 1
+  },
+  "background_status": {
+    "ok": true,
+    "state": "recording",
+    "recording_id": "",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060136_22309",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060136_22309/bag",
+    "closed": false,
+    "active": true,
+    "error": "",
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 36,
+    "range_samples": 0,
+    "kind": "up7000_recording_control",
+    "version": 1,
+    "request_id": "dfc7e163b8a44c4d8b931c47ea97c314",
+    "action": "status"
+  },
+  "local_session": "D:\\Drone Project\\Github Clone UWB Test\\.tmp_up7000_eskf\\gui_control_validation\\logs\\uwb_fast_20261108_130124_udp_15555",
+  "local_csv_rows": 2901,
+  "local_mcap_messages": 89327,
+  "local_mcap_dropped_events": 0,
+  "local_mcap_closed": true,
+  "local_topic_count": 191,
+  "events": [
+    "[13:01:33.361] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:33.711] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:34.170] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:34.639] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:35.157] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:35.628] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:36.122] CMD_ACK cmd=0x01 result=OK (OK)",
+    "[13:01:36.128] UP7000 MCAP finalized -> /mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_060127_22114/bag"
+  ]
+}

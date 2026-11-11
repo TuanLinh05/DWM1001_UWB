@@ -65,8 +65,16 @@ class FastCsvLogger:
     def __init__(self, base_dir: Path, source_name: str, engine: UwbStateEngine | None = None) -> None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         clean_src = "".join(c if c.isalnum() else "_" for c in source_name)
-        self.session_dir = base_dir / f"uwb_fast_{stamp}_{clean_src}"
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        name = f"uwb_fast_{stamp}_{clean_src}"
+        suffix = 0
+        while True:
+            self.session_dir = base_dir / (name if not suffix else f"{name}_{suffix}")
+            try:
+                self.session_dir.mkdir(exist_ok=False)
+                break
+            except FileExistsError:
+                suffix += 1
         self.csv_path = self.session_dir / "uwb_fast_log.csv"
         self.meta_path = self.session_dir / "session_metadata.json"
         self.quality_path = self.session_dir / "rx_quality.jsonl"
@@ -607,7 +615,7 @@ DEFAULT_UDP_RELAY_PORT = 15555
 
 
 class UdpTelemetryWorker(QThread):
-    """TAG telemetry relayed over WiFi by the UP4000 (UP4000/ros2_ws uwb_relay).
+    """TAG telemetry relayed over WiFi by the UP7000 uwb_relay node.
 
     Each datagram holds one or more complete TAG frames. The relay address is
     learned from the first datagram (a discovery beacon or data); commands and
@@ -675,7 +683,7 @@ class UdpTelemetryWorker(QThread):
             self._sock = sock
             self.bound_port = sock.getsockname()[1]
             self.link_status.emit("connected", f"Listening UDP :{self.bound_port} (WiFi relay)")
-            self.log_event.emit(f"UDP relay input on port {self.bound_port}; waiting for the UP4000")
+            self.log_event.emit(f"UDP relay input on port {self.bound_port}; waiting for the UP7000")
             while not self._stop_event.is_set():
                 now = time.monotonic()
                 if now - last_ping >= 1.0:
@@ -699,7 +707,7 @@ class UdpTelemetryWorker(QThread):
                     bytes_in_sec += len(data)
                     if self.relay_addr != addr:
                         self.relay_addr = addr
-                        self.log_event.emit(f"UP4000 relay at {addr[0]}:{addr[1]}")
+                        self.log_event.emit(f"UP7000 relay at {addr[0]}:{addr[1]}")
                         self._send_now(tp.CMD_PING)
                     for frame in parser.feed(data):
                         try:

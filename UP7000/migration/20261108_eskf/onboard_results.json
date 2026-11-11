@@ -1,0 +1,57 @@
+{
+  "closed_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_051643_10893",
+  "closed": true,
+  "exit_codes": {
+    "estimator": 0,
+    "recorder": 0
+  },
+  "duration_s": 111.43819499015808,
+  "counts": {
+    "/uwb_eskf/session": 93,
+    "/px4/imu_frd": 5535,
+    "/px4/imu_device_time_us": 5535,
+    "/px4/odometry": 5535,
+    "/px4/status": 111,
+    "/uwb_eskf/status": 111,
+    "/uwb/device_info": 12,
+    "/uwb/cycle_seq": 4959,
+    "/uwb/tag_time_us": 4959,
+    "/uwb/anchor_5/diagnostic_range": 4949,
+    "/uwb/anchor_5/range": 4931,
+    "/uwb/anchor_8/diagnostic_range": 4948,
+    "/uwb/anchor_8/range": 4936,
+    "/uwb_relay/status": 108
+  },
+  "imu_interval_median_ms": 19.55,
+  "imu_accel_z_median": -9.802348136901855,
+  "last_estimator_status": {
+    "state": "WAIT_CONFIGURATION",
+    "reason": "STARTING",
+    "configuration_confirmed": false,
+    "imu": "mavlink",
+    "rig_file": "/mnt/droneup/onboard_20261107/thoa/drone_tools/eskf/config/rig_onboard.txt",
+    "frame_id": "uwb_rig",
+    "body_frame": "px4_imu_flu",
+    "ignore_rig_bias": true,
+    "lever_flu_m": [
+      0,
+      0,
+      0
+    ],
+    "imu_samples": 5550,
+    "range_samples": 10061,
+    "accepted_ranges": 0,
+    "odom_messages": 0,
+    "initializations": 0,
+    "required_anchors": 6,
+    "recent_anchors": 0,
+    "invalid_imu": 0,
+    "invalid_ranges": 0,
+    "invalid_initializations": 0,
+    "imu_age_s": 0.0132086277008,
+    "range_age_s": 0.0196013450623
+  },
+  "all_files_on_hdd": true,
+  "storage_guard_wrong_uuid_and_low_space": "passed",
+  "service_enabled": "enabled"
+}

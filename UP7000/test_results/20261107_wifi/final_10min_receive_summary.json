@@ -1,0 +1,29 @@
+{
+  "received_status_packets": 15337,
+  "receive_span_s": 599.8900129795074,
+  "received_cycles": 2362,
+  "missing_whole_cycles_within_seq_range": 38,
+  "max_status_bytes": 1121,
+  "px4_types": [
+    "ALTITUDE",
+    "ATTITUDE",
+    "ATTITUDE_QUATERNION",
+    "BATTERY_STATUS",
+    "ESTIMATOR_STATUS",
+    "EXTENDED_SYS_STATE",
+    "GPS_RAW_INT",
+    "HEARTBEAT",
+    "HIGHRES_IMU",
+    "LOCAL_POSITION_NED",
+    "ODOMETRY",
+    "SYS_STATUS",
+    "TIMESYNC",
+    "VIBRATION"
+  ],
+  "note": "10-minute receive log preserved; transmit metadata transfer timed out, so packet loss cannot be established for this run.",
+  "ulog_delta": {
+    "chunks": 104230,
+    "dropped_chunks": 953,
+    "dropout_messages": 15
+  }
+}

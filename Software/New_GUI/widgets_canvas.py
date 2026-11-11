@@ -42,6 +42,9 @@ class PositionMapCanvas(QWidget):
         self.show_rays: bool = True         # Clean lines from active anchors to TAG
         self.show_ranges: bool = False      # 2D circles (optional so 8 circles don't clutter)
         self.show_trail: bool = True
+        self.trail_mode: str = "FULL"       # "FULL" | "PROGRESSIVE_GHOST" | "PROGRESSIVE_ONLY"
+        self.cursor_time_s: float | None = None
+        self.lock_map_path_bounds: bool = False
         self.color_by_stability: bool = True
         self.highlight_time_range: tuple[float, float] | None = None
         self.show_reference: bool = False
@@ -131,6 +134,9 @@ class PositionMapCanvas(QWidget):
         if self.engine.latest_solution is not None:
             s = self.engine.latest_solution
             pts.append((s.x, s.y, s.z))
+        if self.lock_map_path_bounds and self.engine.map_path:
+            for mx, my, mz, _mt, _mst, _mrms in self.engine.map_path:
+                pts.append((mx, my, mz))
         if self.show_reference:
             pts.append(self.reference_xyz)
         if not pts:
@@ -178,10 +184,16 @@ class PositionMapCanvas(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
+        self.paint_onto(painter, QRectF(0, 0, self.width(), self.height()))
+        painter.end()
+
+    def paint_onto(self, painter: QPainter, target_rect: QRectF) -> None:
+        painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.translate(target_rect.left(), target_rect.top())
 
-        rect = QRectF(0, 0, self.width(), self.height())
+        rect = QRectF(0, 0, target_rect.width(), target_rect.height())
         outer_bg = QColor("#090e1a" if self.is_dark else "#f8fafc")
         outer_border = QColor("#1e293b" if self.is_dark else "#cbd5e1")
         painter.fillRect(rect, outer_bg)
@@ -213,7 +225,7 @@ class PositionMapCanvas(QWidget):
 
         self._paint_z_bar(painter, z_box)
         self._paint_hud_overlay(painter, QRectF(8, rect.bottom() - 24, rect.width() - 16, 20))
-        painter.end()
+        painter.restore()
 
     def _paint_2d(self, painter: QPainter, box: QRectF) -> None:
         step = max(self.grid_step_m, 0.05)
@@ -598,6 +610,19 @@ class PositionMapCanvas(QWidget):
             return QColor("#f59e0b")
         return QColor("#10b981" if not self.is_dark else "#34d399")
 
+    def _active_and_ghost_path(self, mpath: list) -> tuple[list, list]:
+        if self.trail_mode not in ("PROGRESSIVE_GHOST", "PROGRESSIVE_ONLY") or self.cursor_time_s is None:
+            return mpath, []
+        ghost = mpath if self.trail_mode == "PROGRESSIVE_GHOST" else []
+        t_cut = self.cursor_time_s + 1e-6
+        active = [p for p in mpath if p[3] <= t_cut]
+        sol = self.engine.latest_solution
+        if sol is not None:
+            cur_pt = (sol.x, sol.y, sol.z, sol.tag_time_s, sol.stability_state, sol.rms_m * 1000.0)
+            if not active or (abs(active[-1][0] - sol.x) + abs(active[-1][1] - sol.y) + abs(active[-1][2] - sol.z)) > 1e-4:
+                active.append(cur_pt)
+        return active, ghost
+
     def _paint_trajectory_2d(self, painter: QPainter, proj) -> None:
         mpath = list(self.engine.map_path)
         if len(mpath) < 2:
@@ -607,21 +632,28 @@ class PositionMapCanvas(QWidget):
                 painter.drawPolyline(poly)
             return
 
-        cur_state = mpath[0][4]
-        cur_pts = [proj(mpath[0][0], mpath[0][1])]
-        for x, y, _z, _t, st, _rms in mpath[1:]:
-            pt = proj(x, y)
-            cur_pts.append(pt)
-            if st != cur_state:
+        active_path, ghost_path = self._active_and_ghost_path(mpath)
+        if len(ghost_path) >= 2:
+            ghost_col = QColor(100, 116, 139, 65) if self.is_dark else QColor(148, 163, 184, 80)
+            painter.setPen(QPen(ghost_col, 1.3, Qt.PenStyle.DashLine))
+            painter.drawPolyline(QPolygonF([proj(x, y) for x, y, _z, _t, _st, _rms in ghost_path]))
+
+        if len(active_path) >= 2:
+            cur_state = active_path[0][4]
+            cur_pts = [proj(active_path[0][0], active_path[0][1])]
+            for x, y, _z, _t, st, _rms in active_path[1:]:
+                pt = proj(x, y)
+                cur_pts.append(pt)
+                if st != cur_state:
+                    w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+                    painter.setPen(QPen(self._stability_color(cur_state), w))
+                    painter.drawPolyline(QPolygonF(cur_pts))
+                    cur_state = st
+                    cur_pts = [pt]
+            if len(cur_pts) >= 2:
                 w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
                 painter.setPen(QPen(self._stability_color(cur_state), w))
                 painter.drawPolyline(QPolygonF(cur_pts))
-                cur_state = st
-                cur_pts = [pt]
-        if len(cur_pts) >= 2:
-            w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
-            painter.setPen(QPen(self._stability_color(cur_state), w))
-            painter.drawPolyline(QPolygonF(cur_pts))
 
         # Mark trajectory START point clearly in 2D
         start_pt = proj(mpath[0][0], mpath[0][1])
@@ -652,21 +684,28 @@ class PositionMapCanvas(QWidget):
                 painter.drawPolyline(poly)
             return
 
-        cur_state = mpath[0][4]
-        cur_pts = [proj3((mpath[0][0], mpath[0][1], mpath[0][2]))]
-        for x, y, z, _t, st, _rms in mpath[1:]:
-            pt = proj3((x, y, z))
-            cur_pts.append(pt)
-            if st != cur_state:
+        active_path, ghost_path = self._active_and_ghost_path(mpath)
+        if len(ghost_path) >= 2:
+            ghost_col = QColor(100, 116, 139, 65) if self.is_dark else QColor(148, 163, 184, 80)
+            painter.setPen(QPen(ghost_col, 1.3, Qt.PenStyle.DashLine))
+            painter.drawPolyline(QPolygonF([proj3((x, y, z)) for x, y, z, _t, _st, _rms in ghost_path]))
+
+        if len(active_path) >= 2:
+            cur_state = active_path[0][4]
+            cur_pts = [proj3((active_path[0][0], active_path[0][1], active_path[0][2]))]
+            for x, y, z, _t, st, _rms in active_path[1:]:
+                pt = proj3((x, y, z))
+                cur_pts.append(pt)
+                if st != cur_state:
+                    w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
+                    painter.setPen(QPen(self._stability_color(cur_state), w))
+                    painter.drawPolyline(QPolygonF(cur_pts))
+                    cur_state = st
+                    cur_pts = [pt]
+            if len(cur_pts) >= 2:
                 w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
                 painter.setPen(QPen(self._stability_color(cur_state), w))
                 painter.drawPolyline(QPolygonF(cur_pts))
-                cur_state = st
-                cur_pts = [pt]
-        if len(cur_pts) >= 2:
-            w = 2.6 if cur_state == "UNSTABLE" else (2.2 if cur_state == "WARN" else 1.8)
-            painter.setPen(QPen(self._stability_color(cur_state), w))
-            painter.drawPolyline(QPolygonF(cur_pts))
 
         # Mark trajectory START point in 3D
         start_pt3 = proj3((mpath[0][0], mpath[0][1], mpath[0][2]))

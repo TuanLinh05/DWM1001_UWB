@@ -7,6 +7,7 @@ unit-tested on a PC and reused by logging or calibration tools later.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import binascii
 import struct
 from typing import Mapping, Union
 
@@ -575,12 +576,9 @@ class ParserCounters:
 def crc16_ccitt(data: bytes | bytearray | memoryview) -> int:
     """CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF."""
 
-    crc = 0xFFFF
-    for value in data:
-        crc ^= value << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-    return crc
+    # The stdlib C implementation keeps CRC work from starving the serial
+    # reader on the UP4000. bytes() also accepts non-contiguous memoryviews.
+    return binascii.crc_hqx(bytes(data), 0xFFFF)
 
 
 def encode_frame(frame_type: int, sequence: int, time_ms: int, payload: bytes) -> bytes:

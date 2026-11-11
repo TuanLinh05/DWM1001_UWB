@@ -1,0 +1,10 @@
+{
+  "received_datagrams": 154,
+  "max_bytes": 694,
+  "bad": 0,
+  "host": "thoa",
+  "px4_connected": false,
+  "uwb_status_present": true,
+  "session": "/home/thoa/flight_logs/20261107_154428",
+  "learned_ground": "192.168.1.205:15555"
+}

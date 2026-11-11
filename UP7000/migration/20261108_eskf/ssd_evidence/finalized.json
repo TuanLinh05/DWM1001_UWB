@@ -1,0 +1,41 @@
+{
+  "phase": "ssd_migration_not_activated_hdd_operational",
+  "data_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "services": {
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "ssd_unmounted": true,
+  "ssd_block_device_read_only": true,
+  "original_ssd_files_unchanged": true,
+  "original_ssd_file_count": 3,
+  "original_ssd_total_bytes": 26759449818,
+  "original_ssd_files": [
+    {
+      "path": "Cadence_Tool_ALL_PDK_50GB_05.10.2021.zip",
+      "sha256": "378c360809fed61afdbba989ccee84a0904ee321b61620a0f2430a3865961e96",
+      "match": true,
+      "size": 26759449730
+    },
+    {
+      "path": "System Volume Information/WPSettings.dat",
+      "sha256": "12421d13a631de4d08abc856f19dfb37f4f49f57ebc157b31bd3fbb0e141145a",
+      "match": true,
+      "size": 12
+    },
+    {
+      "path": "System Volume Information/IndexerVolumeGuid",
+      "sha256": "89953d87e933e8334938f7aa453dcb164bcc04b4e6cf52685fe5d8d360aca8e5",
+      "match": true,
+      "size": 76
+    }
+  ],
+  "source_image_sha256": "5837b5e26be972b2b024c93af999dec1ccce766f0198af69d52fb865eea566c6",
+  "source_hash_matches_copy_time_hash": true,
+  "verified_original_ssd_backup": "/mnt/droneup/_SSD_existing_backup_20261108_112314_6322386e/files",
+  "evidence_directory": "/mnt/droneup/_SSD_existing_backup_20261108_112314_6322386e/failed_migration_evidence",
+  "ssd_startup_configuration_applied": false,
+  "ssd_new_unvalidated_folder": "UP7000_SYSTEM_20261108_05deda07",
+  "finalized_unix_s": 1794149267.7428672
+}

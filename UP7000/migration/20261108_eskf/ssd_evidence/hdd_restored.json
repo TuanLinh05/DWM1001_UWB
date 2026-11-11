@@ -1,0 +1,13 @@
+{
+  "phase": "hdd_runtime_restored",
+  "services": {
+    "mnt-droneup.mount": "active",
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "data_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "ssd_read_only": true,
+  "integrity_worker_pid": 4780,
+  "restored_unix_s": 1794147283.2697926
+}

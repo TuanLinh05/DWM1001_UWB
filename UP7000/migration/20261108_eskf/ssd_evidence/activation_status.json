@@ -1,0 +1,5 @@
+{
+  "phase": "copy_failed_no_activation",
+  "updated_unix_s": 1794144863.7684968,
+  "error": "RuntimeError('ssd_image_filesystem_check failed: e2fsck 1.46.5 (30-Dec-2021)\\nSuperblock has an invalid journal (inode 8).\\nClear? no\\n\\nJournal superblock is corrupt.\\nFix? no\\n\\ne2fsck: The journal superblock is corrupt while checking journal for up7000_ssd\\ne2fsck: Cannot proceed with file system check\\n\\nup7000_ssd: ********** WARNING: Filesystem still has errors **********\\n\\n')"
+}

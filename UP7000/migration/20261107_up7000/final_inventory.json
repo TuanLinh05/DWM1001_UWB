@@ -1,0 +1,55 @@
+{
+  "hostname": "thoa",
+  "user": "thoa",
+  "kernel": "6.8.0-138-generic",
+  "service_active": "active",
+  "service_enabled": "enabled",
+  "service_unit": "[Unit]\nDescription=UWB TAG WiFi relay + PX4 MAVLink/ULog logger (ROS 2 Humble)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=thoa\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=PYTHONPATH=/home/thoa/drone_tools/python\nEnvironment=LANG=C.UTF-8\n# Optional launch arguments, e.g. LAUNCH_ARGS=\"ground_host:=192.168.1.20\"\nEnvironmentFile=-/etc/default/uwb-px4-logger\nExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source /home/thoa/UP4000/ros2_ws/install/setup.bash && exec ros2 launch uwb_px4_logger logger.launch.py $LAUNCH_ARGS'\nRestart=always\nRestartSec=3\n# SIGINT lets both nodes close their files and stop the PX4 log stream.\nKillSignal=SIGINT\n# Signal only ros2 launch; it forwards SIGINT to both nodes once.\nKillMode=mixed\n# Read the USB streams promptly even when the computer is busy.\nNice=-5\nTimeoutStopSec=15\n\n[Install]\nWantedBy=multi-user.target\n",
+  "service_dropin": "[Service]\nEnvironment=FASTRTPS_DEFAULT_PROFILES_FILE=/home/thoa/drone_tools/fastdds-udp.xml\n",
+  "packages": [
+    "data_collector_gui",
+    "px4_learned_planner",
+    "px4_msgs",
+    "px4_test_bridge",
+    "px4ctrl_dds",
+    "uav_core",
+    "uwb_eskf"
+  ],
+  "initial_source_file_count": 1215,
+  "missing_copied_source_files": [],
+  "deliberate_modified_source_files": [
+    "UP4000/scripts/uwb-px4-logger.service",
+    "UP4000/scripts/install.sh",
+    "UP4000/ros2_ws/src/uwb_px4_logger/test/test_status.py"
+  ],
+  "unexpected_backslash_files": [],
+  "usb_devices": "Bus 002 Device 005: ID 152d:0578 JMicron Technology Corp. / JMicron USA Technology Corp. JMS578 SATA 6Gb/s\nBus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub\nBus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub",
+  "ipv4": "lo               UNKNOWN        127.0.0.1/8 \nenp1s0           UP             192.168.1.207/24 metric 100 \ntailscale0       UNKNOWN        100.123.216.14/32",
+  "disk": "Filesystem                         Size  Used Avail Use% Mounted on\n/dev/mapper/ubuntu--vg-ubuntu--lv   26G   12G   14G  46% /",
+  "wifi_profile": "connection.id:                          PIF_CLUB_5G\nconnection.autoconnect:                 yes\n802-11-wireless.powersave:              2 (disable)",
+  "network_device_states": "enp1s0:ethernet:unmanaged\nlo:loopback:unmanaged\ntailscale0:tun:unmanaged",
+  "external_drive_mounted": false,
+  "python_private_prefix": "/home/thoa/drone_tools/python",
+  "cpp_smoke": {
+    "eskf": {
+      "stayed_running": true,
+      "exit": 0,
+      "log": "[INFO] [1794065441.082895605] [uwb_eskf]: body = uwb_tag_1, lever uwb_tag_1 -> body: (0.0000, 0.0000, 0.0000) m\n[INFO] [1794065441.083123258] [uwb_eskf]: 8 anchor (8 bias) tu /home/thoa/ros2_px4_v2/install/uwb_eskf/share/uwb_eskf/config/rig.txt, imu=none\n[INFO] [1794065443.214477845] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+    },
+    "planner": {
+      "stayed_running": true,
+      "exit": 0,
+      "log": "[INFO] [1794065444.192100872] [learned_planner]: model K=27 80x48 state=8 pool=low d_max=10.0, a_max=7.8 j_max=30.1, speed=4.0 m/s  [DRY RUN]\n[INFO] [1794065446.433326256] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+    },
+    "controller": {
+      "stayed_running": true,
+      "exit": 0,
+      "log": "[WARN] [1794065447.304398252] [px4ctrl]: PX4 1.14 khong xuat RC qua DDS -> ep no_RC = true\n[INFO] [1794065447.307914208] [px4ctrl]: px4ctrl (DDS) 100 Hz, odom=px4, hover_percentage 0.45, takeoff 1.00 m\n[INFO] [1794065447.318201417] [px4ctrl]: dang cho PX4 (/fmu/out/vehicle_status) - MicroXRCEAgent chay chua?\n[INFO] [1794065449.318260770] [px4ctrl]: dang cho PX4 (/fmu/out/vehicle_status) - MicroXRCEAgent chay chua?\n[INFO] [1794065449.653334327] [rclcpp]: signal_handler(SIGINT/SIGTERM)\n"
+    },
+    "reference_eskf": {
+      "exit": 0,
+      "log": "cv: RMSE xyz [0.053 0.041 0.053] m, NEES pos mean 5.72 (ky vong 3)\nes: RMSE xyz [0.01  0.009 0.011] m, NEES pos mean 2.17 (ky vong 3)\nes: yaw error cuoi -0.6 deg, b_a [ 0.15 -0.1   0.2 ] (that [ 0.15 -0.1   0.2 ]), b_g deg [ 0.5  -0.29  0.38]\nselftest OK\n"
+    }
+  },
+  "fastdds_profile": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<profiles xmlns=\"http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles\">\n  <transport_descriptors>\n    <transport_descriptor><transport_id>onboard_udp</transport_id><type>UDPv4</type></transport_descriptor>\n  </transport_descriptors>\n  <participant profile_name=\"onboard_participant\" is_default_profile=\"true\">\n    <rtps>\n      <userTransports><transport_id>onboard_udp</transport_id></userTransports>\n      <useBuiltinTransports>false</useBuiltinTransports>\n      <builtin><initialPeersList><locator><udpv4><address>127.0.0.1</address></udpv4></locator></initialPeersList></builtin>\n    </rtps>\n  </participant>\n</profiles>\n"
+}

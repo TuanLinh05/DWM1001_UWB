@@ -1,0 +1,50 @@
+{
+  "phase": "emmc_runtime_active_external_logging",
+  "started_unix_s": 1794150064.9455569,
+  "current_path": "/home/thoa/drone_env.sh",
+  "updated_unix_s": 1794150126.888632,
+  "verified_paths": [
+    "/opt/ros/humble",
+    "/home/thoa/UP4000",
+    "/home/thoa/ros2_px4_v2",
+    "/home/thoa/drone_tools",
+    "/home/thoa/onboard_env.sh",
+    "/home/thoa/drone_env.sh"
+  ],
+  "generated_prefix_patches": [
+    "ros2_ws/install/setup.sh",
+    "ros2_ws/install/local_setup.sh",
+    "ros2_ws/install/uwb_px4_logger/lib/python3.10/site-packages/uwb-px4-logger.egg-link",
+    "ros2_ws/install/uwb_px4_logger/share/uwb_px4_logger/package.sh",
+    "install/setup.sh",
+    "install/local_setup.sh",
+    "install/uwb_eskf/share/uwb_eskf/package.sh"
+  ],
+  "switched_paths": [
+    "/opt/ros/humble",
+    "/home/thoa/UP4000",
+    "/home/thoa/ros2_px4_v2",
+    "/home/thoa/drone_tools",
+    "/home/thoa/onboard_env.sh",
+    "/home/thoa/drone_env.sh"
+  ],
+  "services": {
+    "uwb-recording-control": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-px4-logger": "active"
+  },
+  "runtime_paths": [
+    "/opt/ros/humble",
+    "/home/thoa/UP4000",
+    "/home/thoa/ros2_px4_v2",
+    "/home/thoa/drone_tools",
+    "/home/thoa/onboard_env.sh",
+    "/home/thoa/drone_env.sh"
+  ],
+  "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150146_13793",
+  "log_storage": "HDD pending reliable SSD",
+  "emmc_available_bytes": 15210745856,
+  "source_hdd_copies_preserved": true,
+  "ssd_untouched": true,
+  "finished_unix_s": 1794150126.8886278
+}

@@ -1,0 +1,16 @@
+{
+  "phase": "prepared_waiting_for_64gb_card",
+  "installed_path": "/opt/up7000-card64-kit",
+  "software_tests_passed": 12,
+  "seed_extract_and_config_hash_verified": true,
+  "seed_config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+  "seed_bytes": 2042,
+  "services_unchanged": {
+    "uwb-recording-control": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-px4-logger": "active"
+  },
+  "prepared_unix_s": 1794154947.2089927,
+  "card_qualification_pending": true,
+  "live_storage_configuration_changed": false
+}

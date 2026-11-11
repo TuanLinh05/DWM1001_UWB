@@ -1,0 +1,22 @@
+{
+  "phase": "prepared_waiting_for_64gb_card",
+  "installed_path": "/opt/up7000-card64-kit",
+  "software_tests_passed": 12,
+  "seed_extract_and_config_hash_verified": true,
+  "seed_config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+  "seed_bytes": 2042,
+  "services_unchanged": {
+    "uwb-recording-control": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-px4-logger": "active"
+  },
+  "prepared_unix_s": 1794154947.2089927,
+  "card_qualification_pending": true,
+  "live_storage_configuration_changed": false,
+  "local_archive": "D:\\Drone Project\\Github Clone UWB Test\\UP4000\\migration\\20261108_eskf\\UP7000_CARD64_KIT_20261108.zip",
+  "archive_sha256": "fcd90455ccec9faf82cc908c769ff950c75d0f0e1ddf271921f836d8843f8127",
+  "archive_bytes": 23419,
+  "native_cdr_messages": 48,
+  "native_log_save_passed": true,
+  "real_card_speed_capacity_and_gps_pending": true
+}

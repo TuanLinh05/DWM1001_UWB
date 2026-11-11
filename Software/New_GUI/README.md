@@ -149,13 +149,18 @@ mm. With the default spot (2.5, 2.0, 1.2) the check places the TAG at
 (3.14, 1.90, 1.18), 0.64 m away. A spot check needs at least dimension+2
 anchors; with fewer, only the bias magnitude is checked.
 
-## UP4000 Onboard tab
+## UP7000 Onboard tab
 
-Page **5. UP4000 Onboard** listens on UDP 15557 for the `up4000_status` node of the drone computer
-(`UP4000/`): host health (CPU, temperature, memory, disk, WiFi), logger counters, session files and
+Page **5. UP7000 Onboard** listens on UDP 15557 for the drone computer's `up4000_status` node:
+host health (CPU, temperature, memory, disk, WiFi), logger counters, session files and
 the latest PX4/EKF values (mode, arming, battery, ODOMETRY, attitude, ESTIMATOR_STATUS ratios and
 flags, vibration, STATUSTEXT). The "All values received" tree shows every field. Read only; the
 node broadcasts once per second until the WiFi relay knows this PC, then sends ~4 times per second.
+
+For UP7000 across different networks, keep Tailscale connected on both devices. The onboard
+service is configured to send to this laptop at `100.77.150.59`. Choose
+**WiFi UDP :15555 (UP7000 relay)** and click **Connect UART**, then open **5. UP7000 Onboard**.
+The service starts automatically with the HDD attached; routine SSH commands are unnecessary.
 
 Status datagrams are capped at 1,200 bytes including the JSON envelope. Large dictionaries are
 merged by path; an oversized atomic value (e.g. a long STATUSTEXT list) is reassembled only after
@@ -163,6 +168,46 @@ all its fragments arrive. Each PX4 message tracks its own receive time and the s
 After 2 seconds without fresh data, its summary values are hidden and marked **STALE**, even
 when other messages keep arriving. The all-values tree retains the last received values with a
 STALE marker. Host/session/logger sections also show independent stale warnings.
+
+## ROS 2 bag / MCAP recording
+
+For UP7000 ESKF, configure surveyed anchor coordinates on **3. Rig Layout &
+Diag**, then enter the TAG-minus-IMU offset in body FLU metres, initial rig yaw
+and estimator parameters in **UP7000 ESKF CONFIGURATION**. Check **Use measured
+rig, TAG–IMU offset and heading for ESKF** once those measurements are verified.
+Each UDP Log start sends an immutable configuration snapshot to UP7000, saves
+it on HDD and waits for the actual C++ node to report the matching SHA-256.
+The status bar then shows **GUI config verified**. Rig/ESKF edits are locked
+for that session. Leave the checkbox clear to record inputs while ESKF waits
+for configuration; the sidebar's laptop position solver is independent.
+Stopping closes the GUI session and background recording keeps the applied
+configuration. See [the Vietnamese workflow](ROS2_BAG_HUONG_DAN.md).
+
+Select **CSV + MCAP** (default) beside **Log: OFF**, then click the log button.
+Stopping recording finalizes `rosbag2/data_0.mcap` and `metadata.yaml` in the
+same session directory as the CSV logs. **CSV only** remains available.
+The bag uses standard ROS 2 CDR message types and can be recorded on Windows
+without installing ROS 2 there. Install the updated `requirements.txt` first.
+
+For live **WiFi UDP** input, this same button also starts an acknowledged UP7000
+HDD session, including the existing UWB/PX4 logger and `uwb-eskf-recorder`.
+The status bar confirms **laptop + UP7000 HDD**; an unconfirmed side is marked
+**Log: PARTIAL**. Stopping/closing finalizes the matching HDD session and starts
+a fresh autonomous background recording on UP7000. `onboard_recording.json`
+links both sides with one recording ID. Demo and local UART do not control
+the real onboard services. The format selector controls laptop output only.
+
+UWB ranges, solved XYZ/velocity, raw diagnostics and received PX4 numeric
+fields become ROS 2 topics. PX4 comes from the received ~4 Hz status snapshots,
+not the onboard full-rate MAVLink stream. Bag times are laptop receive times;
+device times remain in payloads. Missing fixes/ranges are not replaced by zeros.
+Queue drops and write failures are reported on the log button and in
+`rosbag2/recording_status.json`.
+
+On **4. Log Replay & Analysis**, **Log Folder** opens the latest recording and
+**Plot MCAP...** launches the selected bag in PlotJuggler (the existing WSL
+Ubuntu-22.04 ROS 2 Humble setup on Windows). See
+[the Vietnamese guide](ROS2_BAG_HUONG_DAN.md) for topics and `ros2 bag info/play` commands.
 
 ## Radio loss diagnostics
 

@@ -1,0 +1,20 @@
+[
+  {
+    "path": "Cadence_Tool_ALL_PDK_50GB_05.10.2021.zip",
+    "size": 26759449730,
+    "sha256": "378c360809fed61afdbba989ccee84a0904ee321b61620a0f2430a3865961e96",
+    "mtime_ns": 1794118686000000000
+  },
+  {
+    "path": "System Volume Information/WPSettings.dat",
+    "size": 12,
+    "sha256": "12421d13a631de4d08abc856f19dfb37f4f49f57ebc157b31bd3fbb0e141145a",
+    "mtime_ns": 1662890696000000000
+  },
+  {
+    "path": "System Volume Information/IndexerVolumeGuid",
+    "size": 76,
+    "sha256": "89953d87e933e8334938f7aa453dcb164bcc04b4e6cf52685fe5d8d360aca8e5",
+    "mtime_ns": 1779437376000000000
+  }
+]

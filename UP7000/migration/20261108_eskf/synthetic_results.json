@@ -1,0 +1,25 @@
+{
+  "stationary_with_nonzero_lever": {
+    "poses": 195,
+    "body_position_error_m": 3.643274066562933e-08
+  },
+  "input_timeout_stale_nan_and_recovery": "passed",
+  "two_anchors_no_fix": "passed",
+  "unconfirmed_config_no_fix": "passed",
+  "native_mcap_roundtrip": {
+    "bag": "/home/thoa/drone_tools/eskf/tests/synthetic_1794114957164738097",
+    "message_counts": {
+      "/uwb/anchor_8/range": 453,
+      "/uwb/anchor_6/range": 453,
+      "/uwb/anchor_5/range": 453,
+      "/uwb/anchor_4/range": 453,
+      "/uwb/anchor_3/range": 453,
+      "/px4/imu_frd": 1184,
+      "/uwb/anchor_1/range": 573,
+      "/uwb/anchor_2/range": 573,
+      "/uwb/anchor_7/range": 452,
+      "/uwb_eskf/status": 12,
+      "/uwb_eskf/odom": 463
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "start": {
+    "ok": true,
+    "action": "start",
+    "request_id": "8ba27d12b20f4b73aefe1d4a62c0ca6f",
+    "recording_id": "92decc80ca0f49f8bc1646dc3b4a9852",
+    "requested_config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150446_14598",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150446_14598/bag",
+    "closed": false,
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 0,
+    "range_samples": 0,
+    "state": "recording",
+    "background_recording": false,
+    "kind": "up7000_recording_control",
+    "version": 1
+  },
+  "finish": {
+    "ok": true,
+    "action": "finish",
+    "request_id": "6cf40ab4f85347868172ba025b3da529",
+    "recording_id": "92decc80ca0f49f8bc1646dc3b4a9852",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150446_14598",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150446_14598/bag",
+    "closed": true,
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 0,
+    "range_samples": 0,
+    "state": "saved",
+    "background_recording": true,
+    "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684",
+    "kind": "up7000_recording_control",
+    "version": 1
+  },
+  "background": {
+    "ok": true,
+    "state": "recording",
+    "recording_id": "",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150453_14684/bag",
+    "closed": false,
+    "active": true,
+    "error": "",
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 0,
+    "range_samples": 0,
+    "kind": "up7000_recording_control",
+    "version": 1,
+    "request_id": "a71a31ce683b45cbba81a366506ec6cd",
+    "action": "status"
+  },
+  "native_bag": {
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_150446_14598",
+    "closed": true,
+    "error": "",
+    "data_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+    "message_counts": {
+      "/uwb_eskf/session": 6,
+      "/px4/snapshot": 23,
+      "/uwb_eskf/status": 6,
+      "/uwb_relay/status": 6,
+      "/px4/status": 6
+    },
+    "all_messages_cdr_deserialized": true,
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "bag_info": "\nFiles:             bag_0.mcap\nBag size:          53.3 KiB\nStorage id:        mcap\nDuration:          5.895868447s\nStart:             Nov  8 2026 15:04:46.656501376 (1794150286.656501376)\nEnd:               Nov  8 2026 15:04:52.552369823 (1794150292.552369823)\nMessages:          47\nTopic information: Topic: /uwb/device_info | Type: std_msgs/msg/String | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb/burst_metadata | Type: std_msgs/msg/String | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/status | Type: std_msgs/msg/String | Count: 6 | Serialization Format: cdr\n                   Topic: /px4/snapshot | Type: std_msgs/msg/String | Count: 23 | Serialization Format: cdr\n                   Topic: /px4/imu_frd | Type: sensor_msgs/msg/Imu | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/odometry | Type: nav_msgs/msg/Odometry | Count: 0 | Serialization Format: cdr\n                   Topic: /px4/imu_device_time_us | Type: std_msgs/msg/UInt64 | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/session | Type: std_msgs/msg/String | Count: 6 | Serialization Format: cdr\n                   Topic: /uwb/tag_time_us | Type: std_msgs/msg/UInt64 | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/status | Type: std_msgs/msg/String | Count: 6 | Serialization Format: cdr\n                   Topic: /uwb_relay/status | Type: std_msgs/msg/String | Count: 6 | Serialization Format: cdr\n                   Topic: /uwb/cycle_seq | Type: std_msgs/msg/UInt32 | Count: 0 | Serialization Format: cdr\n                   Topic: /uwb_eskf/odom | Type: nav_msgs/msg/Odometry | Count: 0 | Serialization Format: cdr\n\n"
+  }
+}

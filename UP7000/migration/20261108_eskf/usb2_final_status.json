@@ -1,0 +1,19 @@
+{
+  "services": {
+    "up7000-hdd-usb2": "active",
+    "mnt-droneup.mount": "active",
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "speed_mbps": 480,
+  "usb2_enabled_at_boot": "enabled",
+  "hdd_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "ss_port_disabled": "1",
+  "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_110019_2294",
+  "recorder_topics_verified": true,
+  "estimator_state": "WAIT_CONFIGURATION",
+  "pixhawk_connected": false,
+  "tag_connected": false,
+  "checked_unix_s": 1794135641.1357152
+}

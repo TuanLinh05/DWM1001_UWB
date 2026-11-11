@@ -1,0 +1,74 @@
+{
+  "data_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "services": {
+    "uwb-px4-logger": "active",
+    "uwb-eskf-recorder": "active",
+    "uwb-recording-control": "active"
+  },
+  "background_session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_141459_4775",
+  "recorder_topics_verified": true,
+  "estimator_status": {
+    "state": "WAIT_CONFIGURATION",
+    "reason": "STARTING",
+    "configuration_confirmed": false,
+    "imu": "mavlink",
+    "rig_file": "/mnt/droneup/onboard_20261107/thoa/drone_tools/eskf/config_versions/979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b/rig_onboard.txt",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "configured_anchors": 8,
+    "frame_id": "uwb_rig",
+    "body_frame": "px4_imu_flu",
+    "ignore_rig_bias": true,
+    "lever_flu_m": [
+      0,
+      0,
+      0
+    ],
+    "imu_samples": 0,
+    "range_samples": 0,
+    "accepted_ranges": 0,
+    "odom_messages": 0,
+    "initializations": 0,
+    "required_anchors": 6,
+    "recent_anchors": 0,
+    "invalid_imu": 0,
+    "invalid_ranges": 0,
+    "invalid_initializations": 0,
+    "imu_age_s": -1,
+    "range_age_s": -1
+  },
+  "devices": {
+    "hdd": {
+      "device": "/dev/sdb2",
+      "usb_path": "1-1",
+      "speed_mbps": 480
+    },
+    "ssd": {
+      "device": "/dev/sda",
+      "usb_path": "1-2",
+      "speed_mbps": 480
+    }
+  },
+  "fstab_still_uses_hdd": true,
+  "ssd_activation_not_applied": true,
+  "pixhawk_connected": false,
+  "tag_connected": false,
+  "checked_unix_s": 1794149299.992673,
+  "gui_control_status": {
+    "ok": true,
+    "state": "recording",
+    "recording_id": "",
+    "session": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_141459_4775",
+    "bag": "/mnt/droneup/onboard_20261107/thoa/flight_logs/eskf/20261108_141459_4775/bag",
+    "closed": false,
+    "active": true,
+    "error": "",
+    "estimator_state": "WAIT_CONFIGURATION",
+    "config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b",
+    "imu_samples": 0,
+    "range_samples": 0,
+    "kind": "up7000_recording_control",
+    "version": 1,
+    "request_id": "71975acc6d3f436f9ed79eb8ca1b8ad5",
+    "action": "status"
+  }
+}

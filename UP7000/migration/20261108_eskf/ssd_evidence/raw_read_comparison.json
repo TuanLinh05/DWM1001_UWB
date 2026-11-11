@@ -1,0 +1,113 @@
+{
+  "root_entries": [
+    {
+      "name": "System Volume Information",
+      "first": 5,
+      "valid_length": 1048576,
+      "length": 1048576,
+      "flags": 3
+    },
+    {
+      "name": "UP7000_SYSTEM_20261108_05deda07",
+      "first": 8,
+      "valid_length": 1048576,
+      "length": 1048576,
+      "flags": 3
+    },
+    {
+      "name": "Cadence_Tool_ALL_PDK_50GB_05.10.2021.zip",
+      "first": 138640,
+      "valid_length": 26759449730,
+      "length": 26759449730,
+      "flags": 3
+    }
+  ],
+  "image_entry": {
+    "name": "droneup.ext4",
+    "first": 11,
+    "valid_length": 34359738368,
+    "length": 34359738368,
+    "flags": 3
+  },
+  "cluster_bytes": 1048576,
+  "samples": [
+    {
+      "logical_offset": 0,
+      "physical_offset": 27262976,
+      "source_sha256": "7762f432766ddb1b7e80f7a34c74776a9273cb95d2a86e703365e7795479fc19",
+      "file_sha256": "7762f432766ddb1b7e80f7a34c74776a9273cb95d2a86e703365e7795479fc19",
+      "raw_pread_sha256": "7762f432766ddb1b7e80f7a34c74776a9273cb95d2a86e703365e7795479fc19",
+      "read16_sha256": "7762f432766ddb1b7e80f7a34c74776a9273cb95d2a86e703365e7795479fc19",
+      "file_matches_source": true,
+      "raw_matches_file": true,
+      "read16_matches_source": true,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    },
+    {
+      "logical_offset": 8589934592,
+      "physical_offset": 8617197568,
+      "source_sha256": "64349516522a89da27b8df8e5cf5d08f16b6d2855e7c3f61232841b6c531a04c",
+      "file_sha256": "64349516522a89da27b8df8e5cf5d08f16b6d2855e7c3f61232841b6c531a04c",
+      "raw_pread_sha256": "64349516522a89da27b8df8e5cf5d08f16b6d2855e7c3f61232841b6c531a04c",
+      "read16_sha256": "64349516522a89da27b8df8e5cf5d08f16b6d2855e7c3f61232841b6c531a04c",
+      "file_matches_source": true,
+      "raw_matches_file": true,
+      "read16_matches_source": true,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    },
+    {
+      "logical_offset": 12884901888,
+      "physical_offset": 12912164864,
+      "source_sha256": "3a362ded102e1f3f0d1478b84486a3ebe54dc9c58c1136c1c1ca5c927c9c913e",
+      "file_sha256": "4d414f6fce87c6133231511745db7202abeaecfefd15172c8aeb886b2545a0ea",
+      "raw_pread_sha256": "4d414f6fce87c6133231511745db7202abeaecfefd15172c8aeb886b2545a0ea",
+      "read16_sha256": "4d414f6fce87c6133231511745db7202abeaecfefd15172c8aeb886b2545a0ea",
+      "file_matches_source": false,
+      "raw_matches_file": true,
+      "read16_matches_source": false,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    },
+    {
+      "logical_offset": 17179869184,
+      "physical_offset": 17207132160,
+      "source_sha256": "f49a32111a938b66b7226061abb4b833bf48d67f3cd2d30755f036a290434ccf",
+      "file_sha256": "8f8137a74c0fce64c9670dc6f8ddc097896291d2b3c29331c5ef88722a044b33",
+      "raw_pread_sha256": "8f8137a74c0fce64c9670dc6f8ddc097896291d2b3c29331c5ef88722a044b33",
+      "read16_sha256": "8f8137a74c0fce64c9670dc6f8ddc097896291d2b3c29331c5ef88722a044b33",
+      "file_matches_source": false,
+      "raw_matches_file": true,
+      "read16_matches_source": false,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    },
+    {
+      "logical_offset": 25769803776,
+      "physical_offset": 25797066752,
+      "source_sha256": "76b0906efb9673ec9dc2a28f0ec86b5c04dc1520eb3b972a37f70e5eae820243",
+      "file_sha256": "07f21de45e0a3e0c8697a17f8ded60a9e7d7e49db20dc938d4ea0ff0a0a49346",
+      "raw_pread_sha256": "07f21de45e0a3e0c8697a17f8ded60a9e7d7e49db20dc938d4ea0ff0a0a49346",
+      "read16_sha256": "07f21de45e0a3e0c8697a17f8ded60a9e7d7e49db20dc938d4ea0ff0a0a49346",
+      "file_matches_source": false,
+      "raw_matches_file": true,
+      "read16_matches_source": false,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    },
+    {
+      "logical_offset": 33285996544,
+      "physical_offset": 33313259520,
+      "source_sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7",
+      "file_sha256": "9da389ee29826ac082d693bef2c38b1481b728c1ed27ef9874e1d900b8efb2ec",
+      "raw_pread_sha256": "9da389ee29826ac082d693bef2c38b1481b728c1ed27ef9874e1d900b8efb2ec",
+      "read16_sha256": "9da389ee29826ac082d693bef2c38b1481b728c1ed27ef9874e1d900b8efb2ec",
+      "file_matches_source": false,
+      "raw_matches_file": true,
+      "read16_matches_source": false,
+      "read16_matches_file": true,
+      "read16_exit": 0
+    }
+  ]
+}

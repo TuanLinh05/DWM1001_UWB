@@ -1,0 +1,13 @@
+{
+  "phase": "error",
+  "started_unix_s": 1794138486.0365248,
+  "updated_unix_s": 1794144862.2214723,
+  "image_size_bytes": 34359738368,
+  "image_uuid": "5b4b8b8c-74a6-4298-abde-cc8fc4387b84",
+  "command": "ssd_image_filesystem_check",
+  "last_progress": "",
+  "image_copied_bytes": 34359738368,
+  "new_ssd_directory": "/run/up7000-ssd-host/UP7000_SYSTEM_20261108_05deda07",
+  "source_image_sha256": "5837b5e26be972b2b024c93af999dec1ccce766f0198af69d52fb865eea566c6",
+  "error": "RuntimeError('ssd_image_filesystem_check failed: e2fsck 1.46.5 (30-Dec-2021)\\nSuperblock has an invalid journal (inode 8).\\nClear? no\\n\\nJournal superblock is corrupt.\\nFix? no\\n\\ne2fsck: The journal superblock is corrupt while checking journal for up7000_ssd\\ne2fsck: Cannot proceed with file system check\\n\\nup7000_ssd: ********** WARNING: Filesystem still has errors **********\\n\\n')"
+}

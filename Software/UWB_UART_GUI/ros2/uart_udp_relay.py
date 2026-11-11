@@ -52,10 +52,12 @@ def main():
 
     print(f'Capture: {out}\nUDP -> {args.host}:{args.udp_port}', flush=True)
     try:
-        with serial.Serial(args.port,args.baud,timeout=0.05) as uart, \
+        with serial.Serial(args.port,115200,timeout=0.05) as uart, \
              socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp, \
              (out/'raw_telemetry.bin').open('wb') as raw, \
              (out/'commands.jsonl').open('w',encoding='utf-8') as commands:
+            uart.baudrate = args.baud  # force J-Link VCOM line-coding transition
+
             def send(command, payload=b''):
                 nonlocal command_seq
                 command_seq += 1

@@ -148,7 +148,7 @@ class UdpRelayInputTests(unittest.TestCase):
             self.assertEqual(len(rows), 300)
             last = rows[-1]
             self.assertAlmostEqual(float(last["pos_x_m"]), 2.6, delta=0.05)
-            self.assertIn("UP4000_20261107_150000", session.name)
+            self.assertIn("UP7000_20261107_150000", session.name)
 
 
 if __name__ == "__main__":

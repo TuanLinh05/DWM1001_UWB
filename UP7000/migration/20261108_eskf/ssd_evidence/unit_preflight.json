@@ -1,0 +1,9 @@
+{
+  "preview": "/run/up7000-ssd-migration/unit_preview_86703901",
+  "verify_returncode": 0,
+  "stdout": "",
+  "stderr": "/lib/systemd/system/snapd.service:23: Unknown key name 'RestartMode' in section 'Service', ignoring.\n",
+  "host_identity_check_returncode": 0,
+  "host_identity_check": "Expected USB2 SSD/exFAT volume verified\n",
+  "host_identity_stderr": ""
+}

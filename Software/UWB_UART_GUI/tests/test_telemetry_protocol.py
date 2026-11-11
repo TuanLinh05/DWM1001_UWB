@@ -39,6 +39,9 @@ class TelemetryProtocolTests(unittest.TestCase):
 
     def test_crc_known_vector(self) -> None:
         self.assertEqual(crc16_ccitt(b"123456789"), 0x29B1)
+        self.assertEqual(crc16_ccitt(bytearray(b"123456789")), 0x29B1)
+        self.assertEqual(crc16_ccitt(memoryview(b"a1b2c3d4e5f6g7h8i9")[1::2]), 0x29B1)
+        self.assertEqual(crc16_ccitt(b""), 0xFFFF)
 
     def test_fragmented_uncalibrated_range(self) -> None:
         payload = bytes((1,)) + struct.pack(

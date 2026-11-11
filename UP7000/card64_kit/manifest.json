@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "package": "up7000-card64-kit",
+  "sha256": {
+    "activate.py": "b2f0e10789ab918959f1b51fd855d8f0d1137bcb0f7e49b199e7f8486d100922",
+    "card64.py": "59a0c5ba1cc7d7e8172f4dbd8b6133a06311545e4e8ea683bd8e6d7a299241bd",
+    "common.py": "ee70ddab414e92c4c672f85425a5b33fa17a2753962e81e20c60190b0059f0a8",
+    "PREPARATION.json": "a9c307b39c8bfa2a618b871f68bc1cea8b6edc38a6643c0ef79286103f3f23f8",
+    "probe.py": "76adb4cafb4a0bb65f00bafeea5dcaee593eb5168480bd22d3f42a6a776ea87a",
+    "README_VI.md": "aab3a134d96bc4d0b0682dc20466309c7f5c1f5dc1842c1fa9b15a4d42877765",
+    "seed.py": "e7b65d9f5ec06daa765c0f481a164836ca6b426cb24dd48ede352412d75f32a7",
+    "verify_runtime.py": "30a6722e7513170c32e93bf1f160ad6f8759e508299e0a330045f90f3b642f25",
+    "tests/test_card_kit.py": "ec58d66f526dd6848a9ab838f1fa9c193cc6a256d5106d8e253e241428977e3e",
+    "seed.tar.gz": "9deeedac9dba4e5f10f1cba3bfec81db1bfc0e6bd6d48948fbceab08d07cc2c1",
+    "seed_metadata.json": "08334fc2418c969c2eadd40fb06e77562fd6da2aec040c16030c5acadd2efa3d"
+  },
+  "activation_prepared_not_applied": true,
+  "seed_config_sha256": "979d3e77d33e4bf25e52960f3672cea433c8372ed1e0f1e73abd700eb648cb6b"
+}

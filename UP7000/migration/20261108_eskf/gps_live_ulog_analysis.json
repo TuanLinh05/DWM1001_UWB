@@ -1,0 +1,243 @@
+{
+  "source": "Copy of running UP7000 ULog; transfer interrupted, recent tail may be incomplete",
+  "file_bytes": 7738541,
+  "parameters": {
+    "GPS_1_CONFIG": 201,
+    "GPS_1_GNSS": 0,
+    "GPS_1_PROTOCOL": 1,
+    "GPS_2_CONFIG": 0,
+    "GPS_CFG_WIPE": 0,
+    "GPS_DUMP_COMM": 0,
+    "GPS_SAT_INFO": 0,
+    "GPS_UBX_BAUD2": 230400,
+    "GPS_UBX_CFG_INTF": 0,
+    "GPS_UBX_DYNMODEL": 7,
+    "GPS_UBX_MODE": 0,
+    "GPS_YAW_OFFSET": 0.0,
+    "MAV_0_CONFIG": 101,
+    "MAV_0_FLOW_CTRL": 2,
+    "MAV_0_FORWARD": 1,
+    "MAV_0_MODE": 0,
+    "MAV_0_RADIO_CTL": 1,
+    "MAV_0_RATE": 1200,
+    "MAV_1_CONFIG": 0,
+    "MAV_2_CONFIG": 0,
+    "MAV_COMP_ID": 1,
+    "MAV_FWDEXTSP": 1,
+    "MAV_HASH_CHK_EN": 1,
+    "MAV_HB_FORW_EN": 1,
+    "MAV_PROTO_VER": 2,
+    "MAV_RADIO_TOUT": 5,
+    "MAV_SIK_RADIO_ID": 0,
+    "MAV_SYS_ID": 1,
+    "MAV_TYPE": 2,
+    "MAV_USEHILGPS": 0,
+    "SER_GPS1_BAUD": 0,
+    "SER_TEL1_BAUD": 57600,
+    "SYS_USB_AUTO": 2,
+    "USB_MAV_MODE": 2,
+    "UXRCE_DDS_CFG": 0
+  },
+  "changed_parameters": [],
+  "firmware": {
+    "ver_sw": "d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
+    "ver_sw_release": 17891583,
+    "ver_vendor_sw_release": 255,
+    "ver_hw": "PX4_FMU_V6C",
+    "ver_hw_subtype": "V6C000002",
+    "ver_sw_branch": "stable",
+    "ver_data_format": 2
+  },
+  "data": [
+    {
+      "name": "cpuload",
+      "instance": 0,
+      "samples": 402,
+      "fields": {
+        "timestamp": {
+          "first": 254682122,
+          "last": 455181847,
+          "min": 254682122,
+          "max": 455181847
+        },
+        "load": {
+          "first": 0.36183762550354004,
+          "last": 0.3552039861679077,
+          "min": 0.34352606534957886,
+          "max": 0.36183762550354004
+        },
+        "ram_usage": {
+          "first": 0.38935258984565735,
+          "last": 0.38950374722480774,
+          "min": 0.38935258984565735,
+          "max": 0.38950374722480774
+        }
+      }
+    },
+    {
+      "name": "sensor_gps",
+      "instance": 0,
+      "samples": 201,
+      "fields": {
+        "timestamp": {
+          "first": 254880103,
+          "last": 454872827,
+          "min": 254880103,
+          "max": 454872827
+        },
+        "timestamp_sample": {
+          "first": 0,
+          "last": 0,
+          "min": 0,
+          "max": 0
+        },
+        "device_id": {
+          "first": 11075589,
+          "last": 11075589,
+          "min": 11075589,
+          "max": 11075589
+        },
+        "eph": {
+          "first": 31.562002182006836,
+          "last": 37.86900329589844,
+          "min": 31.108001708984375,
+          "max": 71.16800689697266
+        },
+        "epv": {
+          "first": 26.816001892089844,
+          "last": 27.48000144958496,
+          "min": 26.132001876831055,
+          "max": 75.2040023803711
+        },
+        "noise_per_ms": {
+          "first": 93,
+          "last": 93,
+          "min": 93,
+          "max": 94
+        },
+        "jamming_indicator": {
+          "first": 12,
+          "last": 9,
+          "min": 7,
+          "max": 21
+        },
+        "automatic_gain_control": {
+          "first": 0,
+          "last": 0,
+          "min": 0,
+          "max": 0
+        },
+        "fix_type": {
+          "first": 3,
+          "last": 3,
+          "min": 0,
+          "max": 3
+        },
+        "jamming_state": {
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "max": 1
+        },
+        "satellites_used": {
+          "first": 6,
+          "last": 5,
+          "min": 4,
+          "max": 7
+        }
+      }
+    },
+    {
+      "name": "vehicle_gps_position",
+      "instance": 0,
+      "samples": 2013,
+      "fields": {
+        "timestamp": {
+          "first": 254279727,
+          "last": 455476716,
+          "min": 254279727,
+          "max": 455476716
+        },
+        "timestamp_sample": {
+          "first": 0,
+          "last": 0,
+          "min": 0,
+          "max": 0
+        },
+        "device_id": {
+          "first": 11075589,
+          "last": 11075589,
+          "min": 11075589,
+          "max": 11075589
+        },
+        "eph": {
+          "first": 31.507001876831055,
+          "last": 37.33400344848633,
+          "min": 31.06300163269043,
+          "max": 71.46400451660156
+        },
+        "epv": {
+          "first": 26.751001358032227,
+          "last": 27.716001510620117,
+          "min": 26.132001876831055,
+          "max": 75.56200408935547
+        },
+        "noise_per_ms": {
+          "first": 93,
+          "last": 93,
+          "min": 93,
+          "max": 94
+        },
+        "jamming_indicator": {
+          "first": 11,
+          "last": 9,
+          "min": 7,
+          "max": 21
+        },
+        "automatic_gain_control": {
+          "first": 0,
+          "last": 0,
+          "min": 0,
+          "max": 0
+        },
+        "fix_type": {
+          "first": 3,
+          "last": 3,
+          "min": 0,
+          "max": 3
+        },
+        "jamming_state": {
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "max": 1
+        },
+        "satellites_used": {
+          "first": 7,
+          "last": 5,
+          "min": 4,
+          "max": 7
+        }
+      }
+    },
+    {
+      "name": "vehicle_status",
+      "instance": 0,
+      "samples": 402,
+      "fields": {
+        "timestamp": {
+          "first": 254073759,
+          "last": 455475026,
+          "min": 254073759,
+          "max": 455475026
+        },
+        "arming_state": {
+          "first": 1,
+          "last": 1,
+          "min": 1,
+          "max": 1
+        }
+      }
+    }
+  ]
+}

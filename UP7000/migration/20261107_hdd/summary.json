@@ -1,0 +1,8 @@
+{
+  "phase": "complete",
+  "paths": 18,
+  "data_bytes_moved": 1457889280,
+  "root_bytes_reclaimed": 1457750016,
+  "disk_after": "Filesystem                         Size  Used Avail Use% Mounted on\n/dev/mapper/ubuntu--vg-ubuntu--lv   26G  9.8G   15G  40% /\n/dev/sda2                          293G   15G  263G   6% /mnt/droneup",
+  "service_active": "active"
+}

@@ -1,12 +1,12 @@
-"""Turn a UP4000 flight log (uwb_frames.bin) into a New_GUI log session.
+"""Turn a UP7000 flight log (uwb_frames.bin) into a New_GUI log session.
 
 python tools/uwb_frames_to_session.py <flight folder or uwb_frames.bin> [--anchors rig.json|rig.txt] [--out logs]
 
-The UP4000 records every TAG frame; the copy received over WiFi by the ground
+The UP7000 records every TAG frame; the copy received over WiFi by the ground
 GUI can have gaps. This replays the complete record through the same engine
 as live use (default filter: Robust Adaptive EKF) and writes the usual
 uwb_fast_log.csv, rx_quality.jsonl and diag.jsonl, ready for the Replay page
-and tools/diag_summary.py. Host time is the UP4000 CLOCK_MONOTONIC.
+and tools/diag_summary.py. Host time is the UP7000 CLOCK_MONOTONIC.
 Anchors default to last_rig_config.json (the layout the GUI last used).
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ _RECORD = struct.Struct("<qqH")
 def read_frame_records(path: Path):
     with path.open("rb") as fh:
         if fh.read(len(FRAME_FILE_MAGIC)) != FRAME_FILE_MAGIC:
-            raise SystemExit(f"{path} is not a UP4000 uwb_frames.bin")
+            raise SystemExit(f"{path} is not a UP7000 uwb_frames.bin")
         while True:
             head = fh.read(_RECORD.size)
             if len(head) < _RECORD.size:
@@ -51,7 +51,7 @@ def convert(frames_path: Path, out_root: Path, anchors_path: Path, filter_mode: 
     engine = UwbStateEngine(load_anchors(anchors_path))
     engine.set_position_filter_mode(filter_mode)
     flight = frames_path.parent.name
-    logger = FastCsvLogger(out_root, f"UP4000_{flight}", engine=engine)
+    logger = FastCsvLogger(out_root, f"UP7000_{flight}", engine=engine)
     parser = tp.TelemetryStreamParser()
     try:
         for _realtime_ns, monotonic_ns, blob in read_frame_records(frames_path):
@@ -78,7 +78,7 @@ def convert(frames_path: Path, out_root: Path, anchors_path: Path, filter_mode: 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("source", type=Path, help="UP4000 flight folder or its uwb_frames.bin")
+    ap.add_argument("source", type=Path, help="UP7000 flight folder or its uwb_frames.bin")
     ap.add_argument("--anchors", type=Path, default=NEW_GUI_DIR / "last_rig_config.json")
     ap.add_argument("--out", type=Path, default=NEW_GUI_DIR / "logs")
     ap.add_argument("--filter", choices=("robust_ekf", "legacy"), default="robust_ekf")

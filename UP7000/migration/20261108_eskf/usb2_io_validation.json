@@ -1,0 +1,11 @@
+{
+  "usb_speed_mbps": 480,
+  "usb_path": "1-1",
+  "hdd_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "test_size_mib": 32,
+  "write_mib_s": 32.93,
+  "read_mib_s": 39.11,
+  "checksum_match": true,
+  "all_test_files_on_hdd": true,
+  "checked_unix_s": 1794135581.9622247
+}

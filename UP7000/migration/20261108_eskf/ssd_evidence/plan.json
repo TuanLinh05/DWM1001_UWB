@@ -1,0 +1,16 @@
+{
+  "hdd_uuid": "896b17fa-8fe0-4111-853b-57b93ec87c60",
+  "ssd_by_id": "/dev/disk/by-id/usb-SSD_SSD-0:0",
+  "ssd_usb_id": "048d:1234",
+  "ssd_exfat_serial": 1961929496,
+  "ssd_original_files_bytes": 26759449818,
+  "source_mount": "/run/up7000-hdd-work",
+  "ssd_ro_mount": "/run/up7000-ssd-ro",
+  "hdd_backup_directory": "/run/up7000-hdd-work/_SSD_existing_backup_20261108_112314_6322386e",
+  "image_uuid": "5b4b8b8c-74a6-4298-abde-cc8fc4387b84",
+  "image_size_bytes": 34359738368,
+  "ssd_namespace": "UP7000_SYSTEM_20261108_05deda07",
+  "final_host_mount": "/mnt/dronessd",
+  "final_data_mount": "/mnt/droneup",
+  "user_approved": "Run onboard system from SSD; preserve all pre-existing SSD files"
+}
